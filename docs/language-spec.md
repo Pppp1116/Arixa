@@ -37,7 +37,7 @@ atom      = int | string | ident ["(" [expr {"," expr}] ")"] | "(" expr ")" ;
 
 ## Concurrency model
 - M:N runtime scheduling model conceptually.
-- `spawn` creates concurrent tasks; message-passing and shared immutable data are preferred.
+- `spawn` creates concurrent tasks and returns a task id; `join` waits for completion and yields the task result.
 - Async operations are poll-based and integrate with runtime event loop.
 
 ## Modules and packages
@@ -52,3 +52,10 @@ atom      = int | string | ident ["(" [expr {"," expr}] ")"] | "(" expr ")" ;
 ## FFI
 - C ABI boundary uses generated shim signatures.
 - Primitive scalars map directly; strings use pointer+length pairs.
+
+
+## Runtime intrinsics
+- `alloc(n)` allocates `n` bytes in the managed runtime heap and returns an integer handle.
+- `free(ptr)` releases a previously allocated handle.
+- `spawn(fn, ...)` starts `fn` on a runtime thread and returns an integer task id.
+- `join(task_id)` blocks until the task completes and returns its result.

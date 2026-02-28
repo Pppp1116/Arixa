@@ -5,7 +5,18 @@ class SemanticError(Exception):
     pass
 
 
-BUILTINS = {"print", "len", "read_file", "write_file", "args", "arg"}
+BUILTINS = {
+    "print",
+    "len",
+    "read_file",
+    "write_file",
+    "args",
+    "arg",
+    "spawn",
+    "join",
+    "alloc",
+    "free",
+}
 
 
 def analyze(prog: Program):
@@ -71,7 +82,11 @@ def _infer(e, symbols, fns):
                 _infer(a, symbols, fns)
             return fns[fn_name].ret
         if fn_name and fn_name in BUILTINS:
-            return "Int" if fn_name in {"len", "arg"} else "Any"
+            if fn_name in {"len", "arg"}:
+                return "Int"
+            if fn_name in {"spawn", "join", "alloc", "free"}:
+                return "Int"
+            return "Any"
         raise SemanticError(f"undefined function {fn_name or e.fn}")
     if isinstance(e, IndexExpr):
         _infer(e.obj, symbols, fns)
