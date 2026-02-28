@@ -39,3 +39,17 @@
 - direct `String`/`str` indexing is a type error; index byte buffers/slices instead
 - borrow lifetimes are elided/inferred; returning a reference must tie to an input reference
 - default ownership transfer is move; scalar numerics/`Bool`/shared refs are copy-by-default
+
+## x86-64 backend contract
+- ABI classes are explicit in backend lowering:
+  - integer/pointer class (`Int`, fixed ints, `isize`/`usize`, refs, fn pointers)
+  - SSE class (`Float`/`f32`/`f64`)
+- Calling convention:
+  - integer args: `rdi,rsi,rdx,rcx,r8,r9`, then stack
+  - float args: `xmm0..xmm7`, then stack
+  - return in `rax` (integer/pointer) or `xmm0` (float)
+  - call sites align stack to 16 bytes before `call`
+- Runtime ABI boundary for lowered builtins:
+  - `astra_print_i64`, `astra_print_str`, `astra_alloc`, `astra_free`, `astra_panic`
+- Structured `defer` lowering is supported for call expressions (LIFO at function exit).
+- Async remains unsupported on x86 until a concrete async runtime model is selected.

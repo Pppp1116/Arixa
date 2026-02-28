@@ -94,22 +94,35 @@ def test_x86_64_build_writes_expected_assembly(tmp_path: Path):
     assert asm == to_x86_64(parse(src.read_text()))
 
 
-def test_x86_64_rejects_unresolved_builtin_calls():
-    prog = parse('fn main() -> Int { print("x"); return 0; }')
-    try:
-        to_x86_64(prog)
-        assert False
-    except CodegenError as e:
-        assert "cannot call unresolved function print" in str(e)
+def test_x86_64_lowers_runtime_builtin_calls():
+    prog = parse('fn main() -> Int { print("x"); let p = alloc(8); free(p); return 0; }')
+    analyze(prog)
+    asm = to_x86_64(prog)
+    assert_valid_x86_64_assembly(asm)
+    assert "extern astra_print_str" in asm
+    assert "extern astra_alloc" in asm
+    assert "extern astra_free" in asm
+    assert "call astra_print_str" in asm
+    assert "call astra_alloc" in asm
+    assert "call astra_free" in asm
 
 
-def test_x86_64_rejects_defer():
+def test_x86_64_supports_structured_defer_for_calls():
+    prog = parse("fn cleanup(x Int) -> Void { drop x; } fn main() -> Int { let x = 7; defer cleanup(x); return x; }")
+    analyze(prog)
+    asm = to_x86_64(prog)
+    assert_valid_x86_64_assembly(asm)
+    assert "defer_skip" in asm
+    assert "call cleanup" in asm
+
+
+def test_x86_64_rejects_defer_non_call_expression():
     prog = parse("fn main() -> Int { defer 1; return 0; }")
     try:
         to_x86_64(prog)
         assert False
     except CodegenError as e:
-        assert "defer is not supported on x86_64 backend" in str(e)
+        assert "defer currently requires a call expression" in str(e)
 
 
 def test_x86_64_supports_conditionals_and_loops():
@@ -129,6 +142,38 @@ fn main() -> Int {
     assert_valid_x86_64_assembly(asm)
     assert "while_begin" in asm
     assert "if_else" in asm
+
+
+def test_x86_64_supports_more_than_six_call_arguments():
+    src = """
+fn sum(a Int, b Int, c Int, d Int, e Int, f Int, g Int) -> Int {
+  return a + b + c + d + e + f + g;
+}
+fn main() -> Int {
+  return sum(1, 2, 3, 4, 5, 6, 7);
+}
+"""
+    prog = parse(src)
+    analyze(prog)
+    asm = to_x86_64(prog)
+    assert_valid_x86_64_assembly(asm)
+    assert "rbp+16" in asm
+    assert "push qword" in asm
+
+
+def test_x86_64_supports_indirect_function_pointer_calls():
+    src = """
+fn add(a Int, b Int) -> Int { return a + b; }
+fn main() -> Int {
+  let f: fn(Int, Int) -> Int = add;
+  return f(3, 4);
+}
+"""
+    prog = parse(src)
+    analyze(prog)
+    asm = to_x86_64(prog)
+    assert_valid_x86_64_assembly(asm)
+    assert "call r11" in asm
 
 
 def test_join_of_unknown_tid_allowed_semantically():

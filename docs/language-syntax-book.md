@@ -196,7 +196,38 @@ fn main() -> Int {
 
 `comptime { ... }` runs deterministic/pure code at compile time.
 
-## 6. EBNF snapshot
+## 6. Backend contract (x86-64)
+
+Current x86-64 backend contract (System V ABI oriented):
+
+- Scalar lowering:
+  - `Bool` -> logical `i1`, materialized as `0/1` in integer registers (`al`/`rax` path).
+  - `Int`, fixed-width ints, `isize`, `usize` -> integer register class.
+  - `&T`, `&mut T`, and `fn(...) -> ...` values -> pointer-sized integers (`u64` on x86-64).
+  - `Float`/`f32`/`f64` -> SSE class (`xmm*` registers).
+- Calls/returns:
+  - Integer/pointer args use `rdi, rsi, rdx, rcx, r8, r9`, overflow args spill to stack.
+  - Floating args use `xmm0..xmm7`, overflow args spill to stack.
+  - Integer/pointer returns use `rax`; float returns use `xmm0`.
+  - Call sites maintain 16-byte stack alignment before `call`.
+- Runtime ABI symbols used by lowered builtins:
+  - `astra_print_i64(Int) -> Void`
+  - `astra_print_str(usize ptr, usize len) -> Void`
+  - `astra_alloc(usize size, usize align) -> usize`
+  - `astra_free(usize ptr, usize size, usize align) -> Void`
+  - `astra_panic(usize ptr, usize len) -> Never`
+- Deferred calls:
+  - `defer <call>;` is lowered to function-exit execution in reverse order (LIFO).
+  - x86 currently requires `defer` expressions to be calls; `defer` inside loops is still rejected.
+- Function values:
+  - First-class function pointers are supported (`fn(T...) -> R` values).
+  - Calls through function pointers lower to indirect machine calls.
+- Explicitly unsupported (with compile-time diagnostics):
+  - `async` on x86-64 (model still TBD).
+  - Aggregate ABI classification/returns (planned: explicit `sret` path for non-scalars).
+  - `defer` on runtime builtins and non-call defer expressions.
+
+## 7. EBNF snapshot
 
 ```ebnf
 program      = { import_decl | type_decl | struct_decl | enum_decl | extern_fn | fn_decl | impl_fn } ;

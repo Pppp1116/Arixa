@@ -134,6 +134,7 @@ BUILTIN_SIGS: dict[str, BuiltinSig] = {
     "now_unix": BuiltinSig([], "Int"),
     "monotonic_ms": BuiltinSig([], "Int"),
     "sleep_ms": BuiltinSig(["Int"], "Int"),
+    "panic": BuiltinSig(["&str"], "Never"),
 }
 
 for _name, _sig in list(BUILTIN_SIGS.items()):
@@ -473,6 +474,79 @@ def _is_typevar(name: str, known_types: set[str]) -> bool:
     if any(ch in name for ch in "<>[]&(), "):
         return False
     return bool(name)
+
+
+def _split_top_level(text: str, sep: str) -> list[str]:
+    out: list[str] = []
+    depth_angle = 0
+    depth_paren = 0
+    depth_bracket = 0
+    cur: list[str] = []
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "<":
+            depth_angle += 1
+        elif ch == ">" and depth_angle > 0:
+            depth_angle -= 1
+        elif ch == "(":
+            depth_paren += 1
+        elif ch == ")" and depth_paren > 0:
+            depth_paren -= 1
+        elif ch == "[":
+            depth_bracket += 1
+        elif ch == "]" and depth_bracket > 0:
+            depth_bracket -= 1
+        if (
+            text.startswith(sep, i)
+            and depth_angle == 0
+            and depth_paren == 0
+            and depth_bracket == 0
+        ):
+            out.append("".join(cur).strip())
+            cur = []
+            i += len(sep)
+            continue
+        cur.append(ch)
+        i += 1
+    out.append("".join(cur).strip())
+    return out
+
+
+def _parse_fn_type(typ: str) -> tuple[list[str], str] | None:
+    t = typ.strip()
+    if not t.startswith("fn("):
+        return None
+    depth = 0
+    close = -1
+    for i, ch in enumerate(t):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                close = i
+                break
+    if close < 0 or depth != 0:
+        return None
+    if close + 4 > len(t) or t[close + 1 : close + 5] != " -> ":
+        return None
+    params_text = t[3:close].strip()
+    ret = t[close + 5 :].strip()
+    if not ret:
+        return None
+    if not params_text:
+        return [], ret
+    return _split_top_level(params_text, ","), ret
+
+
+def _fn_type(params: list[tuple[str, str]], ret: str) -> str:
+    return f"fn({', '.join(ty for _, ty in params)}) -> {ret}"
+
+
+def _typed(node: Any, typ: str) -> str:
+    setattr(node, "inferred_type", typ)
+    return typ
 
 
 def _specialization_score(
@@ -1049,17 +1123,17 @@ def _infer(
     fn_name: str,
 ):
     if isinstance(e, BoolLit):
-        return "Bool"
+        return _typed(e, "Bool")
     if isinstance(e, NilLit):
-        return NONE_LIT_TYPE
+        return _typed(e, NONE_LIT_TYPE)
     if isinstance(e, Literal):
         if isinstance(e.value, bool):
-            return "Bool"
+            return _typed(e, "Bool")
         if isinstance(e.value, int):
-            return "Int"
+            return _typed(e, "Int")
         if isinstance(e.value, float):
-            return "Float"
-        return "&str"
+            return _typed(e, "Float")
+        return _typed(e, "&str")
     if isinstance(e, Name):
         local = _lookup(e.value, scopes)
         if local is not None:
@@ -1067,16 +1141,22 @@ def _infer(
             borrow.check_read(e.value, filename, e.line, e.col)
             if owned is not None:
                 owned.check_use(e.value)
-            return local
+            return _typed(e, local)
         if e.value in fn_groups:
             if len(fn_groups[e.value]) > 1:
                 raise SemanticError(_diag(filename, e.line, e.col, f"ambiguous function reference {e.value}; call it with typed args"))
-            return "Any"
-        if e.value in structs or e.value in enums or e.value in BUILTIN_SIGS:
-            return "Any"
+            decl = fn_groups[e.value][0]
+            return _typed(e, _fn_type(decl.params, decl.ret))
+        if e.value in structs or e.value in enums:
+            return _typed(e, "Any")
+        sig = BUILTIN_SIGS.get(e.value)
+        if sig is not None:
+            if sig.args is None:
+                return _typed(e, "Any")
+            return _typed(e, f"fn({', '.join(sig.args)}) -> {sig.ret}")
         raise SemanticError(_diag(filename, e.line, e.col, f"undefined name {e.value}"))
     if isinstance(e, AwaitExpr):
-        return _infer(e.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
+        return _typed(e, _infer(e.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name))
     if isinstance(e, Unary):
         if e.op in {"&", "&mut"}:
             if not isinstance(e.expr, Name):
@@ -1090,50 +1170,50 @@ def _infer(
             fixed_owner = bool(_lookup_fixed(owner, fixed_scopes))
             borrow.ensure_can_borrow(owner, e.op == "&mut", fixed_owner, filename, e.line, e.col)
             if e.op == "&mut":
-                return f"&mut {owner_ty}"
-            return f"&{owner_ty}"
+                return _typed(e, f"&mut {owner_ty}")
+            return _typed(e, f"&{owner_ty}")
         inner = _infer(e.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
         if e.op == "!":
             _require_type(filename, e.line, e.col, "Bool", inner, "unary !")
-            return "Bool"
+            return _typed(e, "Bool")
         if e.op == "-":
             if inner not in NUMERIC_TYPES:
                 raise SemanticError(_diag(filename, e.line, e.col, f"unary - expects number, got {inner}"))
-            return inner
+            return _typed(e, inner)
         if e.op == "*":
             if not _is_ref_type(inner):
                 raise SemanticError(_diag(filename, e.line, e.col, f"cannot dereference non-reference type {inner}"))
-            return _strip_ref(inner)
-        return inner
+            return _typed(e, _strip_ref(inner))
+        return _typed(e, inner)
     if isinstance(e, Binary):
         l = _infer(e.left, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
         r = _infer(e.right, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
         if e.op in {"+", "-", "*", "/", "%"}:
             if l in {"String", "str", "Any"} or r in {"String", "str", "Any"}:
                 if e.op == "+" and (l in {"String", "str"} or r in {"String", "str"}):
-                    return "String"
+                    return _typed(e, "String")
             if l not in NUMERIC_TYPES or r not in NUMERIC_TYPES:
                 raise SemanticError(_diag(filename, e.line, e.col, f"numeric operator {e.op} expects numbers"))
             if l in {"Float"} | FLOAT_TYPES or r in {"Float"} | FLOAT_TYPES:
-                return "Float"
-            return "Int"
+                return _typed(e, "Float")
+            return _typed(e, "Int")
         if e.op in {"==", "!=", "<", "<=", ">", ">="}:
-            return "Bool"
+            return _typed(e, "Bool")
         if e.op in {"&&", "||"}:
             _require_type(filename, e.line, e.col, "Bool", l, f"{e.op} left operand")
             _require_type(filename, e.line, e.col, "Bool", r, f"{e.op} right operand")
-            return "Bool"
+            return _typed(e, "Bool")
         if e.op == "??":
             if l == NONE_LIT_TYPE:
-                return r
+                return _typed(e, r)
             if not _is_option_type(l):
                 raise SemanticError(_diag(filename, e.line, e.col, "left operand of ?? must be Option<T>"))
             inner = _option_inner(l)
             _require_type(filename, e.line, e.col, inner, r, "?? right operand")
-            return inner
-        return "Any"
+            return _typed(e, inner)
+        return _typed(e, "Any")
     if isinstance(e, Call):
-        return _infer_call(e, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
+        return _typed(e, _infer_call(e, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name))
     if isinstance(e, IndexExpr):
         obj_ty = _infer(e.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
         idx_ty = _infer(e.index, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
@@ -1149,26 +1229,26 @@ def _infer(
                 )
             )
         if _is_slice_type(base_ty):
-            return _slice_inner(base_ty)
+            return _typed(e, _slice_inner(base_ty))
         if _is_vec_type(base_ty):
-            return _vec_inner(base_ty)
-        return "Any"
+            return _typed(e, _vec_inner(base_ty))
+        return _typed(e, "Any")
     if isinstance(e, FieldExpr):
         obj_ty = _infer(e.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
         if obj_ty in structs:
             for fname, fty in structs[obj_ty].fields:
                 if fname == e.field:
-                    return fty
-        return "Any"
+                    return _typed(e, fty)
+        return _typed(e, "Any")
     if isinstance(e, ArrayLit):
         if not e.elements:
-            return "[Any]"
+            return _typed(e, "[Any]")
         first_ty = _infer(e.elements[0], scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
         for el in e.elements[1:]:
             ety = _infer(el, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
             _require_type(filename, el.line, el.col, first_ty, ety, "array element")
-        return f"[{first_ty}]"
-    return "Any"
+        return _typed(e, f"[{first_ty}]")
+    return _typed(e, "Any")
 
 
 def _check_call_arg_borrows(
@@ -1214,7 +1294,7 @@ def _infer_call(
             if len(e.args) != len(decl.params):
                 raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects {len(decl.params)} args, got {len(e.args)}"))
             for i, ((_, pty), arg) in enumerate(zip(decl.params, e.args)):
-                aty = _infer(arg, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
+                aty = arg_types[i]
                 if not _is_typevar(pty, known_types):
                     _require_type(filename, arg.line, arg.col, pty, aty, f"arg {i} for {name}")
                 if not _is_ref_type(pty) and pty != "Any" and not _is_typevar(pty, known_types):
@@ -1222,12 +1302,27 @@ def _infer_call(
             if isinstance(decl, FnDecl):
                 e.resolved_name = decl.symbol or decl.name
             return decl.ret
+        local = _lookup(name, scopes)
+        if local is not None:
+            setattr(e.fn, "inferred_type", local)
+            parsed = _parse_fn_type(local)
+            if parsed is None:
+                raise SemanticError(_diag(filename, e.line, e.col, f"cannot call non-function value {name} of type {local}"))
+            param_tys, ret_ty = parsed
+            if len(param_tys) != len(e.args):
+                raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects {len(param_tys)} args, got {len(e.args)}"))
+            for i, (expected, arg) in enumerate(zip(param_tys, e.args)):
+                aty = arg_types[i]
+                _require_type(filename, arg.line, arg.col, expected, aty, f"arg {i} for {name}")
+                if not _is_ref_type(expected) and expected != "Any":
+                    _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
+            return ret_ty
         if name in structs:
             fields = structs[name].fields
             if len(e.args) != len(fields):
                 raise SemanticError(_diag(filename, e.line, e.col, f"struct {name} expects {len(fields)} fields, got {len(e.args)}"))
-            for (_, fty), arg in zip(fields, e.args):
-                aty = _infer(arg, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
+            for i, ((_, fty), arg) in enumerate(zip(fields, e.args)):
+                aty = arg_types[i]
                 _require_type(filename, arg.line, arg.col, fty, aty, f"struct field for {name}")
                 _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
             return name
@@ -1237,7 +1332,7 @@ def _infer_call(
                 raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects {len(sig.args)} args, got {len(e.args)}"))
             if sig.args is not None:
                 for i, (expected, arg) in enumerate(zip(sig.args, e.args)):
-                    aty = _infer(arg, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
+                    aty = arg_types[i]
                     _require_type(filename, arg.line, arg.col, expected, aty, f"arg {i} for {name}")
             return sig.ret
         raise SemanticError(_diag(filename, e.line, e.col, f"undefined function {name}"))
@@ -1253,7 +1348,20 @@ def _infer_call(
             if _is_vec_type(base_ty):
                 return f"Option<{_vec_inner(base_ty)}>"
         return "Any"
-    raise SemanticError(_diag(filename, e.line, e.col, f"unsupported callee {e.fn}"))
+    callee_ty = _infer(e.fn, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
+    setattr(e.fn, "inferred_type", callee_ty)
+    parsed = _parse_fn_type(callee_ty)
+    if parsed is None:
+        raise SemanticError(_diag(filename, e.line, e.col, f"unsupported callee type {callee_ty}"))
+    param_tys, ret_ty = parsed
+    if len(param_tys) != len(e.args):
+        raise SemanticError(_diag(filename, e.line, e.col, f"callee expects {len(param_tys)} args, got {len(e.args)}"))
+    for i, (expected, arg) in enumerate(zip(param_tys, e.args)):
+        aty = arg_types[i]
+        _require_type(filename, arg.line, arg.col, expected, aty, f"arg {i} for function pointer call")
+        if not _is_ref_type(expected) and expected != "Any":
+            _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
+    return ret_ty
 
 
 def _is_alloc_call(expr):

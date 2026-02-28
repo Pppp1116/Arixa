@@ -161,6 +161,20 @@ fn main() -> Int { return pick(1); }
         assert "ambiguous impl" in str(e)
 
 
+def test_function_references_infer_function_pointer_type():
+    src = """
+fn add(a Int, b Int) -> Int { return a + b; }
+fn main() -> Int {
+  let f = add;
+  return f(3, 4);
+}
+"""
+    prog = parse(src)
+    analyze(prog)
+    call = prog.items[1].body[1].expr
+    assert getattr(call.fn, "inferred_type", "").startswith("fn(")
+
+
 def test_str_type_accepts_string_literals():
     src = 'fn main() -> Int { let s: &str = "ok"; return 0; }'
     analyze(parse(src))

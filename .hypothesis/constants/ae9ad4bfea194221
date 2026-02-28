@@ -1,0 +1,4 @@
+# file: /home/pedro/Downloads/programming-language-/astra/build.py
+# hypothesis_version: 6.151.9
+
+['-felf64', '-o', '.astra-cache.json', 'astra-native-', 'built', 'cached', 'ld', 'module.o', 'module.s', 'name', 'nasm', 'native', 'ops', 'pass\n', 'py', 'x86_64']

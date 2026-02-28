@@ -37,3 +37,4 @@ python build/hello.py
 - `defer expr;` runs cleanup logic at function exit.
 - `a ?? b` coalesces `Option<T>` values (`a: Option<T>`, `b: T`).
 - Bare expression statements must be `Void`/`Never`; use `drop expr;` to discard other values.
+- x86-64 backend now uses an explicit ABI lowering table (integer/pointer vs SSE classes), stack args beyond register limits, indirect fn-pointer calls, and runtime ABI symbols for lowered builtins.
