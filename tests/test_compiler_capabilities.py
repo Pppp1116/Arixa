@@ -75,3 +75,35 @@ def test_thread_calls_emit_in_python_output():
     py = to_python(parse(src))
     assert "spawn(worker, 3)" in py
     assert "join(t)" in py
+
+
+def test_memory_use_after_free_is_semantic_error():
+    prog = parse("fn main() -> Int { let p = alloc(8); free(p); return p; }")
+    try:
+        analyze(prog)
+        assert False
+    except SemanticError as e:
+        assert "use-after-free" in str(e)
+
+
+def test_memory_double_free_is_semantic_error():
+    prog = parse("fn main() -> Int { let p = alloc(8); free(p); free(p); return 0; }")
+    try:
+        analyze(prog)
+        assert False
+    except SemanticError as e:
+        assert "use-after-free" in str(e)
+
+
+def test_memory_move_semantics_for_owned_handles():
+    prog = parse("fn main() -> Int { let p = alloc(8); let q = p; free(q); return 0; }")
+    analyze(prog)
+
+
+def test_memory_leak_detection_is_semantic_error():
+    prog = parse("fn main() -> Int { let p = alloc(8); return 0; }")
+    try:
+        analyze(prog)
+        assert False
+    except SemanticError as e:
+        assert "not released" in str(e)
