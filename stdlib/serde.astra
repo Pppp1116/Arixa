@@ -1,1 +1,2 @@
-fn to_json(v Any) -> String { return "{}"; }
+fn to_json(v Any) -> String { return __to_json(v); }
+fn from_json(v String) -> Any { return __from_json(v); }

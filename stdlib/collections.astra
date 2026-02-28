@@ -1,2 +1,10 @@
-fn list_new() -> Any { return 0; }
-fn map_new() -> Any { return 0; }
+fn list_new() -> Any { return __list_new(); }
+fn list_push(xs Any, value Any) -> Int { return __list_push(xs, value); }
+fn list_get(xs Any, index Int) -> Any { return __list_get(xs, index); }
+fn list_set(xs Any, index Int, value Any) -> Int { return __list_set(xs, index, value); }
+fn list_len(xs Any) -> Int { return __list_len(xs); }
+
+fn map_new() -> Any { return __map_new(); }
+fn map_has(m Any, key Any) -> Bool { return __map_has(m, key); }
+fn map_get(m Any, key Any) -> Any { return __map_get(m, key); }
+fn map_set(m Any, key Any, value Any) -> Int { return __map_set(m, key, value); }

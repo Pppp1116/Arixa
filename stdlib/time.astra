@@ -1,1 +1,3 @@
-fn now_unix() -> Int { return 0; }
+fn now_unix() -> Int { return __now_unix(); }
+fn monotonic_ms() -> Int { return __monotonic_ms(); }
+fn sleep_ms(ms Int) -> Int { return __sleep_ms(ms); }

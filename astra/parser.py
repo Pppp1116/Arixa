@@ -9,6 +9,7 @@ class ParseError(SyntaxError):
 
 
 BIN_PREC = {
+    "??": 1,
     "||": 1,
     "&&": 2,
     "==": 3,
@@ -27,12 +28,19 @@ BIN_PREC = {
 ASSIGN_OPS = {"=", "+=", "-=", "*=", "/=", "%="}
 
 
+def _diag(code: str, filename: str, line: int, col: int, msg: str) -> str:
+    return f"{code} {filename}:{line}:{col}: {msg}"
+
+
 class Parser:
     def __init__(self, src: str, filename: str = "<input>"):
         self.filename = filename
         self.toks = lex(src, filename=filename)
         self.i = 0
         self.errors: list[str] = []
+        for tok in self.toks:
+            if tok.kind == "ERROR":
+                self.errors.append(_diag("LEX", self.filename, tok.line, tok.col, tok.text))
 
     def cur(self) -> Token:
         return self.toks[self.i]
@@ -43,7 +51,7 @@ class Parser:
 
     def _err(self, msg: str, tok: Token | None = None) -> None:
         t = tok or self.cur()
-        self.errors.append(f"{self.filename}:{t.line}:{t.col}: {msg}")
+        self.errors.append(_diag("PARSE", self.filename, t.line, t.col, msg))
 
     def eat(self, kind: str) -> Token:
         t = self.cur()
@@ -60,8 +68,15 @@ class Parser:
             return tok
         return None
 
+    def _consume_doc_comments(self) -> str:
+        lines: list[str] = []
+        while self.cur().kind == "DOC_COMMENT":
+            lines.append(self.cur().text)
+            self.i += 1
+        return "\n".join(lines)
+
     def recover(self) -> None:
-        sync = {";", "}", "fn", "struct", "enum", "EOF"}
+        sync = {";", "}", "fn", "impl", "struct", "enum", "type", "import", "extern", "pub", "async", "unsafe", "comptime", "EOF"}
         while self.cur().kind not in sync:
             self.i += 1
         if self.cur().kind in {";", "}"}:
@@ -70,8 +85,14 @@ class Parser:
     def parse_program(self) -> Program:
         items: list[Any] = []
         while self.cur().kind != "EOF":
+            doc = self._consume_doc_comments()
+            if self.cur().kind == "EOF":
+                break
+            if self.cur().kind == ";":
+                self.i += 1
+                continue
             try:
-                item = self.parse_top_level()
+                item = self.parse_top_level(doc)
                 if item is not None:
                     items.append(item)
             except ParseError:
@@ -80,27 +101,43 @@ class Parser:
             raise ParseError("\n".join(self.errors))
         return Program(items)
 
-    def _collect_doc(self) -> str:
-        lines: list[str] = []
-        j = self.i - 1
-        while j >= 0 and self.toks[j].kind == "DOC_COMMENT":
-            lines.append(self.toks[j].text)
-            j -= 1
-        return "\n".join(reversed(lines))
-
-    def parse_top_level(self):
+    def parse_top_level(self, doc: str):
         is_pub = bool(self.opt("pub"))
+        is_unsafe = bool(self.opt("unsafe"))
+        is_async = bool(self.opt("async"))
+        is_impl = bool(self.opt("impl"))
         if self.cur().kind == "import":
+            if is_unsafe or is_async:
+                self._err("import cannot be prefixed with unsafe/async")
+                raise ParseError(self.errors[-1])
             return self.parse_import()
         if self.cur().kind == "struct":
-            return self.parse_struct(is_pub)
+            if is_unsafe or is_async:
+                self._err("struct cannot be prefixed with unsafe/async")
+                raise ParseError(self.errors[-1])
+            return self.parse_struct(is_pub, doc)
         if self.cur().kind == "enum":
-            return self.parse_enum(is_pub)
+            if is_unsafe or is_async:
+                self._err("enum cannot be prefixed with unsafe/async")
+                raise ParseError(self.errors[-1])
+            return self.parse_enum(is_pub, doc)
         if self.cur().kind == "type":
+            if is_unsafe or is_async:
+                self._err("type alias cannot be prefixed with unsafe/async")
+                raise ParseError(self.errors[-1])
             return self.parse_type_alias()
+        if self.cur().kind == "extern":
+            return self.parse_extern_fn(is_pub, is_unsafe, doc)
         if self.cur().kind == "fn":
-            return self.parse_fn(is_pub)
-        raise ParseError(f"{self.filename}:{self.cur().line}:{self.cur().col}: unexpected top-level token {self.cur().kind}")
+            if is_unsafe:
+                self._err("unsafe is only valid with extern fn")
+                raise ParseError(self.errors[-1])
+            return self.parse_fn(is_pub, is_async, doc, is_impl=is_impl)
+        if is_impl:
+            self._err("impl must be followed by fn")
+            raise ParseError(self.errors[-1])
+        self._err(f"unexpected top-level token {self.cur().kind}")
+        raise ParseError(self.errors[-1])
 
     def parse_import(self) -> ImportDecl:
         tok = self.eat("import")
@@ -126,37 +163,91 @@ class Parser:
         self.eat(">")
         return generics
 
-    def parse_fn(self, is_pub: bool = False) -> FnDecl:
+    def _parse_params(self) -> list[tuple[str, str]]:
+        params: list[tuple[str, str]] = []
+        self.eat("(")
+        if self.cur().kind != ")":
+            params.append(self._parse_named_type())
+            while self.opt(","):
+                if self.cur().kind == ")":
+                    break
+                params.append(self._parse_named_type())
+        self.eat(")")
+        return params
+
+    def _parse_named_type(self) -> tuple[str, str]:
+        name = self.eat("IDENT").text
+        self.opt(":")
+        typ = self.parse_type()
+        return name, typ
+
+    def parse_extern_fn(self, is_pub: bool, is_unsafe: bool, doc: str) -> ExternFnDecl:
+        tok = self.eat("extern")
+        lib_tok = self.cur()
+        if lib_tok.kind == "STR":
+            self.i += 1
+            lib = lib_tok.text
+        elif lib_tok.kind == "IDENT":
+            self.i += 1
+            lib = lib_tok.text
+        else:
+            self._err("extern requires a library name string", lib_tok)
+            raise ParseError(self.errors[-1])
+        self.eat("fn")
+        name_tok = self.eat("IDENT")
+        params = self._parse_params()
+        self.eat("->")
+        ret = self.parse_type()
+        self.eat(";")
+        return ExternFnDecl(
+            lib=lib,
+            name=name_tok.text,
+            params=params,
+            ret=ret,
+            unsafe=is_unsafe,
+            pub=is_pub,
+            doc=doc,
+            pos=tok.pos,
+            line=tok.line,
+            col=tok.col,
+        )
+
+    def parse_fn(self, is_pub: bool = False, is_async: bool = False, doc: str = "", is_impl: bool = False) -> FnDecl:
         fn_tok = self.eat("fn")
         name = self.eat("IDENT").text
         generics = self._parse_generics()
-        self.eat("(")
-        params: list[tuple[str, str]] = []
-        if self.cur().kind != ")":
-            params.append((self.eat("IDENT").text, self.parse_type()))
-            while self.opt(","):
-                params.append((self.eat("IDENT").text, self.parse_type()))
-        self.eat(")")
+        params = self._parse_params()
         self.eat("->")
         ret = self.parse_type()
         body = self.parse_block()
-        return FnDecl(name, generics, params, ret, body, pub=is_pub, doc=self._collect_doc(), pos=fn_tok.pos, line=fn_tok.line, col=fn_tok.col)
+        return FnDecl(
+            name,
+            generics,
+            params,
+            ret,
+            body,
+            is_impl=is_impl,
+            pub=is_pub,
+            async_fn=is_async,
+            doc=doc,
+            pos=fn_tok.pos,
+            line=fn_tok.line,
+            col=fn_tok.col,
+        )
 
-    def parse_struct(self, is_pub: bool = False) -> StructDecl:
+    def parse_struct(self, is_pub: bool = False, doc: str = "") -> StructDecl:
         tok = self.eat("struct")
         name = self.eat("IDENT").text
         generics = self._parse_generics()
         self.eat("{")
         fields: list[tuple[str, str]] = []
         while self.cur().kind != "}":
-            fname = self.eat("IDENT").text
-            ftype = self.parse_type()
-            fields.append((fname, ftype))
+            fields.append(self._parse_named_type())
             self.opt(",")
         self.eat("}")
-        return StructDecl(name, generics, fields, [], pub=is_pub, doc=self._collect_doc(), pos=tok.pos, line=tok.line, col=tok.col)
+        return StructDecl(name, generics, fields, [], pub=is_pub, doc=doc, pos=tok.pos, line=tok.line, col=tok.col)
 
-    def parse_enum(self, is_pub: bool = False) -> EnumDecl:
+    def parse_enum(self, is_pub: bool = False, doc: str = "") -> EnumDecl:
         tok = self.eat("enum")
         name = self.eat("IDENT").text
         generics = self._parse_generics()
@@ -174,7 +265,7 @@ class Parser:
             variants.append((vname, vtypes))
             self.opt(",")
         self.eat("}")
-        return EnumDecl(name, generics, variants, pub=is_pub, doc=self._collect_doc(), pos=tok.pos, line=tok.line, col=tok.col)
+        return EnumDecl(name, generics, variants, pub=is_pub, doc=doc, pos=tok.pos, line=tok.line, col=tok.col)
 
     def parse_type_alias(self) -> TypeAliasDecl:
         tok = self.eat("type")
@@ -219,6 +310,9 @@ class Parser:
             if self.cur().kind == "EOF":
                 self._err("unexpected EOF while parsing block")
                 raise ParseError(self.errors[-1])
+            if self.cur().kind == "DOC_COMMENT":
+                self.i += 1
+                continue
             try:
                 body.append(self.parse_stmt())
             except ParseError:
@@ -250,6 +344,13 @@ class Parser:
         if self.opt("continue"):
             self.eat(";")
             return ContinueStmt(tok.pos, tok.line, tok.col)
+        if self.opt("defer"):
+            e = self.parse_expr()
+            self.eat(";")
+            return DeferStmt(e, tok.pos, tok.line, tok.col)
+        if self.opt("comptime"):
+            body = self.parse_block()
+            return ComptimeStmt(body, tok.pos, tok.line, tok.col)
         if self.opt("if"):
             cond = self.parse_expr()
             then_body = self.parse_block()
@@ -317,6 +418,7 @@ class Parser:
             self.eat("=>")
             body = self.parse_block()
             arms.append((pattern, body))
+            self.opt(",")
         self.eat("}")
         return MatchStmt(expr, arms, tok.pos, tok.line, tok.col)
 
@@ -330,6 +432,9 @@ class Parser:
         return left
 
     def parse_unary(self):
+        if self.opt("await"):
+            tok = self.toks[self.i - 1]
+            return AwaitExpr(self.parse_unary(), tok.pos, tok.line, tok.col)
         if self.cur().kind in {"-", "!", "~", "&", "*"}:
             tok = self.eat(self.cur().kind)
             expr = self.parse_unary()

@@ -1,1 +1,4 @@
-fn exit(code Int) -> Int { return code; }
+fn exit(code Int) -> Int { return __proc_exit(code); }
+fn env(name String) -> String { return __env_get(name); }
+fn cwd() -> String { return __cwd(); }
+fn run(cmd String) -> Int { return __proc_run(cmd); }

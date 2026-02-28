@@ -1,1 +1,4 @@
-fn tcp_connect(addr String) -> Int { return 0; }
+fn tcp_connect(addr String) -> Int { return __tcp_connect(addr); }
+fn tcp_send(conn Int, data String) -> Int { return __tcp_send(conn, data); }
+fn tcp_recv(conn Int, size Int) -> String { return __tcp_recv(conn, size); }
+fn tcp_close(conn Int) -> Int { return __tcp_close(conn); }

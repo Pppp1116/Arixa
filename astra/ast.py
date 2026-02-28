@@ -14,6 +14,23 @@ class FnDecl:
     params: list[tuple[str, str]]
     ret: str
     body: list[Any]
+    is_impl: bool = False
+    pub: bool = False
+    async_fn: bool = False
+    symbol: str = ""
+    doc: str = ""
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class ExternFnDecl:
+    lib: str
+    name: str
+    params: list[tuple[str, str]]
+    ret: str
+    unsafe: bool = False
     pub: bool = False
     doc: str = ""
     pos: int = 0
@@ -52,6 +69,22 @@ class BreakStmt:
 
 @dataclass
 class ContinueStmt:
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class DeferStmt:
+    expr: Any
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class ComptimeStmt:
+    body: list[Any]
     pos: int = 0
     line: int = 0
     col: int = 0
@@ -162,6 +195,7 @@ class Call:
     pos: int = 0
     line: int = 0
     col: int = 0
+    resolved_name: str | None = None
 
 
 @dataclass
@@ -208,6 +242,14 @@ class Binary:
 @dataclass
 class Unary:
     op: str
+    expr: Any
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class AwaitExpr:
     expr: Any
     pos: int = 0
     line: int = 0

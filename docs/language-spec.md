@@ -5,17 +5,20 @@
 Grammar (EBNF):
 
 ```
-program   = { fn_decl } ;
-fn_decl   = "fn" ident ["<" ident {"," ident} ">"] "(" [param {"," param}] ")" "->" type block ;
-param     = ident type ;
+program   = { fn_decl | impl_fn } ;
+fn_decl   = ["async"] "fn" ident ["<" ident {"," ident} ">"] "(" [param {"," param}] [","] ")" "->" type block ;
+impl_fn   = "impl" ["async"] "fn" ident ["<" ident {"," ident} ">"] "(" [param {"," param}] [","] ")" "->" type block ;
+extern_fn = ["unsafe"] "extern" string "fn" ident "(" [param {"," param}] ")" "->" type ";" ;
+param     = ident [":"] type ;
 type      = ident ;
 block     = "{" { stmt } "}" ;
-stmt      = let_stmt | return_stmt | if_stmt | while_stmt | expr ";" ;
+stmt      = let_stmt | defer_stmt | return_stmt | if_stmt | while_stmt | expr ";" ;
 let_stmt  = "let" ident "=" expr ";" ;
+defer_stmt = "defer" expr ";" ;
 return_stmt = "return" [expr] ";" ;
 if_stmt   = "if" expr block ["else" block] ;
 while_stmt = "while" expr block ;
-expr      = atom { op atom } ;
+expr      = ["await"] atom { op atom } ;
 atom      = int | string | ident ["(" [expr {"," expr}] ")"] | "(" expr ")" ;
 ```
 
@@ -48,6 +51,12 @@ atom      = int | string | ident ["(" [expr {"," expr}] ")"] | "(" expr ")" ;
 ## Error handling
 - Recoverable errors returned as result values.
 - Unrecoverable errors produce panic with stack trace.
+
+## Intentional differences from Rust
+- `defer expr;` schedules cleanup/action at scope exit with straightforward control-flow semantics.
+- `a ?? b` provides null-coalescing without verbose pattern matching for common optional fallback paths.
+- `impl fn` supports compile-time specialization with most-specific implementation selection.
+- Freestanding mode (`--freestanding`) allows hosted-runtime-free compilation flows for kernels/boot/runtime code.
 
 ## FFI
 - C ABI boundary uses generated shim signatures.

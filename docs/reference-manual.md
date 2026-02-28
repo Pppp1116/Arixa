@@ -1,9 +1,10 @@
 # Astra Reference Manual
 
 ## CLI
-- `astra build <in> -o <out> [--target py|x86_64]`
+- `astra build <in> -o <out> [--target py|x86_64] [--emit-ir out.json] [--strict] [--freestanding]`
+- `astra check <in> [--freestanding]`
 - `astra run <in>`
-- `astra test`
+- `astra test [--kind unit|integration|e2e]`
 - `astra selfhost`
 
 ## Tooling
@@ -17,3 +18,9 @@
 
 ## Standard library modules
 - collections, io, net, serde, process, time, crypto
+
+## Language conveniences
+- `defer <expr>;`
+- null coalescing: `<a> ?? <b>`
+- typed params/fields accept `name Type` and `name: Type`
+- specialization impls: `impl fn name(...) -> ... { ... }`

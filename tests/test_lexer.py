@@ -6,20 +6,26 @@ def kinds(src: str) -> list[str]:
 
 
 def test_new_keywords_and_bool():
-    ks = kinds("for break continue struct enum type import mut pub match nil true false")
+    ks = kinds("for break continue struct enum type import mut pub extern async await unsafe impl match defer nil true false")
     assert "for" in ks
     assert "break" in ks
     assert "continue" in ks
+    assert "extern" in ks
+    assert "async" in ks
+    assert "await" in ks
+    assert "unsafe" in ks
+    assert "impl" in ks
+    assert "defer" in ks
     assert "BOOL" in ks
     assert ks.count("BOOL") == 2
 
 
 def test_float_doc_comment_and_symbols():
-    toks = lex('/// docs\nlet x = 1.5 && true; x += 1; a[0].b:c')
+    toks = lex('/// docs\nlet x = 1.5 && true; x += 1; a[0].b:c; let y = nil ?? 1;')
     assert toks[0].kind == "DOC_COMMENT"
     assert any(t.kind == "FLOAT" for t in toks)
     seen = {t.kind for t in toks}
-    for sym in ["&&", "+=", "[", "]", ".", ":"]:
+    for sym in ["&&", "+=", "[", "]", ".", ":", "??"]:
         assert sym in seen
 
 

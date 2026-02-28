@@ -1,0 +1,9 @@
+[console_scripts]
+astdbg = astra.debugger:main
+astdoc = astra.docgen:main
+astfmt = astra.formatter:main
+astlint = astra.linter:main
+astlsp = astra.lsp:main
+astpm = astra.pkg:main
+astprof = astra.profiler:main
+astra = astra.cli:main
