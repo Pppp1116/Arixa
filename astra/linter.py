@@ -2,6 +2,7 @@ import argparse
 import json
 from pathlib import Path
 
+from astra.comptime import run_comptime
 from astra.parser import ParseError, parse
 from astra.semantic import SemanticError, analyze
 
@@ -19,6 +20,7 @@ def lint_text(src: str):
 def lint_semantic(src: str, filename: str):
     try:
         prog = parse(src, filename=filename)
+        run_comptime(prog, filename=filename)
         analyze(prog, filename=filename)
         return []
     except (ParseError, SemanticError) as e:

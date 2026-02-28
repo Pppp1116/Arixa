@@ -1,0 +1,4 @@
+# file: /home/pedro/Downloads/programming-language-/astra/ir.py
+# hypothesis_version: 6.151.9
+
+['array', 'assign', 'await', 'bin', 'call', 'expr', 'field', 'for', 'if', 'index', 'let', 'lit', 'malformed IR op', 'match', 'name', 'nil', 'ret', 'un', 'unk', 'while']

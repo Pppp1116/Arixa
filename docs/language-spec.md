@@ -12,7 +12,8 @@ extern_fn = ["unsafe"] "extern" string "fn" ident "(" [param {"," param}] ")" "-
 param     = ident [":"] type ;
 type      = ident ;
 block     = "{" { stmt } "}" ;
-stmt      = let_stmt | defer_stmt | return_stmt | if_stmt | while_stmt | expr ";" ;
+stmt      = let_stmt | comptime_stmt | defer_stmt | return_stmt | if_stmt | while_stmt | expr ";" ;
+comptime_stmt = "comptime" block ;
 let_stmt  = "let" ident "=" expr ";" ;
 defer_stmt = "defer" expr ";" ;
 return_stmt = "return" [expr] ";" ;
@@ -56,6 +57,7 @@ atom      = int | string | ident ["(" [expr {"," expr}] ")"] | "(" expr ")" ;
 - `defer expr;` schedules cleanup/action at scope exit with straightforward control-flow semantics.
 - `a ?? b` provides null-coalescing without verbose pattern matching for common optional fallback paths.
 - `impl fn` supports compile-time specialization with most-specific implementation selection.
+- `comptime { ... }` executes deterministic, pure code during compilation.
 - Freestanding mode (`--freestanding`) allows hosted-runtime-free compilation flows for kernels/boot/runtime code.
 
 ## FFI

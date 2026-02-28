@@ -367,6 +367,10 @@ def _check_stmt(
     if isinstance(st, DeferStmt):
         _infer(st.expr, scopes, fn_groups, structs, enums, owned, filename, fn_name)
         return
+    if isinstance(st, ComptimeStmt):
+        for inner in st.body:
+            _check_stmt(inner, scopes, fn_groups, structs, enums, fn_ret, owned, filename, fn_name, loop_depth)
+        return
     if isinstance(st, IfStmt):
         cond_ty = _infer(st.cond, scopes, fn_groups, structs, enums, owned, filename, fn_name)
         _require_type(filename, st.line, st.col, "Bool", cond_ty, "if condition")

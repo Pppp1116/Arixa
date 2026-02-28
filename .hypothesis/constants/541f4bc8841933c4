@@ -1,0 +1,4 @@
+# file: /home/pedro/Downloads/programming-language-/astra/linter.py
+# hypothesis_version: 6.151.9
+
+[120, '--json', '--no-semantic', '.astra', '__main__', 'clean', 'file', 'line', 'line too long', 'message', 'store_true']

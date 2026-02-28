@@ -24,3 +24,4 @@
 - null coalescing: `<a> ?? <b>`
 - typed params/fields accept `name Type` and `name: Type`
 - specialization impls: `impl fn name(...) -> ... { ... }`
+- compile-time execution: `comptime { ... }` (pure/deterministic subset)

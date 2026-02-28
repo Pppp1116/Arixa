@@ -1,0 +1,4 @@
+# file: /home/pedro/Downloads/programming-language-/astra/comptime.py
+# hypothesis_version: 6.151.9
+
+[100000, '!', '!=', '%', '%=', '&&', '*', '*=', '+', '+=', '-', '-=', '/', '/=', '<', '<=', '<input>', '=', '==', '>', '>=', '??', 'alloc', 'arg', 'args', 'break', 'col', 'continue', 'cwd', 'env_get', 'free', 'join', 'len', 'line', 'pos', 'print', 'proc_exit', 'proc_run', 'read_file', 'return', 'spawn', 'step limit exceeded', 'tcp_close', 'tcp_connect', 'tcp_recv', 'tcp_send', 'write_file', '||', '~']

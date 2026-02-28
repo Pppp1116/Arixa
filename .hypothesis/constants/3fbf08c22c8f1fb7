@@ -1,0 +1,4 @@
+# file: /home/pedro/Downloads/programming-language-/astra/pkg.py
+# hypothesis_version: 6.151.9
+
+['Astra.lock', 'Astra.toml', '[deps]', '__main__', 'add', 'added', 'app', 'cmd', 'dep', 'deps', 'deps must be a table', 'init', 'initialized', 'lock', 'locked', 'name', 'ver']

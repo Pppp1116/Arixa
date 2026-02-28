@@ -6,6 +6,7 @@ astra/ast.py
 astra/build.py
 astra/cli.py
 astra/codegen.py
+astra/comptime.py
 astra/debugger.py
 astra/docgen.py
 astra/formatter.py
@@ -27,7 +28,9 @@ astra_lang.egg-info/requires.txt
 astra_lang.egg-info/top_level.txt
 tests/test_build.py
 tests/test_cli.py
+tests/test_compilation_complex.py
 tests/test_compiler_capabilities.py
+tests/test_comptime.py
 tests/test_frontend.py
 tests/test_lexer.py
 tests/test_packaging_integration.py

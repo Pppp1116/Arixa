@@ -326,6 +326,8 @@ def _stmt_py(st, ind):
         return [f"{p}continue"]
     if isinstance(st, DeferStmt):
         return [f"{p}_astra_defer_stack.append(lambda: {_expr(st.expr)})"]
+    if isinstance(st, ComptimeStmt):
+        return []
     if isinstance(st, ExprStmt):
         return [f"{p}{_expr(st.expr)}"]
     if isinstance(st, IfStmt):
@@ -554,6 +556,8 @@ def _x86_stmt(st, ctx: _FnCtx) -> list[str]:
         if not ctx.loop_stack:
             raise CodegenError(_diag(st, "continue outside loop"))
         return [f"  jmp {ctx.loop_stack[-1][1]}"]
+    if isinstance(st, ComptimeStmt):
+        return []
     if isinstance(st, DeferStmt):
         raise CodegenError(_diag(st, "defer is not supported on x86_64 backend"))
     raise CodegenError(_diag(st, f"{type(st).__name__} is not supported on x86_64 backend"))

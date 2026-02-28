@@ -1,0 +1,4 @@
+# file: /home/pedro/Downloads/programming-language-/astra/cli.py
+# hypothesis_version: 6.151.9
+
+['*', '--emit-ir', '--freestanding', '--kind', '--output', '--strict', '--target', '-k', '-m', '-o', '-q', '.astra-build', '.py', '__main__', 'args', 'build', 'check', 'cmd', 'e2e', 'input', 'integration', 'ok', 'py', 'pytest', 'run', 'selfhost', 'selfhost-fail', 'selfhost-ok', 'store_true', 'test', 'unit', 'x86_64']

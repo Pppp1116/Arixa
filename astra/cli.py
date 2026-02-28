@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from astra.build import build
+from astra.comptime import run_comptime
 from astra.parser import parse
 from astra.semantic import analyze
 
@@ -16,6 +17,7 @@ def cmd_build(a):
 def cmd_check(a):
     src = Path(a.input).read_text()
     prog = parse(src, filename=a.input)
+    run_comptime(prog, filename=a.input)
     analyze(prog, filename=a.input, freestanding=a.freestanding)
     print("ok")
 

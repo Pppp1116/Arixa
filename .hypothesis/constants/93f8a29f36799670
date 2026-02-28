@@ -1,0 +1,4 @@
+# file: /home/pedro/Downloads/programming-language-/astra/docgen.py
+# hypothesis_version: 6.151.9
+
+['# API', ', ', '--output', '-o', '__main__', 'async ', 'docs-generated', 'impl ', 'input', 'pub ', 'unsafe ']
