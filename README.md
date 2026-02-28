@@ -27,7 +27,9 @@ python build/hello.py
 - `astra test [--kind unit|integration|e2e]`
 
 ## Syntax notes
-- Parameter and field types support both `name Type` and `name: Type`.
+- Immutable locals use `fixed`, mutable/inferred locals use `let`.
+- Preferred typed style is `name: Type` (legacy `name Type` still parses for params/fields).
+- Integer-width aliases are available: `i8/u8/i16/u16/i32/u32/i64/u64/i128/u128/isize/usize`.
 - Freestanding builds avoid hosted entrypoint assumptions and are suitable for kernels/runtime stubs.
 - `defer expr;` runs cleanup logic at function exit.
 - `a ?? b` is a null-coalescing operator for concise fallback values.

@@ -36,9 +36,10 @@ def _fmt_expr(e) -> str:
 def _fmt_stmt(st, ind: int) -> list[str]:
     p = "    " * ind
     if isinstance(st, LetStmt):
-        mut = "mut " if st.mut else ""
+        kw = "fixed" if st.fixed else "let"
+        mut = "mut " if st.mut and not st.fixed else ""
         ann = f": {st.type_name}" if st.type_name else ""
-        return [f"{p}let {mut}{st.name}{ann} = {_fmt_expr(st.expr)};"]
+        return [f"{p}{kw} {mut}{st.name}{ann} = {_fmt_expr(st.expr)};"]
     if isinstance(st, AssignStmt):
         return [f"{p}{_fmt_expr(st.target)} {st.op} {_fmt_expr(st.expr)};"]
     if isinstance(st, ReturnStmt):
@@ -71,7 +72,9 @@ def _fmt_stmt(st, ind: int) -> list[str]:
     if isinstance(st, ForStmt):
         init = ""
         if isinstance(st.init, LetStmt):
-            init = f"let {'mut ' if st.init.mut else ''}{st.init.name} = {_fmt_expr(st.init.expr)}"
+            init_kw = "fixed" if st.init.fixed else "let"
+            init_mut = "mut " if st.init.mut and not st.init.fixed else ""
+            init = f"{init_kw} {init_mut}{st.init.name} = {_fmt_expr(st.init.expr)}"
         elif st.init is not None:
             init = _fmt_expr(st.init)
         cond = _fmt_expr(st.cond) if st.cond is not None else ""

@@ -47,6 +47,7 @@ class LetStmt:
     pos: int = 0
     line: int = 0
     col: int = 0
+    fixed: bool = False
 
 
 @dataclass

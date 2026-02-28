@@ -5,23 +5,34 @@
 Grammar (EBNF):
 
 ```
-program   = { fn_decl | impl_fn } ;
-fn_decl   = ["async"] "fn" ident ["<" ident {"," ident} ">"] "(" [param {"," param}] [","] ")" "->" type block ;
-impl_fn   = "impl" ["async"] "fn" ident ["<" ident {"," ident} ">"] "(" [param {"," param}] [","] ")" "->" type block ;
+program   = { import_decl | type_decl | struct_decl | enum_decl | extern_fn | fn_decl | impl_fn } ;
+fn_decl   = ["pub"] ["async"] "fn" ident ["<" ident {"," ident} ">"] "(" [param {"," param}] [","] ")" "->" type block ;
+impl_fn   = ["pub"] "impl" ["async"] "fn" ident ["<" ident {"," ident} ">"] "(" [param {"," param}] [","] ")" "->" type block ;
 extern_fn = ["unsafe"] "extern" string "fn" ident "(" [param {"," param}] ")" "->" type ";" ;
-param     = ident [":"] type ;
-type      = ident ;
+param     = ident ":" type ;
+type      = ident
+         | "&" ["mut"] type
+         | "[" type "]"
+         | "fn" "(" [type {"," type}] ")" "->" type
+         | ident "<" type {"," type} ">" ;
 block     = "{" { stmt } "}" ;
-stmt      = let_stmt | comptime_stmt | defer_stmt | return_stmt | if_stmt | while_stmt | expr ";" ;
+stmt      = let_stmt | fixed_stmt | comptime_stmt | defer_stmt | return_stmt | if_stmt | while_stmt | for_stmt | match_stmt | assign_stmt | expr ";" ;
 comptime_stmt = "comptime" block ;
-let_stmt  = "let" ident "=" expr ";" ;
+let_stmt  = "let" ["mut"] ident [":" type] "=" expr ";" ;
+fixed_stmt = "fixed" ident [":" type] "=" expr ";" ;
 defer_stmt = "defer" expr ";" ;
 return_stmt = "return" [expr] ";" ;
 if_stmt   = "if" expr block ["else" block] ;
 while_stmt = "while" expr block ;
+for_stmt  = "for" (ident "in" expr | [let_stmt | fixed_stmt | expr ";"] [expr] ";" [assign_stmt | expr]) block ;
+assign_stmt = expr ("=" | "+=" | "-=" | "*=" | "/=" | "%=") expr ";" ;
 expr      = ["await"] atom { op atom } ;
 atom      = int | string | ident ["(" [expr {"," expr}] ")"] | "(" expr ")" ;
 ```
+
+Conventions:
+- Canonical style uses colon-typed declarations (`name: Type`) for params, fields, and local bindings.
+- The parser still accepts legacy field/param style (`name Type`) for backward compatibility.
 
 ## Semantics
 - Call-by-value.
@@ -35,7 +46,8 @@ atom      = int | string | ident ["(" [expr {"," expr}] ")"] | "(" expr ")" ;
 - Runtime backend uses deterministic reference counting for managed objects.
 
 ## Type system
-- Nominal primitive types: `Int`, `String`, `Bool`, `Any`.
+- Nominal primitive types: `Int`, `Float`, `String`, `Bool`, `Any`, `Nil`, `Void`.
+- Fixed-width integer aliases: `i8`, `u8`, `i16`, `u16`, `i32`, `u32`, `i64`, `u64`, `i128`, `u128`, `isize`, `usize`.
 - Parametric generics on function declarations (`fn id<T>(x T) -> T`).
 - Safety guarantees: undefined identifiers rejected; arity/type mismatches rejected in semantic pass.
 

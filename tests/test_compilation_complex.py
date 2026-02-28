@@ -33,8 +33,10 @@ fn main() -> Int {
     )
     build(str(src), str(out), "py")
     code = out.read_text()
-    assert "k = 21" in code
     assert "alloc(16)" not in code
+    assert "fib(8)" not in code
+    cp = subprocess.run([sys.executable, str(out)], timeout=2)
+    assert cp.returncode == 0
 
 
 def test_complex_program_x86_assembly_shape(tmp_path: Path):

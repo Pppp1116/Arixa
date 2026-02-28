@@ -22,6 +22,7 @@
 ## Language conveniences
 - `defer <expr>;`
 - null coalescing: `<a> ?? <b>`
-- typed params/fields accept `name Type` and `name: Type`
+- immutable bindings: `fixed name[: Type] = expr;`
+- typed params/fields accept `name Type` and `name: Type` (canonical style is `name: Type`)
 - specialization impls: `impl fn name(...) -> ... { ... }`
 - compile-time execution: `comptime { ... }` (pure/deterministic subset)

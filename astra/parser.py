@@ -322,8 +322,12 @@ class Parser:
 
     def parse_stmt(self):
         tok = self.cur()
-        if self.opt("let"):
+        if self.cur().kind in {"let", "fixed"}:
+            is_fixed = self.eat(self.cur().kind).kind == "fixed"
             is_mut = bool(self.opt("mut"))
+            if is_fixed and is_mut:
+                self._err("fixed bindings cannot be mutable", tok)
+                raise ParseError(self.errors[-1])
             name_tok = self.eat("IDENT")
             type_name = None
             if self.opt(":"):
@@ -331,7 +335,7 @@ class Parser:
             self.eat("=")
             expr = self.parse_expr()
             self.eat(";")
-            return LetStmt(name_tok.text, expr, is_mut, type_name, tok.pos, tok.line, tok.col)
+            return LetStmt(name_tok.text, expr, is_mut, type_name, tok.pos, tok.line, tok.col, fixed=is_fixed)
         if self.opt("return"):
             if self.opt(";"):
                 return ReturnStmt(None, tok.pos, tok.line, tok.col)
@@ -386,7 +390,7 @@ class Parser:
             return ForStmt(init, expr, None, body, tok.pos, tok.line, tok.col)
         init = None
         if self.cur().kind != ";":
-            if self.cur().kind == "let":
+            if self.cur().kind in {"let", "fixed"}:
                 init = self.parse_stmt()
             else:
                 init = self.parse_expr()

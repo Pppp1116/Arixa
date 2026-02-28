@@ -14,7 +14,10 @@ def _diag(filename: str, line: int, col: int, msg: str) -> str:
     return f"SEM {filename}:{line}:{col}: {msg}"
 
 
-PRIMITIVES = {"Int", "Float", "String", "Bool", "Any", "Nil", "Void", "i32", "u32", "i64", "u64", "f32", "f64"}
+INT_TYPES = {"i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "i128", "u128", "isize", "usize"}
+FLOAT_TYPES = {"f32", "f64"}
+NUMERIC_TYPES = {"Int", "Float", "Any"} | INT_TYPES | FLOAT_TYPES
+PRIMITIVES = {"Int", "Float", "String", "Bool", "Any", "Nil", "Void"} | INT_TYPES | FLOAT_TYPES
 
 
 @dataclass
@@ -146,11 +149,11 @@ def _same_type(expected: str, actual: str) -> bool:
         return True
     if expected == "Any" or actual == "Any":
         return True
-    if expected in {"Float", "f32", "f64"} and actual in {"Int", "i32", "u32", "i64", "u64"}:
+    if expected in {"Float"} | FLOAT_TYPES and actual in {"Int"} | INT_TYPES:
         return True
-    if expected == "Int" and actual in {"i32", "u32", "i64", "u64"}:
+    if expected == "Int" and actual in INT_TYPES:
         return True
-    if actual == "Int" and expected in {"i32", "u32", "i64", "u64"}:
+    if actual == "Int" and expected in INT_TYPES:
         return True
     return False
 
@@ -186,6 +189,13 @@ def _assign(name: str, typ: str, scopes: list[dict[str, str]], filename: str, li
             scope[name] = typ
             return
     raise SemanticError(_diag(filename, line, col, f"assignment to undefined name {name}"))
+
+
+def _lookup_fixed(name: str, fixed_scopes: list[dict[str, bool]]) -> bool | None:
+    for scope in reversed(fixed_scopes):
+        if name in scope:
+            return scope[name]
+    return None
 
 
 def _is_typevar(name: str, known_types: set[str]) -> bool:
@@ -306,15 +316,17 @@ def _analyze_fn(
     filename: str,
 ):
     scopes: list[dict[str, str]] = [{n: t for n, t in fn.params}]
+    fixed_scopes: list[dict[str, bool]] = [{n: False for n, _ in fn.params}]
     owned = _OwnedState()
     for st in fn.body:
-        _check_stmt(st, scopes, fn_groups, structs, enums, fn.ret, owned, filename, fn.name, 0)
+        _check_stmt(st, scopes, fixed_scopes, fn_groups, structs, enums, fn.ret, owned, filename, fn.name, 0)
     owned.check_no_live_leaks(fn.name, filename, fn.line, fn.col)
 
 
 def _check_stmt(
     st,
     scopes: list[dict[str, str]],
+    fixed_scopes: list[dict[str, bool]],
     fn_groups: dict[str, list[FnDecl | ExternFnDecl]],
     structs: dict[str, StructDecl],
     enums: dict[str, EnumDecl],
@@ -330,6 +342,7 @@ def _check_stmt(
             _require_type(filename, st.line, st.col, st.type_name, ty, st.name)
             ty = st.type_name
         scopes[-1][st.name] = ty
+        fixed_scopes[-1][st.name] = st.fixed
         if isinstance(st.expr, Name):
             owned.assign_name(st.name, st.expr.value)
         if _is_alloc_call(st.expr):
@@ -338,6 +351,11 @@ def _check_stmt(
     if isinstance(st, AssignStmt):
         rhs = _infer(st.expr, scopes, fn_groups, structs, enums, owned, filename, fn_name)
         if isinstance(st.target, Name):
+            is_fixed = _lookup_fixed(st.target.value, fixed_scopes)
+            if is_fixed is None:
+                raise SemanticError(_diag(filename, st.line, st.col, f"assignment to undefined name {st.target.value}"))
+            if is_fixed:
+                raise SemanticError(_diag(filename, st.line, st.col, f"cannot assign to fixed binding {st.target.value}"))
             lhs = _lookup(st.target.value, scopes)
             if lhs is None:
                 raise SemanticError(_diag(filename, st.line, st.col, f"assignment to undefined name {st.target.value}"))
@@ -369,19 +387,21 @@ def _check_stmt(
         return
     if isinstance(st, ComptimeStmt):
         for inner in st.body:
-            _check_stmt(inner, scopes, fn_groups, structs, enums, fn_ret, owned, filename, fn_name, loop_depth)
+            _check_stmt(inner, scopes, fixed_scopes, fn_groups, structs, enums, fn_ret, owned, filename, fn_name, loop_depth)
         return
     if isinstance(st, IfStmt):
         cond_ty = _infer(st.cond, scopes, fn_groups, structs, enums, owned, filename, fn_name)
         _require_type(filename, st.line, st.col, "Bool", cond_ty, "if condition")
         then_owned = owned.copy()
         then_scopes = scopes + [{}]
+        then_fixed_scopes = fixed_scopes + [{}]
         for s in st.then_body:
-            _check_stmt(s, then_scopes, fn_groups, structs, enums, fn_ret, then_owned, filename, fn_name, loop_depth)
+            _check_stmt(s, then_scopes, then_fixed_scopes, fn_groups, structs, enums, fn_ret, then_owned, filename, fn_name, loop_depth)
         else_owned = owned.copy()
         else_scopes = scopes + [{}]
+        else_fixed_scopes = fixed_scopes + [{}]
         for s in st.else_body:
-            _check_stmt(s, else_scopes, fn_groups, structs, enums, fn_ret, else_owned, filename, fn_name, loop_depth)
+            _check_stmt(s, else_scopes, else_fixed_scopes, fn_groups, structs, enums, fn_ret, else_owned, filename, fn_name, loop_depth)
         owned.merge(then_owned, else_owned)
         return
     if isinstance(st, WhileStmt):
@@ -389,16 +409,18 @@ def _check_stmt(
         _require_type(filename, st.line, st.col, "Bool", cond_ty, "while condition")
         loop_owned = owned.copy()
         loop_scopes = scopes + [{}]
+        loop_fixed_scopes = fixed_scopes + [{}]
         for s in st.body:
-            _check_stmt(s, loop_scopes, fn_groups, structs, enums, fn_ret, loop_owned, filename, fn_name, loop_depth + 1)
+            _check_stmt(s, loop_scopes, loop_fixed_scopes, fn_groups, structs, enums, fn_ret, loop_owned, filename, fn_name, loop_depth + 1)
         owned.merge(owned, loop_owned)
         return
     if isinstance(st, ForStmt):
         loop_scopes = scopes + [{}]
+        loop_fixed_scopes = fixed_scopes + [{}]
         loop_owned = owned.copy()
         if st.init is not None:
             if isinstance(st.init, LetStmt):
-                _check_stmt(st.init, loop_scopes, fn_groups, structs, enums, fn_ret, loop_owned, filename, fn_name, loop_depth + 1)
+                _check_stmt(st.init, loop_scopes, loop_fixed_scopes, fn_groups, structs, enums, fn_ret, loop_owned, filename, fn_name, loop_depth + 1)
             else:
                 _infer(st.init, loop_scopes, fn_groups, structs, enums, loop_owned, filename, fn_name)
         if st.cond is not None:
@@ -406,11 +428,11 @@ def _check_stmt(
             _require_type(filename, st.line, st.col, "Bool", cond_ty, "for condition")
         if st.step is not None:
             if isinstance(st.step, AssignStmt):
-                _check_stmt(st.step, loop_scopes, fn_groups, structs, enums, fn_ret, loop_owned, filename, fn_name, loop_depth + 1)
+                _check_stmt(st.step, loop_scopes, loop_fixed_scopes, fn_groups, structs, enums, fn_ret, loop_owned, filename, fn_name, loop_depth + 1)
             else:
                 _infer(st.step, loop_scopes, fn_groups, structs, enums, loop_owned, filename, fn_name)
         for s in st.body:
-            _check_stmt(s, loop_scopes, fn_groups, structs, enums, fn_ret, loop_owned, filename, fn_name, loop_depth + 1)
+            _check_stmt(s, loop_scopes, loop_fixed_scopes, fn_groups, structs, enums, fn_ret, loop_owned, filename, fn_name, loop_depth + 1)
         owned.merge(owned, loop_owned)
         return
     if isinstance(st, MatchStmt):
@@ -423,8 +445,9 @@ def _check_stmt(
             if isinstance(pat, BoolLit):
                 seen_bool.add(pat.value)
             arm_scopes = scopes + [{}]
+            arm_fixed_scopes = fixed_scopes + [{}]
             for s in body:
-                _check_stmt(s, arm_scopes, fn_groups, structs, enums, fn_ret, owned.copy(), filename, fn_name, loop_depth)
+                _check_stmt(s, arm_scopes, arm_fixed_scopes, fn_groups, structs, enums, fn_ret, owned.copy(), filename, fn_name, loop_depth)
         if subject_ty == "Bool" and seen_bool != {True, False}:
             raise SemanticError(_diag(filename, st.line, st.col, "non-exhaustive match for Bool"))
         return
@@ -481,7 +504,7 @@ def _infer(
             _require_type(filename, e.line, e.col, "Bool", inner, "unary !")
             return "Bool"
         if e.op == "-":
-            if inner not in {"Int", "Float", "Any", "i32", "u32", "i64", "u64", "f32", "f64"}:
+            if inner not in NUMERIC_TYPES:
                 raise SemanticError(_diag(filename, e.line, e.col, f"unary - expects number, got {inner}"))
             return inner
         return inner
@@ -492,9 +515,9 @@ def _infer(
             if l in {"String", "Any"} or r in {"String", "Any"}:
                 if e.op == "+" and (l == "String" or r == "String"):
                     return "String"
-            if l not in {"Int", "Float", "Any", "i32", "u32", "i64", "u64", "f32", "f64"} or r not in {"Int", "Float", "Any", "i32", "u32", "i64", "u64", "f32", "f64"}:
+            if l not in NUMERIC_TYPES or r not in NUMERIC_TYPES:
                 raise SemanticError(_diag(filename, e.line, e.col, f"numeric operator {e.op} expects numbers"))
-            if l in {"Float", "f32", "f64"} or r in {"Float", "f32", "f64"}:
+            if l in {"Float"} | FLOAT_TYPES or r in {"Float"} | FLOAT_TYPES:
                 return "Float"
             return "Int"
         if e.op in {"==", "!=", "<", "<=", ">", ">="}:

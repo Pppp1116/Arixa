@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from pathlib import Path
 
 from astra.build import build
@@ -36,7 +38,9 @@ fn main() -> Int {
     )
     build(str(src), str(out), "py")
     code = out.read_text()
-    assert "total = 45" in code
+    assert "gen(10)" not in code
+    cp = subprocess.run([sys.executable, str(out)], timeout=2)
+    assert cp.returncode == 45
 
 
 def test_comptime_alloc_free(tmp_path: Path):

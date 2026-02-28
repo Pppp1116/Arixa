@@ -121,9 +121,14 @@ def _fold_expr(e):
 def optimize_program(prog: Program) -> Program:
     for item in prog.items:
         if isinstance(item, FnDecl):
-            mutable_names = _collect_mutable_names(item.body)
-            body, _ = _optimize_stmts(item.body, {}, mutable_names)
-            item.body = body
+            for _ in range(8):
+                before = repr(item.body)
+                mutable_names = _collect_mutable_names(item.body)
+                body, _ = _optimize_stmts(item.body, {}, mutable_names)
+                body, _ = _dse_stmts(body, set())
+                item.body = body
+                if repr(item.body) == before:
+                    break
     return prog
 
 
@@ -179,7 +184,7 @@ def _optimize_stmt(st: Any, env: dict[str, Any], mutable_names: set[str]) -> tup
         return st, env, False
     if isinstance(st, ExprStmt):
         st.expr = _fold_ast_expr(st.expr, env, mutable_names)
-        if _is_pure_expr(st.expr):
+        if _is_discardable_expr(st.expr):
             return None, env, False
         return st, env, False
     if isinstance(st, ReturnStmt):
@@ -335,9 +340,9 @@ def _fold_ast_expr(expr: Any, env: dict[str, Any], mutable_names: set[str]) -> A
                 return expr.left
             if lval == 1 and _is_pure_expr(expr.right):
                 return expr.right
-            if rval == 0 and _is_pure_expr(expr.left):
+            if rval == 0 and _is_discardable_expr(expr.left):
                 return _literal_node(0, expr)
-            if lval == 0 and _is_pure_expr(expr.right):
+            if lval == 0 and _is_discardable_expr(expr.right):
                 return _literal_node(0, expr)
         if expr.op == "/":
             if rval == 1 and _is_pure_expr(expr.left):
@@ -422,6 +427,34 @@ def _is_pure_expr(expr: Any) -> bool:
     return False
 
 
+def _is_discardable_expr(expr: Any) -> bool:
+    return _is_pure_expr(expr) and not _may_trap_expr(expr)
+
+
+def _may_trap_expr(expr: Any) -> bool:
+    if isinstance(expr, (Literal, BoolLit, NilLit, Name)):
+        return False
+    if isinstance(expr, Unary):
+        return _may_trap_expr(expr.expr)
+    if isinstance(expr, Binary):
+        if _may_trap_expr(expr.left) or _may_trap_expr(expr.right):
+            return True
+        if expr.op in {"/", "%"}:
+            rval = _literal_value(expr.right)
+            if rval is _NO_LITERAL:
+                return True
+            return rval == 0
+        return False
+    if isinstance(expr, ArrayLit):
+        return any(_may_trap_expr(e) for e in expr.elements)
+    if isinstance(expr, StructLit):
+        return any(_may_trap_expr(v) for _, v in expr.fields)
+    if isinstance(expr, TypeAnnotated):
+        return _may_trap_expr(expr.expr)
+    # Conservative: calls/await/index/field are observable or may trap.
+    return True
+
+
 def _eval_binary_const(op: str, left: Any, right: Any) -> Any:
     if left is _NO_LITERAL or right is _NO_LITERAL:
         return _NO_LITERAL
@@ -476,6 +509,208 @@ def _collect_mutable_names(stmts: list[Any]) -> set[str]:
                 walk(st.body)
             elif isinstance(st, ForStmt):
                 if isinstance(st.init, LetStmt) and st.init.mut:
+                    out.add(st.init.name)
+                if isinstance(st.step, AssignStmt) and isinstance(st.step.target, Name):
+                    out.add(st.step.target.value)
+                walk(st.body)
+            elif isinstance(st, MatchStmt):
+                for _, body in st.arms:
+                    walk(body)
+            elif isinstance(st, ComptimeStmt):
+                walk(st.body)
+
+    walk(stmts)
+    return out
+
+
+def _dse_stmts(stmts: list[Any], live_out: set[str]) -> tuple[list[Any], set[str]]:
+    live = set(live_out)
+    out_rev: list[Any] = []
+    for st in reversed(stmts):
+        if isinstance(st, ReturnStmt):
+            out_rev.append(st)
+            live = _used_names_expr(st.expr) if st.expr is not None else set()
+            continue
+        if isinstance(st, ExprStmt):
+            if _is_discardable_expr(st.expr):
+                continue
+            out_rev.append(st)
+            live |= _used_names_expr(st.expr)
+            continue
+        if isinstance(st, LetStmt):
+            uses = _used_names_expr(st.expr)
+            if st.name not in live:
+                if _is_discardable_expr(st.expr):
+                    continue
+                out_rev.append(ExprStmt(expr=st.expr, pos=st.pos, line=st.line, col=st.col))
+                live |= uses
+                continue
+            out_rev.append(st)
+            live.discard(st.name)
+            live |= uses
+            continue
+        if isinstance(st, AssignStmt):
+            if isinstance(st.target, Name) and st.op == "=" and st.target.value not in live:
+                if _is_discardable_expr(st.expr):
+                    continue
+                out_rev.append(ExprStmt(expr=st.expr, pos=st.pos, line=st.line, col=st.col))
+                live |= _used_names_expr(st.expr)
+                continue
+            out_rev.append(st)
+            uses = _used_names_expr(st.expr) | _used_names_target(st.target)
+            if isinstance(st.target, Name):
+                if st.op == "=":
+                    live.discard(st.target.value)
+                    live |= uses
+                elif st.op in {"+=", "-=", "*=", "/=", "%="}:
+                    # Compound assignments read the previous target value.
+                    live |= uses | {st.target.value}
+                else:
+                    live |= uses
+            else:
+                live |= uses
+            continue
+        if isinstance(st, IfStmt):
+            then_body, then_live = _dse_stmts(st.then_body, set(live))
+            else_body, else_live = _dse_stmts(st.else_body, set(live))
+            st.then_body = then_body
+            st.else_body = else_body
+            cond_uses = _used_names_expr(st.cond)
+            if not st.then_body and not st.else_body and _is_discardable_expr(st.cond):
+                live |= then_live | else_live
+                continue
+            out_rev.append(st)
+            live = cond_uses | then_live | else_live
+            continue
+        if isinstance(st, MatchStmt):
+            arm_lives: list[set[str]] = []
+            new_arms: list[tuple[Any, list[Any]]] = []
+            for pat, body in st.arms:
+                body_out, arm_live = _dse_stmts(body, set(live))
+                new_arms.append((pat, body_out))
+                arm_lives.append(arm_live | _used_names_expr(pat))
+            st.arms = new_arms
+            out_rev.append(st)
+            cond_live = _used_names_expr(st.expr)
+            combined = set(cond_live)
+            for arm_live in arm_lives:
+                combined |= arm_live
+            live = combined
+            continue
+        if isinstance(st, WhileStmt):
+            loop_live_seed = set(live) | _used_names_expr(st.cond) | _names_assigned_stmts(st.body)
+            body_out, body_live = _dse_stmts(st.body, loop_live_seed)
+            st.body = body_out
+            out_rev.append(st)
+            live = set(live) | _used_names_expr(st.cond) | body_live | _names_assigned_stmts(st.body)
+            continue
+        if isinstance(st, ForStmt):
+            loop_seed = set(live) | _names_assigned_stmts(st.body)
+            if st.cond is not None:
+                loop_seed |= _used_names_expr(st.cond)
+            if st.step is not None:
+                if isinstance(st.step, AssignStmt):
+                    loop_seed |= _used_names_expr(st.step.expr) | _used_names_target(st.step.target)
+                else:
+                    loop_seed |= _used_names_expr(st.step)
+            body_out, body_live = _dse_stmts(st.body, loop_seed)
+            st.body = body_out
+            out_rev.append(st)
+            live |= body_live
+            if st.init is not None:
+                if isinstance(st.init, LetStmt):
+                    live |= _used_names_expr(st.init.expr)
+                else:
+                    live |= _used_names_expr(st.init)
+            if st.cond is not None:
+                live |= _used_names_expr(st.cond)
+            if st.step is not None:
+                if isinstance(st.step, AssignStmt):
+                    live |= _used_names_expr(st.step.expr) | _used_names_target(st.step.target)
+                    if isinstance(st.step.target, Name):
+                        live.add(st.step.target.value)
+                else:
+                    live |= _used_names_expr(st.step)
+            continue
+        if isinstance(st, ComptimeStmt):
+            body_out, body_live = _dse_stmts(st.body, set(live))
+            st.body = body_out
+            out_rev.append(st)
+            live |= body_live
+            continue
+        if isinstance(st, DeferStmt):
+            out_rev.append(st)
+            live |= _used_names_expr(st.expr)
+            continue
+        if isinstance(st, (BreakStmt, ContinueStmt)):
+            out_rev.append(st)
+            continue
+        out_rev.append(st)
+    out_rev.reverse()
+    return out_rev, live
+
+
+def _used_names_expr(expr: Any) -> set[str]:
+    if isinstance(expr, Name):
+        return {expr.value}
+    if isinstance(expr, (Literal, BoolLit, NilLit)):
+        return set()
+    if isinstance(expr, Unary):
+        return _used_names_expr(expr.expr)
+    if isinstance(expr, Binary):
+        return _used_names_expr(expr.left) | _used_names_expr(expr.right)
+    if isinstance(expr, Call):
+        out = _used_names_expr(expr.fn)
+        for arg in expr.args:
+            out |= _used_names_expr(arg)
+        return out
+    if isinstance(expr, AwaitExpr):
+        return _used_names_expr(expr.expr)
+    if isinstance(expr, IndexExpr):
+        return _used_names_expr(expr.obj) | _used_names_expr(expr.index)
+    if isinstance(expr, FieldExpr):
+        return _used_names_expr(expr.obj)
+    if isinstance(expr, ArrayLit):
+        out: set[str] = set()
+        for elem in expr.elements:
+            out |= _used_names_expr(elem)
+        return out
+    if isinstance(expr, StructLit):
+        out: set[str] = set()
+        for _, value in expr.fields:
+            out |= _used_names_expr(value)
+        return out
+    if isinstance(expr, TypeAnnotated):
+        return _used_names_expr(expr.expr)
+    return set()
+
+
+def _used_names_target(target: Any) -> set[str]:
+    if isinstance(target, Name):
+        return set()
+    if isinstance(target, IndexExpr):
+        return _used_names_expr(target.obj) | _used_names_expr(target.index)
+    if isinstance(target, FieldExpr):
+        return _used_names_expr(target.obj)
+    return _used_names_expr(target)
+
+
+def _names_assigned_stmts(stmts: list[Any]) -> set[str]:
+    out: set[str] = set()
+
+    def walk(items: list[Any]):
+        for st in items:
+            if isinstance(st, LetStmt):
+                out.add(st.name)
+            elif isinstance(st, AssignStmt) and isinstance(st.target, Name):
+                out.add(st.target.value)
+            elif isinstance(st, IfStmt):
+                walk(st.then_body)
+                walk(st.else_body)
+            elif isinstance(st, WhileStmt):
+                walk(st.body)
+            elif isinstance(st, ForStmt):
+                if isinstance(st.init, LetStmt):
                     out.add(st.init.name)
                 if isinstance(st.step, AssignStmt) and isinstance(st.step.target, Name):
                     out.add(st.step.target.value)

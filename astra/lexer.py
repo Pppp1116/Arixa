@@ -3,6 +3,7 @@ from dataclasses import dataclass
 KEYWORDS = {
     "fn",
     "let",
+    "fixed",
     "return",
     "if",
     "else",

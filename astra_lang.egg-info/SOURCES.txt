@@ -31,8 +31,10 @@ tests/test_cli.py
 tests/test_compilation_complex.py
 tests/test_compiler_capabilities.py
 tests/test_comptime.py
+tests/test_fixed_int_types.py
 tests/test_frontend.py
 tests/test_lexer.py
+tests/test_optimizer_edges.py
 tests/test_packaging_integration.py
 tests/test_parser.py
 tests/test_pkg.py
