@@ -1,0 +1,1 @@
+fn sha256(s String) -> String { return s; }

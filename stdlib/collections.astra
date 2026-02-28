@@ -1,0 +1,2 @@
+fn list_new() -> Any { return 0; }
+fn map_new() -> Any { return 0; }

@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+build/
+.astra-cache.json
+.pytest_cache/

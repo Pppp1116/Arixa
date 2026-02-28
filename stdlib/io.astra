@@ -1,0 +1,2 @@
+fn read(path String) -> String { return read_file(path); }
+fn write(path String, data String) -> Int { return write_file(path, data); }

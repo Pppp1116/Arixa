@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astra-lang"
+version = "0.1.0"
+description = "Self-hosted-inspired toy programming language ecosystem"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+astra = "astra.cli:main"
+astpm = "astra.pkg:main"
+astfmt = "astra.formatter:main"
+astlint = "astra.linter:main"
+astdoc = "astra.docgen:main"
+astlsp = "astra.lsp:main"
+astdbg = "astra.debugger:main"
+astprof = "astra.profiler:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

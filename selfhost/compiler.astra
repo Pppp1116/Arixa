@@ -1,0 +1,8 @@
+fn compile(input String, output String) -> Int {
+    let data = read_file(input);
+    return write_file(output, data);
+}
+
+fn main() -> Int {
+    return compile(arg(1), arg(2));
+}

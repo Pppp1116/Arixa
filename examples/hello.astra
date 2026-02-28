@@ -1,0 +1,4 @@
+fn main() -> Int {
+    print("hello from astra");
+    return 0;
+}
