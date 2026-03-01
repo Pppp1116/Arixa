@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Mapping
 
 from astra.ast import StructDecl
+from astra.int_types import int_storage_align, int_storage_size, parse_int_type_name
 
 
 class LayoutError(Exception):
@@ -31,22 +32,9 @@ class StructLayout:
 
 _SCALAR_LAYOUTS: dict[str, TypeLayout] = {
     "Bool": TypeLayout(1, 1, "int", False, 8, True),
-    "i8": TypeLayout(1, 1, "int", True, 8, True),
-    "u8": TypeLayout(1, 1, "int", False, 8, True),
-    "i16": TypeLayout(2, 2, "int", True, 16, True),
-    "u16": TypeLayout(2, 2, "int", False, 16, True),
-    "i32": TypeLayout(4, 4, "int", True, 32, True),
-    "u32": TypeLayout(4, 4, "int", False, 32, True),
     "f32": TypeLayout(4, 4, "float", None, 32, True),
-    "Int": TypeLayout(8, 8, "int", True, 64, True),
-    "isize": TypeLayout(8, 8, "int", True, 64, True),
-    "usize": TypeLayout(8, 8, "int", False, 64, True),
-    "i64": TypeLayout(8, 8, "int", True, 64, True),
-    "u64": TypeLayout(8, 8, "int", False, 64, True),
     "f64": TypeLayout(8, 8, "float", None, 64, True),
     "Float": TypeLayout(8, 8, "float", None, 64, True),
-    "i128": TypeLayout(16, 16, "int", True, 128, True),
-    "u128": TypeLayout(16, 16, "int", False, 128, True),
     "Void": TypeLayout(0, 1, "void", None, 0, False),
     "Never": TypeLayout(0, 1, "void", None, 0, False),
 }
@@ -108,6 +96,12 @@ def layout_of_type(
     c = canonical_type(typ)
     if c in _SCALAR_LAYOUTS:
         return _SCALAR_LAYOUTS[c]
+    int_info = parse_int_type_name(c)
+    if int_info is not None:
+        bits, signed = int_info
+        size = int_storage_size(bits)
+        align = int_storage_align(size)
+        return TypeLayout(size, align, "int", signed, bits, True)
     if c.startswith("&"):
         return TypeLayout(8, 8, "ptr", False, 64, True)
     if _is_fn_type(c):

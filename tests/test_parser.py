@@ -213,3 +213,21 @@ fn main() -> Int {
     assert isinstance(fn.body[3].expr, AlignOfTypeExpr)
     assert isinstance(fn.body[4].expr, SizeOfValueExpr)
     assert isinstance(fn.body[5].expr, AlignOfValueExpr)
+
+
+def test_parse_dynamic_integer_type_names():
+    src = "fn widen(x: u4, y: i127) -> u4 { return x; }"
+    prog = parse(src)
+    fn = prog.items[0]
+    assert isinstance(fn, FnDecl)
+    assert fn.params == [("x", "u4"), ("y", "i127")]
+    assert fn.ret == "u4"
+
+
+def test_parse_integer_literal_type_suffix():
+    src = "fn main() -> Int { let x: u4 = 15u4; return x as Int; }"
+    prog = parse(src)
+    fn = prog.items[0]
+    assert isinstance(fn.body[0], LetStmt)
+    assert isinstance(fn.body[0].expr, CastExpr)
+    assert fn.body[0].expr.type_name == "u4"

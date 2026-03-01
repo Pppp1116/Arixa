@@ -40,3 +40,18 @@ def test_line_col_and_block_comment_and_error():
 
     err = [t for t in lex("$") if t.kind == "ERROR"]
     assert err and err[0].text == "$"
+
+
+def test_lexes_dynamic_integer_type_tokens():
+    toks = lex("let a: u4 = 1u4; let b: i127 = 2;")
+    kinds = [t.kind for t in toks]
+    assert kinds.count("INT_TYPE") >= 3
+    assert any(t.kind == "INT_TYPE" and t.text == "u4" for t in toks)
+    assert any(t.kind == "INT_TYPE" and t.text == "i127" for t in toks)
+
+
+def test_invalid_integer_width_tokens_emit_lex_error():
+    toks = lex("let a: i0 = 1; let b: u65536 = 2;")
+    errs = [t for t in toks if t.kind == "ERROR"]
+    assert len(errs) >= 2
+    assert all("integer width must be between" in t.text for t in errs[:2])

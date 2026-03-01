@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from astra.int_types import INT_WIDTH_MAX, parse_prefixed_int_type, prefixed_int_width_error
+
 KEYWORDS = {
     "fn",
     "let",
@@ -211,8 +213,14 @@ def lex(src: str, filename: str = "<input>") -> list[Token]:
             if text in {"true", "false"}:
                 out.append(Token("BOOL", text, start_i, start_line, start_col))
             else:
-                kind = text if text in KEYWORDS else "IDENT"
-                out.append(Token(kind, text, start_i, start_line, start_col))
+                int_width_err = prefixed_int_width_error(text, max_width=INT_WIDTH_MAX)
+                if int_width_err is not None:
+                    out.append(Token("ERROR", int_width_err, start_i, start_line, start_col))
+                elif parse_prefixed_int_type(text, max_width=INT_WIDTH_MAX) is not None:
+                    out.append(Token("INT_TYPE", text, start_i, start_line, start_col))
+                else:
+                    kind = text if text in KEYWORDS else "IDENT"
+                    out.append(Token(kind, text, start_i, start_line, start_col))
             line, col = _advance_pos(text, line, col)
             i = j
             continue

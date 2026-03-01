@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 
 from astra.ast import *
+from astra.int_types import is_int_type_name, parse_int_type_name
 from astra.layout import LayoutError, canonical_type as _layout_canonical_type, layout_of_type
 
 
@@ -16,28 +17,10 @@ def _diag(filename: str, line: int, col: int, msg: str) -> str:
     return f"SEM {filename}:{line}:{col}: {msg}"
 
 
-INT_TYPES = {"i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "i128", "u128", "isize", "usize"}
 FLOAT_TYPES = {"f32", "f64"}
-NUMERIC_TYPES = {"Int", "Float", "Any"} | INT_TYPES | FLOAT_TYPES
-PRIMITIVES = {"Int", "Float", "String", "str", "Bool", "Any", "Void", "Never", "Bytes"} | INT_TYPES | FLOAT_TYPES
-COPY_SCALAR_TYPES = {"Int", "Float", "Bool"} | INT_TYPES | FLOAT_TYPES
+PRIMITIVES = {"Int", "isize", "usize", "Float", "f32", "f64", "String", "str", "Bool", "Any", "Void", "Never", "Bytes"}
+COPY_SCALAR_TYPES = {"Float", "f32", "f64", "Bool"}
 NONE_LIT_TYPE = "<none>"
-
-_INT_INFO: dict[str, tuple[int, bool]] = {
-    "Int": (64, True),
-    "isize": (64, True),
-    "usize": (64, False),
-    "i8": (8, True),
-    "u8": (8, False),
-    "i16": (16, True),
-    "u16": (16, False),
-    "i32": (32, True),
-    "u32": (32, False),
-    "i64": (64, True),
-    "u64": (64, False),
-    "i128": (128, True),
-    "u128": (128, False),
-}
 
 
 def _is_option_type(typ: str) -> bool:
@@ -97,7 +80,11 @@ def _canonical_type(typ: str) -> str:
 
 
 def _int_info(typ: str) -> tuple[int, bool] | None:
-    return _INT_INFO.get(_canonical_type(typ))
+    parsed = parse_int_type_name(_canonical_type(typ))
+    if parsed is None:
+        return None
+    bits, signed = parsed
+    return bits, signed
 
 
 def _is_int_type(typ: str) -> bool:
@@ -119,6 +106,8 @@ def _is_unsized_value_type(typ: str) -> bool:
 
 def _is_copy_type(typ: str) -> bool:
     c = _canonical_type(typ)
+    if _is_int_type(c):
+        return True
     if c in COPY_SCALAR_TYPES:
         return True
     return _is_ref_type(c) and not _is_mut_ref_type(c)
@@ -438,11 +427,11 @@ def _same_type(expected: str, actual: str) -> bool:
         return True
     if expected == "Any" or actual == "Any":
         return True
-    if expected in {"Float"} | FLOAT_TYPES and actual in {"Int"} | INT_TYPES:
+    if expected in {"Float"} | FLOAT_TYPES and _is_int_type(actual):
         return True
-    if expected == "Int" and actual in INT_TYPES:
+    if expected == "Int" and _is_int_type(actual):
         return True
-    if actual == "Int" and expected in INT_TYPES:
+    if actual == "Int" and _is_int_type(expected):
         return True
     return False
 
@@ -574,11 +563,18 @@ def _lookup_fixed(name: str, fixed_scopes: list[dict[str, bool]]) -> bool | None
 
 
 def _is_typevar(name: str, known_types: set[str]) -> bool:
-    if name in known_types:
+    c = _canonical_type(name)
+    if c in known_types:
         return False
-    if any(ch in name for ch in "<>[]&(), "):
+    if c in {"String", "str", "Bool", "Any", "Void", "Never", "Bytes"}:
         return False
-    return bool(name)
+    if is_int_type_name(c):
+        return False
+    if _is_float_type(c):
+        return False
+    if any(ch in c for ch in "<>[]&(), "):
+        return False
+    return bool(c)
 
 
 def _split_top_level(text: str, sep: str) -> list[str]:
@@ -1309,7 +1305,7 @@ def _infer(
             _require_type(filename, e.line, e.col, "Bool", inner, "unary !")
             return _typed(e, "Bool")
         if e.op == "-":
-            if inner not in NUMERIC_TYPES:
+            if inner != "Any" and not _is_numeric_scalar_type(inner):
                 raise SemanticError(_diag(filename, e.line, e.col, f"unary - expects number, got {inner}"))
             return _typed(e, inner)
         if e.op == "*":

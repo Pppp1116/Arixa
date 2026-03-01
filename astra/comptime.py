@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import math
 
 from astra.ast import *
+from astra.int_types import is_int_type_name, parse_int_type_name
 from astra.layout import LayoutError, canonical_type, layout_of_type
 
 
@@ -315,7 +316,7 @@ class _Evaluator:
             if isinstance(value, (int, float)):
                 return float(value)
             raise ComptimeError(_diag(self.filename, node.line, node.col, f"cannot cast to {target_type}"))
-        if ty in {"Int", "isize", "usize", "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "i128", "u128"}:
+        if is_int_type_name(ty):
             return self._cast_to_int(value, ty, node)
         raise ComptimeError(_diag(self.filename, node.line, node.col, f"unsupported cast target {target_type}"))
 
@@ -456,15 +457,10 @@ class _Evaluator:
 
 
 def _int_props(typ: str) -> tuple[int, bool]:
-    t = canonical_type(typ)
-    if t in {"Int", "isize"}:
-        return 64, True
-    if t == "usize":
-        return 64, False
-    if t.startswith("i") and t[1:].isdigit():
-        return int(t[1:]), True
-    if t.startswith("u") and t[1:].isdigit():
-        return int(t[1:]), False
+    parsed = parse_int_type_name(canonical_type(typ))
+    if parsed is not None:
+        bits, signed = parsed
+        return bits, signed
     return 64, True
 
 
@@ -489,14 +485,7 @@ def _truncate_int(value: int, bits: int, signed: bool) -> int:
 def _is_int_type_name(typ: str | None) -> bool:
     if typ is None:
         return False
-    t = canonical_type(typ)
-    if t in {"Int", "isize", "usize"}:
-        return True
-    if t.startswith("i") and t[1:].isdigit():
-        return True
-    if t.startswith("u") and t[1:].isdigit():
-        return True
-    return False
+    return is_int_type_name(canonical_type(typ))
 
 
 def _is_plain_int(value: object) -> bool:

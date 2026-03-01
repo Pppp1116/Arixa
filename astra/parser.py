@@ -301,7 +301,12 @@ class Parser:
             self.eat("->")
             typ = f"fn({', '.join(args)}) -> {self.parse_type()}"
         else:
-            name = self.eat("IDENT").text
+            if self.cur().kind in {"IDENT", "INT_TYPE"}:
+                name = self.cur().text
+                self.i += 1
+            else:
+                self._err(f"expected type name, got {self.cur().kind}", self.cur())
+                raise ParseError(self.errors[-1])
             typ = name
             if self.opt("<"):
                 args = [self.parse_type()]
@@ -506,7 +511,12 @@ class Parser:
             self.eat(")")
             return AlignOfTypeExpr(typ, tok.pos, tok.line, tok.col)
         if self.opt("INT"):
-            return Literal(int(tok.text), tok.pos, tok.line, tok.col)
+            lit = Literal(int(tok.text), tok.pos, tok.line, tok.col)
+            nxt = self.cur()
+            if nxt.kind == "INT_TYPE" and nxt.pos == tok.pos + len(tok.text):
+                self.i += 1
+                return CastExpr(lit, nxt.text, nxt.pos, nxt.line, nxt.col)
+            return lit
         if self.opt("FLOAT"):
             return Literal(float(tok.text), tok.pos, tok.line, tok.col)
         if self.opt("STR"):

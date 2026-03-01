@@ -178,6 +178,22 @@ fn main() -> Int {
     assert "mov dword [rbp-" in asm
 
 
+def test_x86_64_masks_non_standard_integer_width_results():
+    src = """
+fn main() -> Int {
+  let a: u4 = 15u4;
+  let b: u4 = 1u4;
+  let c: u4 = a + b;
+  return c as Int;
+}
+"""
+    prog = parse(src)
+    analyze(prog)
+    asm = to_x86_64(prog)
+    assert_valid_x86_64_assembly(asm)
+    assert "0x000000000000000f" in asm
+
+
 def test_x86_64_i128_hard_ops_select_helper_symbols_by_overflow_mode():
     src = """
 fn main() -> Int {

@@ -249,6 +249,27 @@ def test_strict_integer_binary_requires_matching_types():
         assert "matching integer types" in str(e)
 
 
+def test_dynamic_integer_width_types_semantic_ok():
+    src = """
+fn main() -> Int {
+  let a: u4 = 15u4;
+  let b: u4 = 1u4;
+  let c: u4 = a + b;
+  return c as Int;
+}
+"""
+    analyze(parse(src))
+
+
+def test_dynamic_integer_width_requires_explicit_cast_for_mixed_widths():
+    src = "fn main() -> Int { let a: u4 = 1u4; let b: u8 = 2 as u8; let c = a + b; return 0; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "matching integer types" in str(e)
+
+
 def test_layout_query_semantics_for_type_and_value_forms():
     src = "struct P { a Int, b u8 } fn main() -> Int { let p = P(1, 2 as u8); return sizeof(P) + alignof(P) + size_of(p.a) + align_of(p.b); }"
     analyze(parse(src))

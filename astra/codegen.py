@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from astra.ast import *
+from astra.int_types import int_storage_align, int_storage_size, parse_int_type_name
 from astra.layout import (
     LayoutError,
     align_to as _align_to,
@@ -515,39 +516,7 @@ class _ModuleCtx:
     next_string_id: int = 0
 
 
-_INT_TYPES = {
-    "Int",
-    "Bool",
-    "i8",
-    "u8",
-    "i16",
-    "u16",
-    "i32",
-    "u32",
-    "i64",
-    "u64",
-    "i128",
-    "u128",
-    "isize",
-    "usize",
-}
 _FLOAT_TYPES = {"Float", "f32", "f64"}
-_INT_ABI_INFO: dict[str, tuple[int, bool]] = {
-    "Int": (8, True),
-    "Bool": (1, False),
-    "i8": (1, True),
-    "u8": (1, False),
-    "i16": (2, True),
-    "u16": (2, False),
-    "i32": (4, True),
-    "u32": (4, False),
-    "i64": (8, True),
-    "u64": (8, False),
-    "isize": (8, True),
-    "usize": (8, False),
-    "i128": (16, True),
-    "u128": (16, False),
-}
 _INT_ARG_REGS = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
 _SSE_ARG_REGS = ["xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7"]
 _RUNTIME_ABI: dict[str, _FnSig] = {
@@ -721,12 +690,17 @@ def _lower_abi_type(typ: str, node: Any, *, allow_memory: bool = True) -> _AbiTy
     if _is_option_type(c):
         # Option<T> lowers as nullable pointer to boxed T payload.
         return _AbiType(c, "ptr", "int")
-    if c in _INT_TYPES:
-        size, signed = _INT_ABI_INFO[c]
-        if size == 16:
-            return _AbiType(c, c, "int128", size=16, align=16, signed=signed, bits=128)
-        repr_name = "u8" if c == "Bool" else f"i{size * 8}"
-        return _AbiType(c, repr_name, "int", size=size, align=size, signed=signed, bits=size * 8)
+    if c == "Bool":
+        return _AbiType(c, "u8", "int", size=1, align=1, signed=False, bits=8)
+    int_info = parse_int_type_name(c)
+    if int_info is not None:
+        bits, signed = int_info
+        if bits > 64:
+            return _AbiType(c, c, "int128", size=16, align=16, signed=signed, bits=bits)
+        size = int_storage_size(bits)
+        align = int_storage_align(size)
+        repr_bits = max(8, size * 8)
+        return _AbiType(c, f"i{repr_bits}", "int", size=size, align=align, signed=signed, bits=bits)
     if c in _FLOAT_TYPES:
         if c == "f32":
             return _AbiType(c, "f32", "sse", size=4, align=4, bits=32)
@@ -1096,8 +1070,8 @@ def _expr_type(e: Any, ctx: _FnCtx) -> str:
 
 def _coerce_value(code: list[str], from_abi: _AbiType, to_abi: _AbiType, node: Any) -> tuple[list[str], _AbiType]:
     if from_abi.cls == to_abi.cls:
-        if from_abi.cls == "int":
-            return code + _normalize_int_result(to_abi), to_abi
+        if from_abi.cls in {"int", "int128"}:
+            return code + _normalize_numeric_result(to_abi), to_abi
         if from_abi.cls == "sse" and from_abi.size != to_abi.size:
             if from_abi.size == 4 and to_abi.size == 8:
                 return code + ["  cvtss2sd xmm0, xmm0"], to_abi
@@ -1110,35 +1084,119 @@ def _coerce_value(code: list[str], from_abi: _AbiType, to_abi: _AbiType, node: A
             out.append("  cqo")
         else:
             out.append("  xor rdx, rdx")
-        return out, to_abi
+        return out + _normalize_int128_result(to_abi), to_abi
     if from_abi.cls == "int128" and to_abi.cls == "int":
-        return code + _normalize_int_result(to_abi), to_abi
+        return code + _normalize_int128_result(from_abi) + _normalize_int_result(to_abi), to_abi
     if from_abi.cls == "int" and to_abi.cls == "sse":
-        return code + [f"  {'cvtsi2ss' if to_abi.size == 4 else 'cvtsi2sd'} xmm0, rax"], to_abi
+        return code + _normalize_int_result(from_abi) + [f"  {'cvtsi2ss' if to_abi.size == 4 else 'cvtsi2sd'} xmm0, rax"], to_abi
     if from_abi.cls == "int128" and to_abi.cls == "sse":
-        return code + [f"  {'cvtsi2ss' if to_abi.size == 4 else 'cvtsi2sd'} xmm0, rax"], to_abi
+        return code + _normalize_int128_result(from_abi) + [f"  {'cvtsi2ss' if to_abi.size == 4 else 'cvtsi2sd'} xmm0, rax"], to_abi
     if from_abi.cls == "sse" and to_abi.cls == "int":
-        return code + [f"  {'cvttss2si' if from_abi.size == 4 else 'cvttsd2si'} rax, xmm0"], to_abi
+        return code + [f"  {'cvttss2si' if from_abi.size == 4 else 'cvttsd2si'} rax, xmm0"] + _normalize_int_result(to_abi), to_abi
     if from_abi.cls == "sse" and to_abi.cls == "int128":
         out = code + [f"  {'cvttss2si' if from_abi.size == 4 else 'cvttsd2si'} rax, xmm0"]
         if to_abi.signed:
             out.append("  cqo")
         else:
             out.append("  xor rdx, rdx")
-        return out, to_abi
+        return out + _normalize_int128_result(to_abi), to_abi
     raise CodegenError(_diag(node, f"cannot coerce {from_abi.src} to {to_abi.src} on x86_64 backend"))
+
+
+def _u64_imm(value: int) -> str:
+    return f"0x{(value & ((1 << 64) - 1)):016x}"
+
+
+def _normalize_numeric_result(abi: _AbiType) -> list[str]:
+    if abi.cls == "int":
+        return _normalize_int_result(abi)
+    if abi.cls == "int128":
+        return _normalize_int128_result(abi)
+    return []
 
 
 def _normalize_int_result(abi: _AbiType) -> list[str]:
     if abi.cls != "int":
         return []
-    if abi.size == 1:
-        return ["  movsx rax, al"] if abi.signed else ["  movzx rax, al"]
-    if abi.size == 2:
-        return ["  movsx rax, ax"] if abi.signed else ["  movzx rax, ax"]
-    if abi.size == 4:
-        return ["  movsxd rax, eax"] if abi.signed else ["  mov eax, eax"]
-    return []
+    bits = max(1, min(64, abi.bits))
+    if bits == 64:
+        return []
+    if abi.signed:
+        shift = 64 - bits
+        return [f"  shl rax, {shift}", f"  sar rax, {shift}"]
+    mask = (1 << bits) - 1
+    return [f"  mov r11, {_u64_imm(mask)}", "  and rax, r11"]
+
+
+def _normalize_int128_result(abi: _AbiType) -> list[str]:
+    if abi.cls != "int128":
+        return []
+    bits = max(1, min(128, abi.bits))
+    if bits == 128:
+        return []
+    if bits <= 64:
+        mask = (1 << bits) - 1
+        out = [f"  mov r11, {_u64_imm(mask)}", "  and rax, r11"]
+        if abi.signed:
+            shift = 64 - bits
+            out += [f"  shl rax, {shift}", f"  sar rax, {shift}", "  mov rdx, rax", "  sar rdx, 63"]
+        else:
+            out.append("  xor rdx, rdx")
+        return out
+    high_bits = bits - 64
+    hi_mask = (1 << high_bits) - 1
+    out = [f"  mov r11, {_u64_imm(hi_mask)}", "  and rdx, r11"]
+    if abi.signed and bits < 128:
+        sign_shift = high_bits - 1
+        fill_mask = ((1 << 64) - 1) ^ hi_mask
+        out += [
+            "  mov rcx, rdx",
+            f"  shr rcx, {sign_shift}",
+            "  and rcx, 1",
+            "  neg rcx",
+            f"  mov r11, {_u64_imm(fill_mask)}",
+            "  and rcx, r11",
+            "  or rdx, rcx",
+        ]
+    return out
+
+
+def _stack_byte_ref(slot: int, byte_offset: int) -> str:
+    disp = slot - byte_offset
+    if disp > 0:
+        return f"[rbp-{disp}]"
+    if disp < 0:
+        return f"[rbp+{-disp}]"
+    return "[rbp]"
+
+
+def _ptr_byte_ref(ptr_reg: str, byte_offset: int) -> str:
+    if byte_offset == 0:
+        return f"[{ptr_reg}]"
+    return f"[{ptr_reg}+{byte_offset}]"
+
+
+def _store_n_bytes_from_reg(base_ref_fn, size: int, src_reg: str) -> list[str]:
+    if size <= 0:
+        return []
+    code = [f"  mov r11, {src_reg}"] if src_reg != "r11" else []
+    for i in range(size):
+        code.append(f"  mov byte {base_ref_fn(i)}, r11b")
+        if i + 1 < size:
+            code.append("  shr r11, 8")
+    return code
+
+
+def _load_n_bytes_to_reg(base_ref_fn, size: int, dst_reg: str = "rax") -> list[str]:
+    if size <= 0:
+        return [f"  xor {dst_reg}, {dst_reg}"]
+    tmp = "rcx" if dst_reg == "rax" else "rax"
+    code = [f"  xor {dst_reg}, {dst_reg}"]
+    for i in range(size - 1, -1, -1):
+        code.append(f"  shl {dst_reg}, 8")
+        code.append(f"  movzx {tmp}, byte {base_ref_fn(i)}")
+        code.append(f"  or {dst_reg}, {tmp}")
+    return code
 
 
 def _int_reg_alias(reg: str, size: int) -> str:
@@ -1160,22 +1218,25 @@ def _int_reg_alias(reg: str, size: int) -> str:
 def _store_from_int_reg(slot: int, abi: _AbiType, reg: str) -> list[str]:
     if abi.cls != "int":
         raise CodegenError(f"internal: _store_from_int_reg expects int abi, got {abi.cls}")
-    mem = {1: "byte", 2: "word", 4: "dword", 8: "qword"}.get(abi.size)
-    if mem is None:
-        raise CodegenError(f"internal: unsupported int size {abi.size}")
-    return [f"  mov {mem} [rbp-{slot}], {_int_reg_alias(reg, abi.size)}"]
+    if abi.size in {1, 2, 4, 8}:
+        mem = {1: "byte", 2: "word", 4: "dword", 8: "qword"}[abi.size]
+        return [f"  mov {mem} [rbp-{slot}], {_int_reg_alias(reg, abi.size)}"]
+    if 1 < abi.size <= 8:
+        return _store_n_bytes_from_reg(lambda i: _stack_byte_ref(slot, i), abi.size, reg)
+    raise CodegenError(f"internal: unsupported int size {abi.size}")
 
 
 def _store_from_reg(slot: int, abi: _AbiType) -> list[str]:
     if abi.cls == "int":
-        if abi.size == 1:
-            return [f"  mov byte [rbp-{slot}], al"]
-        if abi.size == 2:
-            return [f"  mov word [rbp-{slot}], ax"]
-        if abi.size == 4:
-            return [f"  mov dword [rbp-{slot}], eax"]
-        return [f"  mov qword [rbp-{slot}], rax"]
+        if abi.size in {1, 2, 4, 8}:
+            mem = {1: "byte", 2: "word", 4: "dword", 8: "qword"}[abi.size]
+            return [f"  mov {mem} [rbp-{slot}], {_int_reg_alias('rax', abi.size)}"]
+        if 1 < abi.size <= 8:
+            return _store_n_bytes_from_reg(lambda i: _stack_byte_ref(slot, i), abi.size, "rax")
+        raise CodegenError(f"internal: unsupported int size {abi.size}")
     if abi.cls == "int128":
+        if abi.size != 16:
+            raise CodegenError(f"internal: unsupported int128 storage size {abi.size}")
         return [f"  mov qword [rbp-{slot}], rax", f"  mov qword [rbp-{slot + 8}], rdx"]
     if abi.cls == "sse":
         if abi.size == 4:
@@ -1187,20 +1248,20 @@ def _store_from_reg(slot: int, abi: _AbiType) -> list[str]:
 def _load_to_reg(slot: int, abi: _AbiType) -> list[str]:
     if abi.cls == "int":
         if abi.size == 1:
-            if abi.signed:
-                return [f"  movsx rax, byte [rbp-{slot}]"]
-            return [f"  movzx rax, byte [rbp-{slot}]"]
+            return [f"  movzx rax, byte [rbp-{slot}]"] + _normalize_int_result(abi)
         if abi.size == 2:
-            if abi.signed:
-                return [f"  movsx rax, word [rbp-{slot}]"]
-            return [f"  movzx rax, word [rbp-{slot}]"]
+            return [f"  movzx rax, word [rbp-{slot}]"] + _normalize_int_result(abi)
         if abi.size == 4:
-            if abi.signed:
-                return [f"  movsxd rax, dword [rbp-{slot}]"]
-            return [f"  mov eax, dword [rbp-{slot}]"]
-        return [f"  mov rax, qword [rbp-{slot}]"]
+            return [f"  mov eax, dword [rbp-{slot}]"] + _normalize_int_result(abi)
+        if abi.size == 8:
+            return [f"  mov rax, qword [rbp-{slot}]"] + _normalize_int_result(abi)
+        if 1 < abi.size < 8:
+            return _load_n_bytes_to_reg(lambda i: _stack_byte_ref(slot, i), abi.size, "rax") + _normalize_int_result(abi)
+        raise CodegenError(f"internal: unsupported int size {abi.size}")
     if abi.cls == "int128":
-        return [f"  mov rax, qword [rbp-{slot}]", f"  mov rdx, qword [rbp-{slot + 8}]"]
+        if abi.size != 16:
+            raise CodegenError(f"internal: unsupported int128 storage size {abi.size}")
+        return [f"  mov rax, qword [rbp-{slot}]", f"  mov rdx, qword [rbp-{slot + 8}]"] + _normalize_int128_result(abi)
     if abi.cls == "sse":
         if abi.size == 4:
             return [f"  movss xmm0, dword [rbp-{slot}]"]
@@ -1210,14 +1271,15 @@ def _load_to_reg(slot: int, abi: _AbiType) -> list[str]:
 
 def _store_ptr_value(ptr_reg: str, abi: _AbiType) -> list[str]:
     if abi.cls == "int":
-        if abi.size == 1:
-            return [f"  mov byte [{ptr_reg}], al"]
-        if abi.size == 2:
-            return [f"  mov word [{ptr_reg}], ax"]
-        if abi.size == 4:
-            return [f"  mov dword [{ptr_reg}], eax"]
-        return [f"  mov qword [{ptr_reg}], rax"]
+        if abi.size in {1, 2, 4, 8}:
+            mem = {1: "byte", 2: "word", 4: "dword", 8: "qword"}[abi.size]
+            return [f"  mov {mem} [{ptr_reg}], {_int_reg_alias('rax', abi.size)}"]
+        if 1 < abi.size <= 8:
+            return _store_n_bytes_from_reg(lambda i: _ptr_byte_ref(ptr_reg, i), abi.size, "rax")
+        raise CodegenError(f"internal: unsupported int size {abi.size}")
     if abi.cls == "int128":
+        if abi.size != 16:
+            raise CodegenError(f"internal: unsupported int128 storage size {abi.size}")
         return [f"  mov qword [{ptr_reg}], rax", f"  mov qword [{ptr_reg}+8], rdx"]
     if abi.cls == "sse":
         if abi.size == 4:
@@ -1229,20 +1291,20 @@ def _store_ptr_value(ptr_reg: str, abi: _AbiType) -> list[str]:
 def _load_ptr_value(ptr_reg: str, abi: _AbiType) -> list[str]:
     if abi.cls == "int":
         if abi.size == 1:
-            if abi.signed:
-                return [f"  movsx rax, byte [{ptr_reg}]"]
-            return [f"  movzx rax, byte [{ptr_reg}]"]
+            return [f"  movzx rax, byte [{ptr_reg}]"] + _normalize_int_result(abi)
         if abi.size == 2:
-            if abi.signed:
-                return [f"  movsx rax, word [{ptr_reg}]"]
-            return [f"  movzx rax, word [{ptr_reg}]"]
+            return [f"  movzx rax, word [{ptr_reg}]"] + _normalize_int_result(abi)
         if abi.size == 4:
-            if abi.signed:
-                return [f"  movsxd rax, dword [{ptr_reg}]"]
-            return [f"  mov eax, dword [{ptr_reg}]"]
-        return [f"  mov rax, qword [{ptr_reg}]"]
+            return [f"  mov eax, dword [{ptr_reg}]"] + _normalize_int_result(abi)
+        if abi.size == 8:
+            return [f"  mov rax, qword [{ptr_reg}]"] + _normalize_int_result(abi)
+        if 1 < abi.size < 8:
+            return _load_n_bytes_to_reg(lambda i: _ptr_byte_ref(ptr_reg, i), abi.size, "rax") + _normalize_int_result(abi)
+        raise CodegenError(f"internal: unsupported int size {abi.size}")
     if abi.cls == "int128":
-        return [f"  mov rax, qword [{ptr_reg}]", f"  mov rdx, qword [{ptr_reg}+8]"]
+        if abi.size != 16:
+            raise CodegenError(f"internal: unsupported int128 storage size {abi.size}")
+        return [f"  mov rax, qword [{ptr_reg}]", f"  mov rdx, qword [{ptr_reg}+8]"] + _normalize_int128_result(abi)
     if abi.cls == "sse":
         if abi.size == 4:
             return [f"  movss xmm0, dword [{ptr_reg}]"]
