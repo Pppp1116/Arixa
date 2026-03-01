@@ -821,6 +821,48 @@ def _emit_oob_trap(ctx: _ModuleCtx, state: _FnState, idx64: ir.Value, ln: ir.Val
     b.position_at_end(in_bounds)
 
 
+def _emit_shift_trap_guard(ctx: _ModuleCtx, state: _FnState, rv: ir.Value, signed: bool, bits: int) -> None:
+    if not isinstance(rv.type, ir.IntType):
+        raise CodegenError("internal: shift rhs must be integer")
+    b = state.builder
+    fn = state.fn_ir
+    zero = ir.Constant(rv.type, 0)
+    lim = ir.Constant(rv.type, bits)
+    if signed:
+        nonneg = b.icmp_signed(">=", rv, zero)
+        lt = b.icmp_signed("<", rv, lim)
+        ok = b.and_(nonneg, lt)
+    else:
+        ok = b.icmp_unsigned("<", rv, lim)
+    in_range = fn.append_basic_block("shift_in_range")
+    bad = fn.append_basic_block("shift_oob")
+    b.cbranch(ok, in_range, bad)
+
+    b.position_at_end(bad)
+    trap = _declare_trap(ctx)
+    b.call(trap, [])
+    b.unreachable()
+
+    b.position_at_end(in_range)
+
+
+def _lower_checked_shift(
+    ctx: _ModuleCtx,
+    state: _FnState,
+    lv: ir.Value,
+    rv: ir.Value,
+    signed: bool,
+    left_shift: bool,
+) -> ir.Value:
+    if not isinstance(lv.type, ir.IntType) or not isinstance(rv.type, ir.IntType):
+        raise CodegenError("internal: checked shift requires integer operands")
+    _emit_shift_trap_guard(ctx, state, rv, signed=signed, bits=lv.type.width)
+    b = state.builder
+    if left_shift:
+        return b.shl(lv, rv)
+    return b.ashr(lv, rv) if signed else b.lshr(lv, rv)
+
+
 def _lower_count_like(ctx: _ModuleCtx, state: _FnState, call: Call, op: str) -> _Value:
     if len(call.args) != 1:
         raise CodegenError(_diag(call, f"{op} expects 1 argument"))
@@ -1749,9 +1791,9 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
         if e.op == "^":
             return _Value(b.xor(lv, rv), lty)
         if e.op == "<<":
-            return _Value(b.shl(lv, rv), lty)
+            return _Value(_lower_checked_shift(ctx, state, lv, rv, signed=signed, left_shift=True), lty)
         if e.op == ">>":
-            return _Value(b.ashr(lv, rv) if signed else b.lshr(lv, rv), lty)
+            return _Value(_lower_checked_shift(ctx, state, lv, rv, signed=signed, left_shift=False), lty)
         if e.op in {"==", "!=", "<", "<=", ">", ">="}:
             if e.op in {"==", "!="}:
                 pred = e.op
@@ -1978,9 +2020,9 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
             elif st.op == "^=":
                 out = b.xor(lv.value, rv.value)
             elif st.op == "<<=":
-                out = b.shl(lv.value, rv.value)
+                out = _lower_checked_shift(ctx, state, lv.value, rv.value, signed=signed, left_shift=True)
             elif st.op == ">>=":
-                out = b.ashr(lv.value, rv.value) if signed else b.lshr(lv.value, rv.value)
+                out = _lower_checked_shift(ctx, state, lv.value, rv.value, signed=signed, left_shift=False)
             else:
                 raise CodegenError(_diag(st, f"internal: unexpected assignment op {st.op}"))
             b.store(out, ptr)
@@ -2039,9 +2081,9 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
                         elif st.op == "^=":
                             out = b.xor(lv, rv)
                         elif st.op == "<<=":
-                            out = b.shl(lv, rv)
+                            out = _lower_checked_shift(ctx, state, lv, rv, signed=signed, left_shift=True)
                         elif st.op == ">>=":
-                            out = b.ashr(lv, rv) if signed else b.lshr(lv, rv)
+                            out = _lower_checked_shift(ctx, state, lv, rv, signed=signed, left_shift=False)
                         else:
                             raise CodegenError(_diag(st, f"internal: unexpected field assignment op {st.op}"))
                     if isinstance(out.type, ir.IntType) and out.type.width != bits:
@@ -2092,9 +2134,9 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
                 elif st.op == "^=":
                     out = b.xor(lv, rv)
                 elif st.op == "<<=":
-                    out = b.shl(lv, rv)
+                    out = _lower_checked_shift(ctx, state, lv, rv, signed=signed, left_shift=True)
                 elif st.op == ">>=":
-                    out = b.ashr(lv, rv) if signed else b.lshr(lv, rv)
+                    out = _lower_checked_shift(ctx, state, lv, rv, signed=signed, left_shift=False)
                 else:
                     raise CodegenError(_diag(st, f"internal: unexpected field assignment op {st.op}"))
             b.store(out, fld)
@@ -2150,9 +2192,9 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
                 elif st.op == "^=":
                     out = b.xor(lv, rv)
                 elif st.op == "<<=":
-                    out = b.shl(lv, rv)
+                    out = _lower_checked_shift(ctx, state, lv, rv, signed=signed, left_shift=True)
                 elif st.op == ">>=":
-                    out = b.ashr(lv, rv) if signed else b.lshr(lv, rv)
+                    out = _lower_checked_shift(ctx, state, lv, rv, signed=signed, left_shift=False)
                 else:
                     raise CodegenError(_diag(st, f"internal: unexpected index assignment op {st.op}"))
             b.store(out, elem_ptr)

@@ -189,6 +189,20 @@ fn main() -> Int {
     assert_valid_llvm_ir(mod)
 
 
+def test_llvm_shift_ops_emit_runtime_range_guards():
+    src = """
+fn main() -> Int {
+  let x: u8 = 1 as u8;
+  let s: u8 = 8 as u8;
+  return (x << s) as Int;
+}
+"""
+    mod = to_llvm_ir(parse(src))
+    assert_valid_llvm_ir(mod)
+    assert "llvm.trap" in mod
+    assert "shift_oob" in mod
+
+
 def test_llvm_lowering_covers_extended_runtime_builtins():
     src = """
 fn worker(x: Int) -> Int { return x + 1; }

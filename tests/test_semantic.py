@@ -352,6 +352,24 @@ fn main() -> Int {
     analyze(parse(src))
 
 
+def test_semantic_rejects_static_shift_count_out_of_range():
+    src = "fn main() -> Int { let x: u8 = 1 as u8; return (x << (8 as u8)) as Int; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "shift count 8 out of range for u8 in <<" in str(e)
+
+
+def test_semantic_rejects_static_negative_shift_count():
+    src = "fn main() -> Int { let x: Int = 1; return x >> -1; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "shift count -1 out of range for Int in >>" in str(e)
+
+
 def test_semantic_rejects_bit_intrinsics_on_non_integer_type():
     src = "fn main() -> Int { return countOnes(1.5); }"
     try:

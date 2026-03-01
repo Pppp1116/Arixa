@@ -576,6 +576,37 @@ def _saturating_float_to_int(value: float, bits: int, signed: bool) -> int:
     return v
 
 
+def _const_int_expr_value(expr: Any) -> int | None:
+    if isinstance(expr, Literal) and isinstance(expr.value, int) and not isinstance(expr.value, bool):
+        return int(expr.value)
+    if isinstance(expr, Unary) and expr.op == "-":
+        inner = _const_int_expr_value(expr.expr)
+        if inner is not None:
+            return -inner
+    if isinstance(expr, CastExpr):
+        return _const_int_expr_value(expr.expr)
+    return None
+
+
+def _require_shift_rhs_static_safe(filename: str, op: str, lhs_ty: str, rhs_expr: Any) -> None:
+    info = _int_info(lhs_ty)
+    if info is None:
+        return
+    bits, _ = info
+    v = _const_int_expr_value(rhs_expr)
+    if v is None:
+        return
+    if v < 0 or v >= bits:
+        raise SemanticError(
+            _diag(
+                filename,
+                getattr(rhs_expr, "line", 0),
+                getattr(rhs_expr, "col", 0),
+                f"shift count {v} out of range for {lhs_ty} in {op}; expected 0..{bits - 1}",
+            )
+        )
+
+
 def _require_compound_assign_compat(filename: str, line: int, col: int, op: str, lhs: str, rhs: str):
     if op == "=":
         _require_type(filename, line, col, lhs, rhs, "assignment")
@@ -1012,6 +1043,8 @@ def _check_stmt(
             if lhs is None:
                 raise SemanticError(_diag(filename, st.line, st.col, f"assignment to undefined name {st.target.value}"))
             _require_compound_assign_compat(filename, st.line, st.col, st.op, lhs, rhs)
+            if st.op in {"<<=", ">>="}:
+                _require_shift_rhs_static_safe(filename, st.op, lhs, st.expr)
             if _is_ref_type(lhs):
                 if isinstance(st.expr, Unary) and st.expr.op in {"&", "&mut"} and isinstance(st.expr.expr, Name):
                     owner = st.expr.expr.value
@@ -1043,6 +1076,8 @@ def _check_stmt(
             return
         lhs = _infer(st.target, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
         _require_compound_assign_compat(filename, st.line, st.col, st.op, lhs, rhs)
+        if st.op in {"<<=", ">>="}:
+            _require_shift_rhs_static_safe(filename, st.op, lhs, st.expr)
         return
     if isinstance(st, ReturnStmt):
         expr_ty = "Void" if st.expr is None else _infer(st.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
@@ -1470,6 +1505,8 @@ def _infer(
             raise SemanticError(_diag(filename, e.line, e.col, f"numeric operator {e.op} expects numeric operands"))
         if e.op in {"&", "|", "^", "<<", ">>"}:
             _require_strict_int_operands(filename, e.line, e.col, e.op, l, r)
+            if e.op in {"<<", ">>"}:
+                _require_shift_rhs_static_safe(filename, e.op, l, e.right)
             return _typed(e, _canonical_type(l))
         if e.op in {"==", "!=", "<", "<=", ">", ">="}:
             if _is_int_type(l) and _is_int_type(r):

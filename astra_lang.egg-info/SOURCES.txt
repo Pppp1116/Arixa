@@ -39,6 +39,7 @@ tests/test_fixed_int_types.py
 tests/test_formatter_correctness.py
 tests/test_frontend.py
 tests/test_full_programs.py
+tests/test_heavy_coverage_matrix.py
 tests/test_layout_dynamic_int.py
 tests/test_lexer.py
 tests/test_optimizer_edges.py

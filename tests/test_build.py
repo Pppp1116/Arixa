@@ -352,6 +352,28 @@ fn main() -> Int {
     shutil.which("clang") is None,
     reason="native target requires clang",
 )
+def test_build_native_shift_out_of_range_traps(tmp_path: Path):
+    src = tmp_path / "shift_trap.astra"
+    out = tmp_path / "shift_trap.exe"
+    src.write_text(
+        """
+fn main() -> Int {
+  let x: u8 = 1 as u8;
+  let s: u8 = 8 as u8;
+  return (x << s) as Int;
+}
+"""
+    )
+    st = build(str(src), str(out), "native")
+    assert st in {"built", "cached"}
+    cp = subprocess.run([str(out)], capture_output=True, text=True)
+    assert cp.returncode != 0
+
+
+@pytest.mark.skipif(
+    shutil.which("clang") is None,
+    reason="native target requires clang",
+)
 def test_build_native_supports_packed_struct_bitfield_ops(tmp_path: Path):
     src = tmp_path / "packed.astra"
     out = tmp_path / "packed.exe"
