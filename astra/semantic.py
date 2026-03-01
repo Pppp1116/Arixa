@@ -813,13 +813,10 @@ def analyze(prog: Program, filename: str = "<input>", freestanding: bool = False
                 for _, field_ty in item.fields:
                     _validate_decl_type(field_ty, filename, item.line, item.col)
                 if item.packed:
-                    for field_name, field_ty in item.fields:
+                    for _, field_ty in item.fields:
                         c = _canonical_type(field_ty)
                         if c != "Bool" and not _is_int_type(c):
                             raise SemanticError(_diag(filename, item.line, item.col, "packed struct fields must be integer or bool types"))
-                        info = _int_info(c)
-                        if info is not None and info[0] > 64:
-                            raise SemanticError(_diag(filename, item.line, item.col, f"packed field {field_name} width {info[0]} exceeds current backend limit of 64 bits"))
                 structs[item.name] = item
                 continue
             if isinstance(item, TypeAliasDecl):
@@ -1687,7 +1684,7 @@ def _infer_call(
     setattr(e.fn, "inferred_type", callee_ty)
     parsed = _parse_fn_type(callee_ty)
     if parsed is None:
-        raise SemanticError(_diag(filename, e.line, e.col, f"unsupported callee type {callee_ty}"))
+        raise SemanticError(_diag(filename, e.line, e.col, f"cannot call value of non-function type {callee_ty}"))
     param_tys, ret_ty = parsed
     if len(param_tys) != len(e.args):
         raise SemanticError(_diag(filename, e.line, e.col, f"callee expects {len(param_tys)} args, got {len(e.args)}"))

@@ -144,6 +144,51 @@ fn main() -> Int {
     assert "or" in mod
 
 
+def test_llvm_packed_struct_fields_above_64_bits_lower_with_wide_windows():
+    src = """
+@packed struct Wide {
+  pad: u7,
+  big: u128,
+  tail: u1,
+}
+fn main() -> Int {
+  let mut w = Wide(1u7, 5u128, 1u1);
+  w.big += 2u128;
+  w.big <<= 1u128;
+  return (w.pad as Int) + (w.big as Int) + (w.tail as Int);
+}
+"""
+    mod = to_llvm_ir(parse(src))
+    assert_valid_llvm_ir(mod)
+    assert "i136" in mod
+    assert "lshr" in mod
+    assert "shl" in mod
+
+
+def test_llvm_valid_surface_program_does_not_report_unsupported_diagnostics():
+    src = """
+fn add(x: Int, y: Int) -> Int { return x + y; }
+fn main() -> Int {
+  let mut a: u8 = 7 as u8;
+  a += 2 as u8;
+  let b = countOnes(a);
+  let c = leadingZeros(a);
+  let d = trailingZeros(a);
+  let e = add(1, 2);
+  if (a as Int) > 0 && e == 3 {
+    return b + c + d + e;
+  }
+  return 0;
+}
+"""
+    try:
+        mod = to_llvm_ir(parse(src))
+    except Exception as e:
+        assert "unsupported" not in str(e)
+        raise
+    assert_valid_llvm_ir(mod)
+
+
 def test_llvm_lowering_covers_extended_runtime_builtins():
     src = """
 fn worker(x: Int) -> Int { return x + 1; }

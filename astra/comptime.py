@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 import math
 
@@ -32,6 +33,11 @@ def _ast_of(v, node) -> Any:
 class _LoopSignal:
     kind: str
     value: object = None
+
+
+@dataclass(frozen=True)
+class _FnRef:
+    name: str
 
 
 class _Evaluator:
@@ -67,6 +73,79 @@ class _Evaluator:
         if self.steps > self.max_steps:
             raise ComptimeError(_diag(self.filename, getattr(node, "line", 0), getattr(node, "col", 0), "step limit exceeded"))
 
+    def _fn_type(self, fn: FnDecl) -> str:
+        return f"fn({', '.join(t for _, t in fn.params)}) -> {fn.ret}"
+
+    def _value_type(self, value: object) -> str:
+        if isinstance(value, _FnRef):
+            fn = self.fn_map.get(value.name)
+            if fn is not None:
+                return self._fn_type(fn)
+            return "fn(...) -> Any"
+        inferred = _value_type_name(value)
+        if inferred is not None:
+            return inferred
+        return type(value).__name__
+
+    def _call_target_name(self, callee: Any, env: dict[str, object], env_types: dict[str, str], node: Any) -> str:
+        if isinstance(callee, Name):
+            if callee.value in env:
+                val = env[callee.value]
+                if isinstance(val, _FnRef):
+                    return val.name
+                ty = canonical_type(env_types.get(callee.value, self._value_type(val)))
+                raise ComptimeError(_diag(self.filename, node.line, node.col, f"cannot call value of non-function type {ty}"))
+            return callee.value
+        val = self.eval_expr(callee, env, env_types)
+        if isinstance(val, _FnRef):
+            return val.name
+        raise ComptimeError(_diag(self.filename, node.line, node.col, f"cannot call value of non-function type {self._value_type(val)}"))
+
+    def _dispatch_call(self, name: str, args: list[object], arg_nodes: list[Any], env: dict[str, object], env_types: dict[str, str], node: Any):
+        if name in self.banned:
+            raise ComptimeError(_diag(self.filename, node.line, node.col, f"call to non-pure function {name}"))
+        if name == "len":
+            if len(args) != 1:
+                raise ComptimeError(_diag(self.filename, node.line, node.col, "len expects 1 argument"))
+            return len(args[0])
+        if name in {"countOnes", "__countOnes", "leadingZeros", "__leadingZeros", "trailingZeros", "__trailingZeros"}:
+            if len(args) != 1:
+                raise ComptimeError(_diag(self.filename, node.line, node.col, f"{name} expects 1 argument"))
+            ty = self._expr_type_hint(arg_nodes[0], env, env_types) or "Int"
+            if not _is_int_type_name(ty):
+                raise ComptimeError(_diag(self.filename, node.line, node.col, f"{name} expects integer argument, got {ty}"))
+            bits, _ = _int_props(ty)
+            v = int(args[0]) & ((1 << bits) - 1)
+            base = name[2:] if name.startswith("__") else name
+            if base == "countOnes":
+                return v.bit_count()
+            if base == "leadingZeros":
+                return bits if v == 0 else max(0, bits - v.bit_length())
+            if v == 0:
+                return bits
+            c = 0
+            while (v & 1) == 0:
+                v >>= 1
+                c += 1
+            return c
+        if name == "alloc":
+            if len(args) != 1:
+                raise ComptimeError(_diag(self.filename, node.line, node.col, "alloc expects 1 argument"))
+            ptr = self.next_ptr
+            self.next_ptr += 1
+            self.heap[ptr] = bytearray(max(0, int(args[0])))
+            return ptr
+        if name == "free":
+            if len(args) != 1:
+                raise ComptimeError(_diag(self.filename, node.line, node.col, "free expects 1 argument"))
+            self.heap.pop(int(args[0]), None)
+            return 0
+        fn = self.fn_map.get(name)
+        if fn is not None:
+            arg_types = [self._expr_type_hint(a, env, env_types) for a in arg_nodes]
+            return self.call_user_fn(fn, args, arg_types=arg_types, depth=0)
+        raise ComptimeError(_diag(self.filename, node.line, node.col, f"undefined function {name}"))
+
     def eval_expr(self, e, env, env_types: dict[str, str] | None = None):
         if env_types is None:
             env_types = {}
@@ -100,9 +179,11 @@ class _Evaluator:
         if isinstance(e, AlignOfValueExpr):
             return self._layout_for_value_expr(e.expr, env, env_types).align
         if isinstance(e, Name):
-            if e.value not in env:
-                raise ComptimeError(_diag(self.filename, e.line, e.col, f"undefined name {e.value}"))
-            return env[e.value]
+            if e.value in env:
+                return env[e.value]
+            if e.value in self.fn_map:
+                return _FnRef(e.value)
+            raise ComptimeError(_diag(self.filename, e.line, e.col, f"undefined name {e.value}"))
         if isinstance(e, ArrayLit):
             return [self.eval_expr(x, env, env_types) for x in e.elements]
         if isinstance(e, CastExpr):
@@ -136,46 +217,9 @@ class _Evaluator:
         if isinstance(e, AwaitExpr):
             return self.eval_expr(e.expr, env, env_types)
         if isinstance(e, Call):
-            if not isinstance(e.fn, Name):
-                raise ComptimeError(_diag(self.filename, e.line, e.col, "comptime only supports direct function calls"))
-            name = e.fn.value
             args = [self.eval_expr(a, env, env_types) for a in e.args]
-            if name in self.banned:
-                raise ComptimeError(_diag(self.filename, e.line, e.col, f"call to non-pure function {name}"))
-            if name == "len":
-                return len(args[0])
-            if name in {"countOnes", "__countOnes", "leadingZeros", "__leadingZeros", "trailingZeros", "__trailingZeros"}:
-                if len(args) != 1:
-                    raise ComptimeError(_diag(self.filename, e.line, e.col, f"{name} expects 1 argument"))
-                ty = self._expr_type_hint(e.args[0], env, env_types) or "Int"
-                if not _is_int_type_name(ty):
-                    raise ComptimeError(_diag(self.filename, e.line, e.col, f"{name} expects integer argument, got {ty}"))
-                bits, _ = _int_props(ty)
-                v = int(args[0]) & ((1 << bits) - 1)
-                base = name[2:] if name.startswith("__") else name
-                if base == "countOnes":
-                    return v.bit_count()
-                if base == "leadingZeros":
-                    return bits if v == 0 else max(0, bits - v.bit_length())
-                if v == 0:
-                    return bits
-                c = 0
-                while (v & 1) == 0:
-                    v >>= 1
-                    c += 1
-                return c
-            if name == "alloc":
-                ptr = self.next_ptr
-                self.next_ptr += 1
-                self.heap[ptr] = bytearray(max(0, int(args[0])))
-                return ptr
-            if name == "free":
-                self.heap.pop(int(args[0]), None)
-                return 0
-            if name in self.fn_map:
-                arg_types = [self._expr_type_hint(a, env, env_types) for a in e.args]
-                return self.call_user_fn(self.fn_map[name], args, arg_types=arg_types, depth=0)
-            raise ComptimeError(_diag(self.filename, e.line, e.col, f"unsupported comptime function {name}"))
+            name = self._call_target_name(e.fn, env, env_types, e)
+            return self._dispatch_call(name, args, e.args, env, env_types, e)
         raise ComptimeError(_diag(self.filename, getattr(e, "line", 0), getattr(e, "col", 0), f"unsupported expression {type(e).__name__}"))
 
     def _layout_for_value_expr(self, expr: Any, env: dict[str, object], env_types: dict[str, str]):
@@ -213,6 +257,10 @@ class _Evaluator:
             if expr.value in env_types:
                 return canonical_type(env_types[expr.value])
             val = env.get(expr.value)
+            if isinstance(val, _FnRef):
+                fn = self.fn_map.get(val.name)
+                if fn is not None:
+                    return canonical_type(self._fn_type(fn))
             if isinstance(val, bool):
                 return "Bool"
             if isinstance(val, int):
@@ -429,6 +477,18 @@ class _Evaluator:
                 if isinstance(sig, _LoopSignal):
                     return sig
             return None
+        if isinstance(st, MatchStmt):
+            subj = self.eval_expr(st.expr, env, env_types)
+            for pat, body in st.arms:
+                pv = self.eval_expr(pat, env, env_types)
+                if subj != pv:
+                    continue
+                for s in body:
+                    sig = self.exec_stmt(s, env, env_types)
+                    if isinstance(sig, _LoopSignal):
+                        return sig
+                return None
+            return None
         if isinstance(st, WhileStmt):
             while bool(self.eval_expr(st.cond, env, env_types)):
                 for s in st.body:
@@ -547,6 +607,114 @@ def _div_trunc_toward_zero(a: int, b: int) -> int:
     return -q if (a < 0) ^ (b < 0) else q
 
 
+def _collect_runtime_name_uses_expr(expr: Any, out: set[str]) -> None:
+    if isinstance(expr, Name):
+        out.add(expr.value)
+        return
+    if isinstance(expr, Unary):
+        _collect_runtime_name_uses_expr(expr.expr, out)
+        return
+    if isinstance(expr, Binary):
+        _collect_runtime_name_uses_expr(expr.left, out)
+        _collect_runtime_name_uses_expr(expr.right, out)
+        return
+    if isinstance(expr, CastExpr):
+        _collect_runtime_name_uses_expr(expr.expr, out)
+        return
+    if isinstance(expr, AwaitExpr):
+        _collect_runtime_name_uses_expr(expr.expr, out)
+        return
+    if isinstance(expr, Call):
+        _collect_runtime_name_uses_expr(expr.fn, out)
+        for a in expr.args:
+            _collect_runtime_name_uses_expr(a, out)
+        return
+    if isinstance(expr, IndexExpr):
+        _collect_runtime_name_uses_expr(expr.obj, out)
+        _collect_runtime_name_uses_expr(expr.index, out)
+        return
+    if isinstance(expr, FieldExpr):
+        _collect_runtime_name_uses_expr(expr.obj, out)
+        return
+    if isinstance(expr, ArrayLit):
+        for e in expr.elements:
+            _collect_runtime_name_uses_expr(e, out)
+        return
+    if isinstance(expr, (SizeOfValueExpr, AlignOfValueExpr)):
+        _collect_runtime_name_uses_expr(expr.expr, out)
+        return
+
+
+def _collect_runtime_name_uses_stmt(stmt: Any, out: set[str]) -> None:
+    if isinstance(stmt, LetStmt):
+        _collect_runtime_name_uses_expr(stmt.expr, out)
+        return
+    if isinstance(stmt, AssignStmt):
+        _collect_runtime_name_uses_expr(stmt.target, out)
+        _collect_runtime_name_uses_expr(stmt.expr, out)
+        return
+    if isinstance(stmt, ReturnStmt):
+        if stmt.expr is not None:
+            _collect_runtime_name_uses_expr(stmt.expr, out)
+        return
+    if isinstance(stmt, ExprStmt):
+        _collect_runtime_name_uses_expr(stmt.expr, out)
+        return
+    if isinstance(stmt, DropStmt):
+        _collect_runtime_name_uses_expr(stmt.expr, out)
+        return
+    if isinstance(stmt, DeferStmt):
+        _collect_runtime_name_uses_expr(stmt.expr, out)
+        return
+    if isinstance(stmt, IfStmt):
+        _collect_runtime_name_uses_expr(stmt.cond, out)
+        for s in stmt.then_body:
+            _collect_runtime_name_uses_stmt(s, out)
+        for s in stmt.else_body:
+            _collect_runtime_name_uses_stmt(s, out)
+        return
+    if isinstance(stmt, MatchStmt):
+        _collect_runtime_name_uses_expr(stmt.expr, out)
+        for pat, body in stmt.arms:
+            _collect_runtime_name_uses_expr(pat, out)
+            for s in body:
+                _collect_runtime_name_uses_stmt(s, out)
+        return
+    if isinstance(stmt, WhileStmt):
+        _collect_runtime_name_uses_expr(stmt.cond, out)
+        for s in stmt.body:
+            _collect_runtime_name_uses_stmt(s, out)
+        return
+    if isinstance(stmt, ForStmt):
+        if st_init := stmt.init:
+            if isinstance(st_init, LetStmt):
+                _collect_runtime_name_uses_stmt(st_init, out)
+            elif isinstance(st_init, AssignStmt):
+                _collect_runtime_name_uses_stmt(st_init, out)
+            else:
+                _collect_runtime_name_uses_expr(st_init, out)
+        if stmt.cond is not None:
+            _collect_runtime_name_uses_expr(stmt.cond, out)
+        if st_step := stmt.step:
+            if isinstance(st_step, AssignStmt):
+                _collect_runtime_name_uses_stmt(st_step, out)
+            else:
+                _collect_runtime_name_uses_expr(st_step, out)
+        for s in stmt.body:
+            _collect_runtime_name_uses_stmt(s, out)
+        return
+    # Intentionally skip names used only inside comptime blocks; those do not require runtime materialization.
+    if isinstance(stmt, ComptimeStmt):
+        return
+
+
+def _collect_runtime_name_uses(stmts: list[Any]) -> set[str]:
+    out: set[str] = set()
+    for st in stmts:
+        _collect_runtime_name_uses_stmt(st, out)
+    return out
+
+
 def run_comptime(prog: Program, filename: str = "<input>", overflow_mode: str = "trap") -> dict[str, object]:
     fn_map = {item.name: item for item in prog.items if isinstance(item, FnDecl)}
     structs = {item.name: item for item in prog.items if isinstance(item, StructDecl)}
@@ -559,17 +727,26 @@ def run_comptime(prog: Program, filename: str = "<input>", overflow_mode: str = 
         known_locals: set[str] = {n for n, _ in item.params}
         env: dict[str, object] = {}
         env_types: dict[str, str] = {n: canonical_type(t) for n, t in item.params}
-        for st in item.body:
+        for idx, st in enumerate(item.body):
             if isinstance(st, ComptimeStmt):
-                snap = dict(env)
+                snap = copy.deepcopy(env)
                 for inner in st.body:
                     sig = evaluator.exec_stmt(inner, env, env_types)
                     if isinstance(sig, _LoopSignal):
                         raise ComptimeError(_diag(filename, st.line, st.col, "return/break/continue cannot escape comptime block"))
-                changed = {k: v for k, v in env.items() if snap.get(k, object()) is not v or k not in snap}
+                changed = {k: v for k, v in env.items() if k not in snap or snap[k] != v}
+                future_runtime_uses = _collect_runtime_name_uses(item.body[idx + 1 :])
                 for name, value in changed.items():
                     const_pool[f"{item.name}:{name}"] = value
-                    expr = _ast_of(value, st)
+                    must_materialize = name in known_locals or name in future_runtime_uses
+                    if not must_materialize:
+                        continue
+                    try:
+                        expr = _ast_of(value, st)
+                    except ComptimeError as err:
+                        raise ComptimeError(
+                            _diag(filename, st.line, st.col, f"cannot materialize comptime value for {name}: {err}")
+                        ) from err
                     if name in known_locals:
                         new_body.append(AssignStmt(Name(name, st.pos, st.line, st.col), "=", expr, st.pos, st.line, st.col))
                     else:

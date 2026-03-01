@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from astra.ast import *
+from astra.int_types import parse_int_type_name
 
 
 def optimize_program(prog: Program) -> Program:
@@ -12,6 +13,7 @@ def optimize_program(prog: Program) -> Program:
                 before = repr(item.body)
                 mutable_names = _collect_mutable_names(item.body)
                 body, _ = _optimize_stmts(item.body, {}, mutable_names)
+                body, _ = _cse_stmts(body, {})
                 body, _ = _dse_stmts(body, set())
                 item.body = body
                 if repr(item.body) == before:
@@ -39,33 +41,37 @@ def _optimize_stmt(st: Any, env: dict[str, Any], mutable_names: set[str]) -> tup
     if isinstance(st, LetStmt):
         st.expr = _fold_ast_expr(st.expr, env, mutable_names)
         lit = _literal_value(st.expr)
-        if lit is _NO_LITERAL or st.name in mutable_names:
-            env.pop(st.name, None)
-        else:
+        if lit is not _NO_LITERAL and st.name not in mutable_names:
             env[st.name] = _literal_node(lit, st.expr)
+        elif isinstance(st.expr, Name) and st.name not in mutable_names:
+            env[st.name] = Name(value=st.expr.value, pos=st.expr.pos, line=st.expr.line, col=st.expr.col)
+        else:
+            _env_forget_name(env, st.name)
         return st, env, False
     if isinstance(st, AssignStmt):
         st.target = _fold_target_expr(st.target, env, mutable_names)
         st.expr = _fold_ast_expr(st.expr, env, mutable_names)
         if isinstance(st.target, Name):
             if st.target.value in mutable_names:
-                env.pop(st.target.value, None)
+                _env_forget_name(env, st.target.value)
             elif st.op == "=":
                 lit = _literal_value(st.expr)
-                if lit is _NO_LITERAL:
-                    env.pop(st.target.value, None)
-                else:
+                if lit is not _NO_LITERAL:
                     env[st.target.value] = _literal_node(lit, st.expr)
+                elif isinstance(st.expr, Name):
+                    env[st.target.value] = Name(value=st.expr.value, pos=st.expr.pos, line=st.expr.line, col=st.expr.col)
+                else:
+                    _env_forget_name(env, st.target.value)
             elif st.op in {"+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="}:
-                left = _literal_value(env.get(st.target.value))
+                left = _literal_value(_resolve_env_binding(st.target.value, env))
                 right = _literal_value(st.expr)
                 merged = _eval_binary_const(st.op[:-1], left, right)
                 if merged is _NO_LITERAL:
-                    env.pop(st.target.value, None)
+                    _env_forget_name(env, st.target.value)
                 else:
                     env[st.target.value] = _literal_node(merged, st.expr)
             else:
-                env.pop(st.target.value, None)
+                _env_forget_name(env, st.target.value)
         else:
             env.clear()
         return st, env, False
@@ -167,7 +173,7 @@ def _merge_env(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     for key, aval in a.items():
         if key not in b:
             continue
-        if _literal_value(aval) == _literal_value(b[key]):
+        if _env_binding_key(aval) == _env_binding_key(b[key]):
             out[key] = aval
     return out
 
@@ -192,7 +198,12 @@ def _fold_target_expr(target: Any, env: dict[str, Any], mutable_names: set[str])
 def _fold_ast_expr(expr: Any, env: dict[str, Any], mutable_names: set[str]) -> Any:
     if isinstance(expr, Name):
         if expr.value in env and expr.value not in mutable_names:
-            return _literal_node(_literal_value(env[expr.value]), expr)
+            bound = _resolve_env_binding(expr.value, env)
+            if isinstance(bound, Name):
+                return Name(value=bound.value, pos=expr.pos, line=expr.line, col=expr.col)
+            lit = _literal_value(bound)
+            if lit is not _NO_LITERAL:
+                return _literal_node(lit, expr)
         return expr
     if isinstance(expr, (Literal, BoolLit, NilLit)):
         return expr
@@ -234,6 +245,17 @@ def _fold_ast_expr(expr: Any, env: dict[str, Any], mutable_names: set[str]) -> A
                 return _literal_node(0, expr)
             if lval == 0 and _is_discardable_expr(expr.right):
                 return _literal_node(0, expr)
+            if _is_integer_expr(expr):
+                rshift = _pow2_shift(rval)
+                if rshift is not None and _is_pure_expr(expr.left):
+                    out = Binary(op="<<", left=expr.left, right=_literal_node(rshift, expr.right), pos=expr.pos, line=expr.line, col=expr.col)
+                    _copy_inferred_type(out, expr)
+                    return out
+                lshift = _pow2_shift(lval)
+                if lshift is not None and _is_pure_expr(expr.right):
+                    out = Binary(op="<<", left=expr.right, right=_literal_node(lshift, expr.left), pos=expr.pos, line=expr.line, col=expr.col)
+                    _copy_inferred_type(out, expr)
+                    return out
         if expr.op == "/":
             if rval == 1 and _is_pure_expr(expr.left):
                 return expr.left
@@ -256,10 +278,20 @@ def _fold_ast_expr(expr: Any, env: dict[str, Any], mutable_names: set[str]) -> A
             if not lval:
                 return _literal_node(False, expr)
             return expr.right
+        if expr.op == "&&":
+            if rval is True and _is_pure_expr(expr.left):
+                return expr.left
+            if rval is False and _is_discardable_expr(expr.left):
+                return _literal_node(False, expr)
         if expr.op == "||" and isinstance(lval, bool):
             if lval:
                 return _literal_node(True, expr)
             return expr.right
+        if expr.op == "||":
+            if rval is False and _is_pure_expr(expr.left):
+                return expr.left
+            if rval is True and _is_discardable_expr(expr.left):
+                return _literal_node(True, expr)
         return expr
     if isinstance(expr, Call):
         expr.fn = _fold_ast_expr(expr.fn, env, mutable_names)
@@ -451,6 +483,320 @@ def _collect_mutable_names(stmts: list[Any]) -> set[str]:
 
     walk(stmts)
     return out
+
+
+def _env_binding_key(value: Any) -> Any:
+    if isinstance(value, Name):
+        return ("name", value.value)
+    lit = _literal_value(value)
+    if lit is _NO_LITERAL:
+        return None
+    return ("lit", lit)
+
+
+def _resolve_env_binding(name: str, env: dict[str, Any]) -> Any:
+    seen: set[str] = set()
+    cur = name
+    while cur in env and cur not in seen:
+        seen.add(cur)
+        bound = env[cur]
+        if isinstance(bound, Name):
+            cur = bound.value
+            continue
+        return bound
+    if cur in seen:
+        return _NO_LITERAL
+    return env.get(cur, _NO_LITERAL)
+
+
+def _env_forget_name(env: dict[str, Any], name: str) -> None:
+    dead = [k for k, v in env.items() if k == name or (isinstance(v, Name) and v.value == name)]
+    for k in dead:
+        env.pop(k, None)
+
+
+def _copy_inferred_type(dst: Any, src: Any) -> None:
+    typ = getattr(src, "inferred_type", None)
+    if isinstance(typ, str):
+        setattr(dst, "inferred_type", typ)
+
+
+def _is_integer_expr(expr: Any) -> bool:
+    typ = getattr(expr, "inferred_type", None)
+    if isinstance(typ, str):
+        if typ in {"Int", "isize", "usize"}:
+            return True
+        return parse_int_type_name(typ) is not None
+    return False
+
+
+def _pow2_shift(value: Any) -> int | None:
+    if not isinstance(value, int):
+        return None
+    if value <= 0:
+        return None
+    if value & (value - 1):
+        return None
+    return value.bit_length() - 1
+
+
+def _cse_stmts(stmts: list[Any], available: dict[Any, tuple[str, set[str]]]) -> tuple[list[Any], dict[Any, tuple[str, set[str]]]]:
+    out: list[Any] = []
+    avail = dict(available)
+    for st in stmts:
+        lowered, avail, terminated = _cse_stmt(st, avail)
+        if lowered is None:
+            continue
+        out.append(lowered)
+        if terminated:
+            break
+    return out, avail
+
+
+def _merge_available(a: dict[Any, tuple[str, set[str]]], b: dict[Any, tuple[str, set[str]]]) -> dict[Any, tuple[str, set[str]]]:
+    out: dict[Any, tuple[str, set[str]]] = {}
+    for key, aval in a.items():
+        bval = b.get(key)
+        if bval is None:
+            continue
+        if aval[0] == bval[0]:
+            out[key] = (aval[0], set(aval[1]) | set(bval[1]))
+    return out
+
+
+def _invalidate_available(avail: dict[Any, tuple[str, set[str]]], names: set[str] | None = None, *, clear: bool = False) -> dict[Any, tuple[str, set[str]]]:
+    if clear:
+        return {}
+    if not names:
+        return avail
+    kill = {
+        key
+        for key, (bound, deps) in avail.items()
+        if bound in names or bool(deps & names)
+    }
+    for key in kill:
+        avail.pop(key, None)
+    return avail
+
+
+def _cse_stmt(st: Any, avail: dict[Any, tuple[str, set[str]]]) -> tuple[Any | None, dict[Any, tuple[str, set[str]]], bool]:
+    if isinstance(st, LetStmt):
+        st.expr = _cse_expr(st.expr, avail)
+        avail = _invalidate_available(avail, {st.name})
+        key = _expr_key(st.expr) if _is_cse_candidate(st.expr) else None
+        if key is not None:
+            avail[key] = (st.name, _used_names_expr(st.expr))
+        return st, avail, False
+
+    if isinstance(st, AssignStmt):
+        st.target = _cse_target(st.target, avail)
+        st.expr = _cse_expr(st.expr, avail)
+        if isinstance(st.target, Name):
+            avail = _invalidate_available(avail, {st.target.value})
+            if st.op == "=":
+                key = _expr_key(st.expr) if _is_cse_candidate(st.expr) else None
+                if key is not None:
+                    avail[key] = (st.target.value, _used_names_expr(st.expr))
+        else:
+            avail = _invalidate_available(avail, clear=True)
+        return st, avail, False
+
+    if isinstance(st, ExprStmt):
+        st.expr = _cse_expr(st.expr, avail)
+        if not _is_discardable_expr(st.expr):
+            avail = _invalidate_available(avail, clear=True)
+        return st, avail, False
+
+    if isinstance(st, DropStmt):
+        st.expr = _cse_expr(st.expr, avail)
+        if not _is_discardable_expr(st.expr):
+            avail = _invalidate_available(avail, clear=True)
+        return st, avail, False
+
+    if isinstance(st, ReturnStmt):
+        if st.expr is not None:
+            st.expr = _cse_expr(st.expr, avail)
+        return st, avail, True
+
+    if isinstance(st, DeferStmt):
+        st.expr = _cse_expr(st.expr, avail)
+        return st, avail, False
+
+    if isinstance(st, IfStmt):
+        st.cond = _cse_expr(st.cond, avail)
+        cond_avail = dict(avail)
+        if not _is_discardable_expr(st.cond):
+            cond_avail = {}
+        st.then_body, then_avail = _cse_stmts(st.then_body, dict(cond_avail))
+        st.else_body, else_avail = _cse_stmts(st.else_body, dict(cond_avail))
+        merged = _merge_available(then_avail, else_avail)
+        terminated = bool(st.else_body) and _stmts_terminate(st.then_body) and _stmts_terminate(st.else_body)
+        return st, merged, terminated
+
+    if isinstance(st, WhileStmt):
+        st.cond = _cse_expr(st.cond, avail)
+        st.body, _ = _cse_stmts(st.body, {})
+        return st, {}, False
+
+    if isinstance(st, ForStmt):
+        if st.init is not None:
+            if isinstance(st.init, LetStmt):
+                st.init, _, _ = _cse_stmt(st.init, dict(avail))
+            elif isinstance(st.init, AssignStmt):
+                st.init, _, _ = _cse_stmt(st.init, dict(avail))
+            else:
+                st.init = _cse_expr(st.init, avail)
+        if st.cond is not None:
+            st.cond = _cse_expr(st.cond, avail)
+        if st.step is not None:
+            if isinstance(st.step, AssignStmt):
+                st.step, _, _ = _cse_stmt(st.step, {})
+            else:
+                st.step = _cse_expr(st.step, {})
+        st.body, _ = _cse_stmts(st.body, {})
+        return st, {}, False
+
+    if isinstance(st, MatchStmt):
+        st.expr = _cse_expr(st.expr, avail)
+        new_arms: list[tuple[Any, list[Any]]] = []
+        for pat, body in st.arms:
+            pat2 = _cse_expr(pat, avail)
+            body2, _ = _cse_stmts(body, {})
+            new_arms.append((pat2, body2))
+        st.arms = new_arms
+        return st, {}, False
+
+    if isinstance(st, ComptimeStmt):
+        st.body, _ = _cse_stmts(st.body, {})
+        return st, avail, False
+
+    if isinstance(st, (BreakStmt, ContinueStmt)):
+        return st, avail, True
+
+    return st, avail, False
+
+
+def _cse_target(target: Any, avail: dict[Any, tuple[str, set[str]]]) -> Any:
+    if isinstance(target, IndexExpr):
+        target.obj = _cse_expr(target.obj, avail)
+        target.index = _cse_expr(target.index, avail)
+        return target
+    if isinstance(target, FieldExpr):
+        target.obj = _cse_expr(target.obj, avail)
+        return target
+    return target
+
+
+def _cse_expr(expr: Any, avail: dict[Any, tuple[str, set[str]]]) -> Any:
+    if isinstance(expr, Unary):
+        expr.expr = _cse_expr(expr.expr, avail)
+    elif isinstance(expr, Binary):
+        expr.left = _cse_expr(expr.left, avail)
+        expr.right = _cse_expr(expr.right, avail)
+    elif isinstance(expr, Call):
+        expr.fn = _cse_expr(expr.fn, avail)
+        expr.args = [_cse_expr(arg, avail) for arg in expr.args]
+    elif isinstance(expr, AwaitExpr):
+        expr.expr = _cse_expr(expr.expr, avail)
+    elif isinstance(expr, IndexExpr):
+        expr.obj = _cse_expr(expr.obj, avail)
+        expr.index = _cse_expr(expr.index, avail)
+    elif isinstance(expr, FieldExpr):
+        expr.obj = _cse_expr(expr.obj, avail)
+    elif isinstance(expr, ArrayLit):
+        expr.elements = [_cse_expr(e, avail) for e in expr.elements]
+    elif isinstance(expr, StructLit):
+        expr.fields = [(name, _cse_expr(value, avail)) for name, value in expr.fields]
+    elif isinstance(expr, TypeAnnotated):
+        expr.expr = _cse_expr(expr.expr, avail)
+    elif isinstance(expr, CastExpr):
+        expr.expr = _cse_expr(expr.expr, avail)
+    elif isinstance(expr, (SizeOfValueExpr, AlignOfValueExpr)):
+        expr.expr = _cse_expr(expr.expr, avail)
+
+    if not _is_cse_candidate(expr):
+        return expr
+    key = _expr_key(expr)
+    if key is None:
+        return expr
+    found = avail.get(key)
+    if found is None:
+        return expr
+    return Name(value=found[0], pos=getattr(expr, "pos", 0), line=getattr(expr, "line", 0), col=getattr(expr, "col", 0))
+
+
+def _expr_key(expr: Any) -> Any | None:
+    if isinstance(expr, Name):
+        return ("name", expr.value)
+    if isinstance(expr, Literal):
+        return ("lit", type(expr.value).__name__, expr.value)
+    if isinstance(expr, BoolLit):
+        return ("bool", bool(expr.value))
+    if isinstance(expr, NilLit):
+        return ("nil",)
+    if isinstance(expr, Unary):
+        inner = _expr_key(expr.expr)
+        if inner is None:
+            return None
+        return ("unary", expr.op, inner, getattr(expr, "inferred_type", None))
+    if isinstance(expr, Binary):
+        left = _expr_key(expr.left)
+        right = _expr_key(expr.right)
+        if left is None or right is None:
+            return None
+        return ("binary", expr.op, left, right, getattr(expr, "inferred_type", None))
+    if isinstance(expr, TypeAnnotated):
+        inner = _expr_key(expr.expr)
+        if inner is None:
+            return None
+        return ("typed", expr.type_name, inner)
+    if isinstance(expr, CastExpr):
+        inner = _expr_key(expr.expr)
+        if inner is None:
+            return None
+        return ("cast", expr.type_name, inner)
+    if isinstance(expr, SizeOfTypeExpr):
+        return ("sizeof_t", expr.type_name)
+    if isinstance(expr, AlignOfTypeExpr):
+        return ("alignof_t", expr.type_name)
+    if isinstance(expr, BitSizeOfTypeExpr):
+        return ("bitsizeof_t", expr.type_name)
+    if isinstance(expr, MaxValTypeExpr):
+        return ("maxval_t", expr.type_name)
+    if isinstance(expr, MinValTypeExpr):
+        return ("minval_t", expr.type_name)
+    if isinstance(expr, SizeOfValueExpr):
+        inner = _expr_key(expr.expr)
+        if inner is None:
+            return None
+        return ("sizeof_v", inner)
+    if isinstance(expr, AlignOfValueExpr):
+        inner = _expr_key(expr.expr)
+        if inner is None:
+            return None
+        return ("alignof_v", inner)
+    return None
+
+
+def _is_cse_candidate(expr: Any) -> bool:
+    if not _is_discardable_expr(expr):
+        return False
+    return isinstance(
+        expr,
+        (
+            Unary,
+            Binary,
+            TypeAnnotated,
+            CastExpr,
+            SizeOfTypeExpr,
+            AlignOfTypeExpr,
+            BitSizeOfTypeExpr,
+            MaxValTypeExpr,
+            MinValTypeExpr,
+            SizeOfValueExpr,
+            AlignOfValueExpr,
+        ),
+    )
 
 
 def _dse_stmts(stmts: list[Any], live_out: set[str]) -> tuple[list[Any], set[str]]:

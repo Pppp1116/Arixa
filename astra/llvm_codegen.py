@@ -285,8 +285,8 @@ def _packed_window(sinfo: _StructInfo, field: str, node: Any) -> tuple[int, int,
     bits = sinfo.field_bits.get(field)
     if bit_off is None or bits is None:
         raise CodegenError(_diag(node, f"missing packed layout info for field {field}"))
-    if bits <= 0 or bits > 64:
-        raise CodegenError(_diag(node, f"packed field width {bits} is unsupported in LLVM backend"))
+    if bits <= 0:
+        raise CodegenError(_diag(node, f"invalid packed field width {bits} for {field}"))
     storage_size = max(1, sinfo.storage_size)
     byte_off = bit_off // 8
     bit_shift = bit_off % 8
@@ -300,20 +300,20 @@ def _packed_load_bits(ctx: _ModuleCtx, state: _FnState, base_ptr: ir.Value, sinf
     b = state.builder
     i8 = ir.IntType(8)
     i64 = ir.IntType(64)
-    i128 = ir.IntType(128)
     byte_off, bit_shift, bits, nbytes = _packed_window(sinfo, field, node)
+    int_ty = ir.IntType(max(1, nbytes * 8))
     base_i8 = b.bitcast(base_ptr, i8.as_pointer())
-    acc = ir.Constant(i128, 0)
+    acc = ir.Constant(int_ty, 0)
     for i in range(nbytes):
         p = b.gep(base_i8, [ir.Constant(i64, byte_off + i)], inbounds=True)
         by = b.load(p)
-        ext = b.zext(by, i128)
+        ext = b.zext(by, int_ty)
         if i:
-            ext = b.shl(ext, ir.Constant(i128, i * 8))
+            ext = b.shl(ext, ir.Constant(int_ty, i * 8))
         acc = b.or_(acc, ext)
-    shifted = b.lshr(acc, ir.Constant(i128, bit_shift))
+    shifted = b.lshr(acc, ir.Constant(int_ty, bit_shift))
     mask_v = (1 << bits) - 1
-    raw = b.and_(shifted, ir.Constant(i128, mask_v))
+    raw = b.and_(shifted, ir.Constant(int_ty, mask_v))
     return raw, bits, bit_shift
 
 
@@ -329,24 +329,24 @@ def _packed_store_bits(
     b = state.builder
     i8 = ir.IntType(8)
     i64 = ir.IntType(64)
-    i128 = ir.IntType(128)
     byte_off, bit_shift, bits, nbytes = _packed_window(sinfo, field, node)
+    int_ty = ir.IntType(max(1, nbytes * 8))
     base_i8 = b.bitcast(base_ptr, i8.as_pointer())
 
-    old = ir.Constant(i128, 0)
+    old = ir.Constant(int_ty, 0)
     for i in range(nbytes):
         p = b.gep(base_i8, [ir.Constant(i64, byte_off + i)], inbounds=True)
         by = b.load(p)
-        ext = b.zext(by, i128)
+        ext = b.zext(by, int_ty)
         if i:
-            ext = b.shl(ext, ir.Constant(i128, i * 8))
+            ext = b.shl(ext, ir.Constant(int_ty, i * 8))
         old = b.or_(old, ext)
 
     if isinstance(new_bits.type, ir.IntType):
-        if new_bits.type.width > 128:
-            nb = b.trunc(new_bits, i128)
-        elif new_bits.type.width < 128:
-            nb = b.zext(new_bits, i128)
+        if new_bits.type.width > int_ty.width:
+            nb = b.trunc(new_bits, int_ty)
+        elif new_bits.type.width < int_ty.width:
+            nb = b.zext(new_bits, int_ty)
         else:
             nb = new_bits
     else:
@@ -357,11 +357,11 @@ def _packed_store_bits(
     window_bits = nbytes * 8
     full_mask = (1 << window_bits) - 1
     clear_mask = full_mask ^ field_mask
-    inserted = b.shl(b.and_(nb, ir.Constant(i128, mask_v)), ir.Constant(i128, bit_shift))
-    merged = b.or_(b.and_(old, ir.Constant(i128, clear_mask)), inserted)
+    inserted = b.shl(b.and_(nb, ir.Constant(int_ty, mask_v)), ir.Constant(int_ty, bit_shift))
+    merged = b.or_(b.and_(old, ir.Constant(int_ty, clear_mask)), inserted)
 
     for i in range(nbytes):
-        part = b.lshr(merged, ir.Constant(i128, i * 8))
+        part = b.lshr(merged, ir.Constant(int_ty, i * 8))
         out_b = b.trunc(part, i8)
         p = b.gep(base_i8, [ir.Constant(i64, byte_off + i)], inbounds=True)
         b.store(out_b, p)
@@ -1337,7 +1337,7 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
             raise CodegenError(_diag(call, "await_result expects 1 argument"))
         return _compile_expr(ctx, state, call.args[0])
 
-    raise CodegenError(_diag(call, f"unsupported builtin {base} in LLVM backend"))
+    raise CodegenError(_diag(call, f"internal: unexpected builtin dispatch {base}"))
 
 
 def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: str) -> _Value:
@@ -1566,7 +1566,7 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
             g = _get_string_global(ctx, e.value)
             ptr = b.gep(g, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)], inbounds=True)
             return _Value(ptr, "String", str_len=len(e.value.encode("utf-8")))
-        raise CodegenError(_diag(e, f"unsupported literal type {type(e.value).__name__}"))
+        raise CodegenError(_diag(e, f"internal: unexpected literal type {type(e.value).__name__}"))
     if isinstance(e, Name):
         if e.value in state.vars:
             ptr = state.vars[e.value]
@@ -1614,7 +1614,7 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
                 raise CodegenError(_diag(e, "unary ~ expects integer"))
             all_ones = ir.Constant(inner.value.type, (1 << inner.value.type.width) - 1)
             return _Value(b.xor(inner.value, all_ones), inner.ty)
-        raise CodegenError(_diag(e, f"unsupported unary op {e.op}"))
+        raise CodegenError(_diag(e, f"internal: unexpected unary op {e.op}"))
     if isinstance(e, Binary):
         if e.op in {"&&", "||"}:
             left = _compile_expr(ctx, state, e.left, overflow_mode=overflow_mode)
@@ -1715,7 +1715,7 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
                     ">=": ">=",
                 }[e.op]
                 return _Value(b.fcmp_ordered(pred, lv, rv), "Bool")
-            raise CodegenError(_diag(e, f"unsupported float binary op {e.op}"))
+            raise CodegenError(_diag(e, f"internal: unexpected float binary op {e.op}"))
 
         info = _int_info(ty)
         lty = ty
@@ -1763,7 +1763,7 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
                 pred = {"<": "<", "<=": "<=", ">": ">", ">=": ">="}[e.op]
                 cmpv = b.icmp_unsigned(pred, lv, rv)
             return _Value(cmpv, "Bool")
-        raise CodegenError(_diag(e, f"unsupported binary op {e.op}"))
+        raise CodegenError(_diag(e, f"internal: unexpected binary op {e.op}"))
     if isinstance(e, Call):
         return _compile_call(ctx, state, e, overflow_mode=overflow_mode)
     if isinstance(e, FieldExpr):
@@ -1771,7 +1771,7 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
         obj_ty = _expr_type(state, e.obj)
         base_ty = _strip_ref_type(obj_ty)
         if base_ty not in ctx.structs:
-            raise CodegenError(_diag(e, f"unsupported field access .{e.field} on {base_ty}"))
+            raise CodegenError(_diag(e, f"field access requires struct receiver, got {base_ty}"))
         sinfo = ctx.structs[base_ty]
         idx = sinfo.field_index.get(e.field)
         if idx is None:
@@ -1783,23 +1783,22 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
             ll = _llvm_type(ctx, fty)
             if not isinstance(ll, ir.IntType):
                 raise CodegenError(_diag(e, f"packed field {e.field} must be integer/bool"))
-            if bits < ll.width:
-                if _is_signed_int(fty):
-                    sign_bit = 1 << (bits - 1)
-                    sign_set = b.icmp_unsigned("!=", b.and_(raw, ir.Constant(raw.type, sign_bit)), ir.Constant(raw.type, 0))
-                    ext_mask = ((1 << ll.width) - 1) ^ ((1 << bits) - 1)
-                    ext = b.or_(raw, ir.Constant(raw.type, ext_mask))
-                    out_i = b.select(sign_set, ext, raw)
+            field_ll = ir.IntType(bits)
+            raw_field = raw
+            if raw_field.type.width != bits:
+                if raw_field.type.width > bits:
+                    raw_field = b.trunc(raw_field, field_ll)
                 else:
-                    out_i = raw
-                val = b.trunc(out_i, ll)
+                    raw_field = b.zext(raw_field, field_ll)
+            if ll.width > bits:
+                if _is_signed_int(fty):
+                    val = b.sext(raw_field, ll)
+                else:
+                    val = b.zext(raw_field, ll)
+            elif ll.width < bits:
+                val = b.trunc(raw_field, ll)
             else:
-                val = b.trunc(raw, ll) if ll.width < raw.type.width else raw
-                if val.type != ll:
-                    if val.type.width < ll.width:
-                        val = b.zext(val, ll)
-                    else:
-                        val = b.trunc(val, ll)
+                val = raw_field
             return _Value(val, fty)
         fld = b.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx)], inbounds=True)
         return _Value(b.load(fld), fty)
@@ -1890,7 +1889,7 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
         else:
             b.store(ir.Constant(i8p, None), data_ptr)
         return _Value(header_i8, arr_ty)
-    raise CodegenError(_diag(e, f"unsupported expression {type(e).__name__}"))
+    raise CodegenError(_diag(e, f"internal: unexpected expression node {type(e).__name__}"))
 
 
 def _collect_defer_sites(stmts: list[Any], out: list[DeferStmt]) -> None:
@@ -1957,7 +1956,7 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
                 elif st.op == "%=":
                     out = b.frem(lv.value, rv.value)
                 else:
-                    raise CodegenError(_diag(st, f"unsupported assignment op {st.op}"))
+                    raise CodegenError(_diag(st, f"internal: unexpected assignment op {st.op}"))
                 b.store(out, ptr)
                 return
             info = _int_info(ty)
@@ -1983,7 +1982,7 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
             elif st.op == ">>=":
                 out = b.ashr(lv.value, rv.value) if signed else b.lshr(lv.value, rv.value)
             else:
-                raise CodegenError(_diag(st, f"unsupported assignment op {st.op}"))
+                raise CodegenError(_diag(st, f"internal: unexpected assignment op {st.op}"))
             b.store(out, ptr)
             return
 
@@ -2019,7 +2018,7 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
                         elif st.op == "%=":
                             out = b.frem(lv, rv)
                         else:
-                            raise CodegenError(_diag(st, f"unsupported field assignment op {st.op}"))
+                            raise CodegenError(_diag(st, f"internal: unexpected field assignment op {st.op}"))
                     else:
                         info = _int_info(fty)
                         signed = True if info is None else info[1]
@@ -2044,7 +2043,7 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
                         elif st.op == ">>=":
                             out = b.ashr(lv, rv) if signed else b.lshr(lv, rv)
                         else:
-                            raise CodegenError(_diag(st, f"unsupported field assignment op {st.op}"))
+                            raise CodegenError(_diag(st, f"internal: unexpected field assignment op {st.op}"))
                     if isinstance(out.type, ir.IntType) and out.type.width != bits:
                         if out.type.width > bits:
                             out = b.trunc(out, ir.IntType(bits))
@@ -2072,7 +2071,7 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
                 elif st.op == "%=":
                     out = b.frem(lv, rv)
                 else:
-                    raise CodegenError(_diag(st, f"unsupported field assignment op {st.op}"))
+                    raise CodegenError(_diag(st, f"internal: unexpected field assignment op {st.op}"))
             else:
                 info = _int_info(fty)
                 signed = True if info is None else info[1]
@@ -2097,7 +2096,7 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
                 elif st.op == ">>=":
                     out = b.ashr(lv, rv) if signed else b.lshr(lv, rv)
                 else:
-                    raise CodegenError(_diag(st, f"unsupported field assignment op {st.op}"))
+                    raise CodegenError(_diag(st, f"internal: unexpected field assignment op {st.op}"))
             b.store(out, fld)
             return
 
@@ -2130,7 +2129,7 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
                 elif st.op == "%=":
                     out = b.frem(lv, rv)
                 else:
-                    raise CodegenError(_diag(st, f"unsupported index assignment op {st.op}"))
+                    raise CodegenError(_diag(st, f"internal: unexpected index assignment op {st.op}"))
             else:
                 info = _int_info(elem_ty)
                 signed = True if info is None else info[1]
@@ -2155,11 +2154,11 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
                 elif st.op == ">>=":
                     out = b.ashr(lv, rv) if signed else b.lshr(lv, rv)
                 else:
-                    raise CodegenError(_diag(st, f"unsupported index assignment op {st.op}"))
+                    raise CodegenError(_diag(st, f"internal: unexpected index assignment op {st.op}"))
             b.store(out, elem_ptr)
             return
 
-        raise CodegenError(_diag(st, "unsupported assignment target"))
+        raise CodegenError(_diag(st, "internal: unexpected assignment target"))
 
     if isinstance(st, ReturnStmt):
         if state.ret_alloca is not None:
@@ -2344,7 +2343,7 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
     if isinstance(st, ComptimeStmt):
         return
 
-    raise CodegenError(_diag(st, f"unsupported statement {type(st).__name__} in LLVM backend"))
+    raise CodegenError(_diag(st, f"internal: unexpected statement node {type(st).__name__}"))
 
 
 def _emit_defer_epilogue(ctx: _ModuleCtx, state: _FnState, overflow_mode: str) -> None:

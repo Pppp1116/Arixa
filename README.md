@@ -42,7 +42,7 @@ python build/hello.py
 - Explicit cast syntax: `expr as Type`.
 - Layout/type queries: `sizeof(Type)`, `alignof(Type)`, `size_of(expr)`, `align_of(expr)`, `bitSizeOf(Type)`, `maxVal(Type)`, `minVal(Type)`.
 - Width-aware integer bit builtins: `countOnes(x)`, `leadingZeros(x)`, `trailingZeros(x)`.
-- Packed structs are supported via `@packed struct Name { ... }` (current backend contract supports packed integer fields up to 64 bits).
+- Packed structs are supported via `@packed struct Name { ... }` (packed fields support integer widths up to language maximum `128`, plus `Bool`).
 - Freestanding builds avoid hosted entrypoint assumptions and are suitable for kernels/runtime stubs.
 - `defer expr;` runs cleanup logic at function exit.
 - `a ?? b` coalesces `Option<T>` values (`a: Option<T>`, `b: T`).

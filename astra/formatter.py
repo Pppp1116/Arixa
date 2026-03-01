@@ -85,7 +85,7 @@ def _fmt_expr(e) -> str:
         return f"size_of({_fmt_expr(e.expr)})"
     if isinstance(e, AlignOfValueExpr):
         return f"align_of({_fmt_expr(e.expr)})"
-    return "/* unsupported */"
+    raise ValueError(f"formatter: unsupported expression node {type(e).__name__}")
 
 
 def _fmt_stmt(st, ind: int) -> list[str]:
@@ -109,6 +109,14 @@ def _fmt_stmt(st, ind: int) -> list[str]:
         return [f"{p}{_fmt_expr(st.expr)};"]
     if isinstance(st, DropStmt):
         return [f"{p}drop {_fmt_expr(st.expr)};"]
+    if isinstance(st, DeferStmt):
+        return [f"{p}defer {_fmt_expr(st.expr)};"]
+    if isinstance(st, ComptimeStmt):
+        out = [f"{p}comptime {{"]
+        for s in st.body:
+            out.extend(_fmt_stmt(s, ind + 1))
+        out.append(f"{p}}}")
+        return out
     if isinstance(st, IfStmt):
         out = [f"{p}if {_fmt_expr(st.cond)} {{"]
         for s in st.then_body:
@@ -153,7 +161,7 @@ def _fmt_stmt(st, ind: int) -> list[str]:
             out.append(f"{p}    }}")
         out.append(f"{p}}}")
         return out
-    return [f"{p}/* unsupported */"]
+    raise ValueError(f"formatter: unsupported statement node {type(st).__name__}")
 
 
 def _fmt_item(item) -> list[str]:
@@ -208,7 +216,7 @@ def _fmt_item(item) -> list[str]:
             out.extend(_fmt_stmt(st, 1))
         out.append("}")
         return out
-    return []
+    raise ValueError(f"formatter: unsupported top-level node {type(item).__name__}")
 
 
 def fmt(src: str) -> str:

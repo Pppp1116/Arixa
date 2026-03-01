@@ -235,7 +235,7 @@ Current x86-64 backend contract (System V ABI oriented):
   - `async` declarations and `await` expressions lower to direct native control flow.
   - Aggregate and dynamic values lower as opaque pointer-sized handles at the ABI boundary.
   - `match`, struct field access/assignment, and array/slice indexing/get are lowered directly.
-  - `@packed struct` field accesses/updates lower through shift/mask read-modify-write paths (current packed-field backend support: up to 64-bit fields).
+  - `@packed struct` field accesses/updates lower through shift/mask read-modify-write paths (packed integer fields are supported up to language maximum width `128`).
 
 ## 7. EBNF snapshot
 

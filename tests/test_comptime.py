@@ -77,3 +77,66 @@ fn main() -> Int {
         assert False
     except Exception as e:
         assert "non-pure function print" in str(e)
+
+
+def test_comptime_match_is_evaluated(tmp_path: Path):
+    src = tmp_path / "match.astra"
+    out = tmp_path / "match.py"
+    src.write_text(
+        """
+fn main() -> Int {
+  comptime {
+    let x = 2;
+    let mut out = 0;
+    match x {
+      1 => { out = 11; }
+      2 => { out = 22; }
+    }
+  }
+  return out;
+}
+"""
+    )
+    build(str(src), str(out), "py")
+    cp = subprocess.run([sys.executable, str(out)], timeout=2)
+    assert cp.returncode == 22
+
+
+def test_comptime_supports_indirect_function_calls(tmp_path: Path):
+    src = tmp_path / "indirect.astra"
+    out = tmp_path / "indirect.py"
+    src.write_text(
+        """
+fn add(a Int, b Int) -> Int { return a + b; }
+fn main() -> Int {
+  comptime {
+    let f = add;
+    let z = f(5, 7);
+  }
+  return z;
+}
+"""
+    )
+    build(str(src), str(out), "py")
+    text = out.read_text()
+    assert "f(5, 7)" not in text
+    cp = subprocess.run([sys.executable, str(out)], timeout=2)
+    assert cp.returncode == 12
+
+
+def test_comptime_skips_non_escaping_runtime_materialization(tmp_path: Path):
+    src = tmp_path / "skip_tmp.astra"
+    out = tmp_path / "skip_tmp.py"
+    src.write_text(
+        """
+fn main() -> Int {
+  comptime {
+    let internal = 7;
+  }
+  return 0;
+}
+"""
+    )
+    build(str(src), str(out), "py")
+    text = out.read_text()
+    assert "internal = 7" not in text

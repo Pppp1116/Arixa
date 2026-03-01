@@ -1,5 +1,12 @@
 # Releases
 
+## v0.3.1
+- Removed semantic/backend packed-field hard cap of 64 bits; `@packed struct` supports integer field widths up to language max (`128`).
+- Generalized LLVM packed lowering to dynamic byte windows (including windows wider than 128 bits for offset-packed `u128` fields).
+- Expanded comptime execution support with `match` statement handling and indirect function-value calls, with clearer `undefined/non-function/non-pure` diagnostics.
+- Expanded formatter statement coverage for `defer` and `comptime`, replacing fallback `/* unsupported */` output for valid syntax.
+- Improved semantic call diagnostics to report explicit non-function call type errors.
+
 ## v0.3.0
 - Replaced handwritten x86-64 backend with LLVM IR backend (`llvmlite`) and removed custom tuple-IR pipeline.
 - Added `llvm` build target and `--triple` support for LLVM/native builds.

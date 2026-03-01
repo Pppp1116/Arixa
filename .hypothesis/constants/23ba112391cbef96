@@ -1,0 +1,4 @@
+# file: /home/pedro/Downloads/programming-language-/astra/comptime.py
+# hypothesis_version: 6.151.9
+
+[100000, '!', '!=', '%', '&', '&&', '&str', '*', '+', '-', '/', '<', '<<', '<=', '<input>', '=', '==', '>', '>=', '>>', '??', 'Bool', 'Float', 'Int', '^', '__', '__countOnes', '__leadingZeros', '__trailingZeros', 'alloc', 'arg', 'args', 'break', 'col', 'continue', 'countOnes', 'cwd', 'division by zero', 'env_get', 'f32', 'f64', 'fn(...) -> Any', 'free', 'inferred_type', 'join', 'leadingZeros', 'len', 'line', 'modulo by zero', 'negative shift count', 'pos', 'print', 'proc_exit', 'proc_run', 'query', 'read_file', 'return', 'spawn', 'step limit exceeded', 'tcp_close', 'tcp_connect', 'tcp_recv', 'tcp_send', 'trailingZeros', 'trap', 'wrap', 'write_file', '|', '||', '~']

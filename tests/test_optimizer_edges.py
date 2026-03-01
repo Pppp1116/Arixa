@@ -128,3 +128,42 @@ fn main() -> Int {
     assert "a =" not in code
     assert "b =" not in code
     assert "c =" not in code
+
+
+def test_local_cse_reuses_identical_pure_expression(tmp_path: Path):
+    src = tmp_path / "cse.astra"
+    out = tmp_path / "cse.py"
+    src.write_text(
+        """
+fn main() -> Int {
+  let mut x = 7;
+  let y = x * x;
+  let z = x * x;
+  return z - y;
+}
+"""
+    )
+    build(str(src), str(out), "py")
+    code = out.read_text()
+    assert "z = y" in code
+    cp = subprocess.run([sys.executable, str(out)], timeout=2)
+    assert cp.returncode == 0
+
+
+def test_strength_reduction_mul_pow2_to_shift(tmp_path: Path):
+    src = tmp_path / "strength.astra"
+    out = tmp_path / "strength.py"
+    src.write_text(
+        """
+fn main() -> Int {
+  let mut x = 3;
+  let y = x * 8;
+  return y;
+}
+"""
+    )
+    build(str(src), str(out), "py")
+    code = out.read_text()
+    assert "<<" in code
+    cp = subprocess.run([sys.executable, str(out)], timeout=2)
+    assert cp.returncode == 24

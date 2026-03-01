@@ -36,10 +36,13 @@ def _normalize(node):
         "fn main() -> Int { return a ?? (b ?? c); }",
         "fn main() -> Int { return -(1 + 2); }",
         "fn main() -> Int { return await (a + b); }",
+        'fn main() -> Int { defer print("bye"); return 0; }',
+        "fn main() -> Int { comptime { let x = 1; } return 0; }",
     ],
 )
 def test_formatter_idempotent_and_structural_for_precedence_cases(src: str):
     first = fmt(src)
+    assert "/* unsupported */" not in first
     second = fmt(first)
     assert second == first
 

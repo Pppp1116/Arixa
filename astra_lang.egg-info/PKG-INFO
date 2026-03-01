@@ -3,9 +3,11 @@ Name: astra-lang
 Version: 0.2.0
 Summary: Self-hosted-inspired toy programming language ecosystem
 Requires-Python: >=3.11
+License-File: LICENSE
 Requires-Dist: llvmlite>=0.44
 Provides-Extra: dev
 Requires-Dist: pytest>=8.0; extra == "dev"
 Requires-Dist: pytest-cov>=5.0; extra == "dev"
 Requires-Dist: hypothesis>=6.0; extra == "dev"
 Requires-Dist: mutmut>=3.0; extra == "dev"
+Dynamic: license-file

@@ -36,7 +36,7 @@
 - bare expression statements must be `Void` or `Never`
 - typed params/fields accept `name Type` and `name: Type` (canonical style is `name: Type`)
 - specialization impls: `impl fn name(...) -> ... { ... }`
-- compile-time execution: `comptime { ... }` (pure/deterministic subset)
+- compile-time execution: `comptime { ... }` (pure/deterministic subset with control flow and function-typed call support)
 - text/buffer core types: `String`/`Vec<T>` (stdlib owned types), `str`/`[T]` (unsized DSTs behind references), `Bytes = Vec<u8>`
 - `[T]` is valid in practice as `&[T]` / `&mut [T]` (or other pointer-backed DST positions), not as a standalone sized value
 - by-value slice params (e.g. `fn f(xs: [Int])`) are rejected; use `&[Int]` / `&mut [Int]`
@@ -57,7 +57,7 @@
   - `countOnes(x)`, `leadingZeros(x)`, `trailingZeros(x)`
 - packed bitfield layout is supported with `@packed struct`
   - packed fields must be integer or `Bool`
-  - x86-64 packed field lowering currently supports up to 64-bit packed fields
+  - packed integer field widths are supported up to language maximum (`128`)
 - numeric overflow control:
   - `build --profile debug|release` (default `debug`)
   - `build/check --overflow trap|wrap|debug`

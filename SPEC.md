@@ -207,7 +207,7 @@ Common contract:
 - Emits textual LLVM IR through `llvmlite`.
 - `Int` lowers to 64-bit integer representation.
 - Runtime ABI symbols are declared for lowered builtins (`astra_*` shims).
-- Packed-struct/backend limits remain backend-defined (`CODEGEN`) if lowering cannot represent a construct.
+- Packed integer fields in `@packed struct` are supported up to language maximum width (`128`) and lower through byte-window shift/mask operations.
 
 `native` target:
 - Compiles/links emitted LLVM IR with `clang` plus portable runtime (`runtime/llvm_runtime.c`).

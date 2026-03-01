@@ -393,6 +393,27 @@ fn main() -> Int { return 0; }
         assert "packed struct fields must be integer or bool types" in str(e)
 
 
+def test_semantic_accepts_packed_fields_above_64_bits():
+    src = """
+@packed struct BigPacked {
+  a: u65,
+  b: i127,
+  c: u128,
+}
+fn main() -> Int { return 0; }
+"""
+    analyze(parse(src))
+
+
+def test_call_of_non_function_reports_explicit_type_error():
+    src = "fn main() -> Int { return (1)(); }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "cannot call value of non-function type Int" in str(e)
+
+
 def test_layout_query_semantics_for_type_and_value_forms():
     src = "struct P { a Int, b u8 } fn main() -> Int { let p = P(1, 2 as u8); return sizeof(P) + alignof(P) + size_of(p.a) + align_of(p.b); }"
     analyze(parse(src))

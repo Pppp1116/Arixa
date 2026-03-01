@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 import astra.build as build_mod
+from astra.asm_assert import assert_valid_llvm_ir
 from astra.build import build
 from astra.semantic import SemanticError
 
@@ -369,6 +370,59 @@ fn main() -> Int {
     assert st in {"built", "cached"}
     cp = subprocess.run([str(out)], capture_output=True, text=True)
     assert cp.returncode == 17
+
+
+@pytest.mark.skipif(
+    shutil.which("clang") is None,
+    reason="native target requires clang",
+)
+def test_build_native_supports_packed_struct_fields_above_64_bits(tmp_path: Path):
+    src = tmp_path / "packed_wide.astra"
+    out = tmp_path / "packed_wide.exe"
+    src.write_text(
+        """
+@packed struct Wide {
+  pad: u7,
+  big: u128,
+  tail: u1,
+}
+fn main() -> Int {
+  let mut w = Wide(1u7, 5u128, 1u1);
+  w.big += 2u128;
+  w.big <<= 1u128;
+  return (w.pad as Int) + (w.big as Int) + (w.tail as Int);
+}
+"""
+    )
+    st = build(str(src), str(out), "native")
+    assert st in {"built", "cached"}
+    cp = subprocess.run([str(out)], capture_output=True, text=True)
+    assert cp.returncode == 16
+
+
+def test_build_llvm_supports_packed_struct_fields_above_64_bits(tmp_path: Path):
+    src = tmp_path / "packed_wide_llvm.astra"
+    out = tmp_path / "packed_wide_llvm.ll"
+    src.write_text(
+        """
+@packed struct Wide {
+  pad: u7,
+  big: u128,
+  tail: u1,
+}
+fn main() -> Int {
+  let mut w = Wide(1u7, 5u128, 1u1);
+  w.big += 2u128;
+  w.big <<= 1u128;
+  return (w.pad as Int) + (w.big as Int) + (w.tail as Int);
+}
+"""
+    )
+    st = build(str(src), str(out), "llvm")
+    assert st in {"built", "cached"}
+    text = out.read_text()
+    assert_valid_llvm_ir(text, workdir=tmp_path)
+    assert "i136" in text
 
 
 @pytest.mark.skipif(
