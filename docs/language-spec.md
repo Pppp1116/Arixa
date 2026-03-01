@@ -28,17 +28,23 @@ return_stmt = "return" [expr] ";" ;
 if_stmt   = "if" expr block ["else" block] ;
 while_stmt = "while" expr block ;
 for_stmt  = "for" (ident "in" expr | [let_stmt | fixed_stmt | expr ";"] [expr] ";" [assign_stmt | expr]) block ;
-assign_stmt = expr ("=" | "+=" | "-=" | "*=" | "/=" | "%=") expr ";" ;
+assign_stmt = expr ("=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=") expr ";" ;
 expr      = coalesce_expr ;
 coalesce_expr = logic_or_expr ["??" coalesce_expr] ;
 logic_or_expr = logic_and_expr { "||" logic_and_expr } ;
-logic_and_expr = compare_expr { "&&" compare_expr } ;
-compare_expr = add_expr { ("==" | "!=" | "<" | "<=" | ">" | ">=") add_expr } ;
+logic_and_expr = bit_or_expr { "&&" bit_or_expr } ;
+bit_or_expr = bit_xor_expr { "|" bit_xor_expr } ;
+bit_xor_expr = bit_and_expr { "^" bit_and_expr } ;
+bit_and_expr = compare_expr { "&" compare_expr } ;
+compare_expr = shift_expr { ("==" | "!=" | "<" | "<=" | ">" | ">=") shift_expr } ;
+shift_expr = add_expr { ("<<" | ">>") add_expr } ;
 add_expr  = mul_expr { ("+" | "-") mul_expr } ;
 mul_expr  = unary_expr { ("*" | "/" | "%") unary_expr } ;
-unary_expr = ["await"] ( ("-" | "!" | "*" | "&" ["mut"]) unary_expr | postfix_expr ) ;
+unary_expr = ["await"] ( ("-" | "!" | "~" | "*" | "&" ["mut"]) unary_expr | cast_expr ) ;
+cast_expr = postfix_expr { "as" type } ;
 postfix_expr = atom { "." ident | "[" expr "]" | "(" [expr {"," expr}] ")" } ;
-atom      = int | string | "none" | ident | "(" expr ")" ;
+atom      = int | float | string | "none" | ident | "(" expr ")" | layout_query ;
+layout_query = "sizeof" "(" type ")" | "alignof" "(" type ")" | "size_of" "(" expr ")" | "align_of" "(" expr ")" ;
 ```
 
 Conventions:
@@ -49,7 +55,16 @@ Conventions:
 - Call-by-value.
 - Function scope with lexical bindings.
 - Strict evaluation order left-to-right.
-- Integer operations are mathematically defined for non-overflowing values; implementations may trap on overflow in safe mode.
+- Integer arithmetic/bitwise/shift operators require matching integer types.
+- Mixed int/float arithmetic and comparison are rejected unless explicit cast (`expr as Type`) is used.
+- Right shift semantics are type-directed:
+  - signed integers: arithmetic shift
+  - unsigned integers: logical shift
+- Overflow mode is part of build/check configuration:
+  - `check`: default `trap`
+  - `build --profile debug`: default effective overflow `trap`
+  - `build --profile release`: default effective overflow `wrap`
+  - `--overflow trap|wrap|debug` overrides defaults (`debug` resolves by profile)
 
 ## Memory model
 - Ownership-first model for user data.

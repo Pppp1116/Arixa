@@ -31,10 +31,40 @@ def test_cli_build_emit_ir(tmp_path: Path):
     assert ir.exists()
 
 
+def test_cli_build_accepts_profile_and_overflow_flags(tmp_path: Path):
+    src = tmp_path / "ok.astra"
+    out = tmp_path / "ok.py"
+    src.write_text("fn main() -> Int { return 0; }")
+    rc = subprocess.call(
+        [
+            sys.executable,
+            "-m",
+            "astra.cli",
+            "build",
+            str(src),
+            "-o",
+            str(out),
+            "--profile",
+            "release",
+            "--overflow",
+            "wrap",
+        ]
+    )
+    assert rc == 0
+    assert out.exists()
+
+
 def test_cli_check_freestanding_without_main(tmp_path: Path):
     src = tmp_path / "k.astra"
     src.write_text("fn kernel() -> Int { return 0; }")
     rc = subprocess.call([sys.executable, "-m", "astra.cli", "check", str(src), "--freestanding"])
+    assert rc == 0
+
+
+def test_cli_check_accepts_overflow_flag(tmp_path: Path):
+    src = tmp_path / "ok.astra"
+    src.write_text("fn main() -> Int { return 0; }")
+    rc = subprocess.call([sys.executable, "-m", "astra.cli", "check", str(src), "--overflow", "debug"])
     assert rc == 0
 
 
@@ -50,8 +80,8 @@ def test_cli_build_freestanding_x86(tmp_path: Path):
 
 
 @pytest.mark.skipif(
-    shutil.which("nasm") is None or shutil.which("ld") is None,
-    reason="native target requires nasm and ld",
+    shutil.which("nasm") is None or (shutil.which("cc") is None and shutil.which("ld") is None),
+    reason="native target requires nasm and a linker (cc/ld)",
 )
 def test_cli_build_native_executable(tmp_path: Path):
     src = tmp_path / "ok.astra"

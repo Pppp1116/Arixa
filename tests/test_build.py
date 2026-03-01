@@ -80,8 +80,8 @@ fn main() -> Int {
 
 
 @pytest.mark.skipif(
-    shutil.which("nasm") is None or shutil.which("ld") is None,
-    reason="native target requires nasm and ld",
+    shutil.which("nasm") is None or (shutil.which("cc") is None and shutil.which("ld") is None),
+    reason="native target requires nasm and a linker (cc/ld)",
 )
 def test_build_native_executable(tmp_path: Path):
     src = tmp_path / "main.astra"
@@ -96,8 +96,8 @@ def test_build_native_executable(tmp_path: Path):
 
 
 @pytest.mark.skipif(
-    shutil.which("nasm") is None or shutil.which("ld") is None,
-    reason="native target requires nasm and ld",
+    shutil.which("nasm") is None or (shutil.which("cc") is None and shutil.which("ld") is None),
+    reason="native target requires nasm and a linker (cc/ld)",
 )
 def test_build_native_runtime_builtins_link_and_run(tmp_path: Path):
     src = tmp_path / "main.astra"
@@ -120,8 +120,8 @@ fn main() -> Int {
 
 
 @pytest.mark.skipif(
-    shutil.which("nasm") is None or shutil.which("ld") is None,
-    reason="native target requires nasm and ld",
+    shutil.which("nasm") is None or (shutil.which("cc") is None and shutil.which("ld") is None),
+    reason="native target requires nasm and a linker (cc/ld)",
 )
 def test_build_native_runtime_panic_reports_message(tmp_path: Path):
     src = tmp_path / "panic.astra"
@@ -142,8 +142,8 @@ fn main() -> Int {
 
 
 @pytest.mark.skipif(
-    shutil.which("nasm") is None or shutil.which("ld") is None,
-    reason="native target requires nasm and ld",
+    shutil.which("nasm") is None or (shutil.which("cc") is None and shutil.which("ld") is None),
+    reason="native target requires nasm and a linker (cc/ld)",
 )
 def test_build_native_supports_async_struct_and_defer_loop(tmp_path: Path):
     src = tmp_path / "combo.astra"
@@ -174,8 +174,8 @@ fn main() -> Int {
 
 
 @pytest.mark.skipif(
-    shutil.which("nasm") is None or shutil.which("ld") is None,
-    reason="native target requires nasm and ld",
+    shutil.which("nasm") is None or (shutil.which("cc") is None and shutil.which("ld") is None),
+    reason="native target requires nasm and a linker (cc/ld)",
 )
 def test_build_native_supports_non_runtime_builtins(tmp_path: Path):
     src = tmp_path / "builtins.astra"
@@ -199,8 +199,8 @@ fn main() -> Int {
 
 
 @pytest.mark.skipif(
-    shutil.which("nasm") is None or shutil.which("ld") is None,
-    reason="native target requires nasm and ld",
+    shutil.which("nasm") is None or (shutil.which("cc") is None and shutil.which("ld") is None),
+    reason="native target requires nasm and a linker (cc/ld)",
 )
 def test_build_native_supports_float_mod(tmp_path: Path):
     src = tmp_path / "fmod.astra"
@@ -221,3 +221,52 @@ fn main() -> Int {
     assert st in {"built", "cached"}
     cp = subprocess.run([str(out)], capture_output=True, text=True)
     assert cp.returncode == 3
+
+
+@pytest.mark.skipif(
+    shutil.which("nasm") is None or (shutil.which("cc") is None and shutil.which("ld") is None),
+    reason="native target requires nasm and a linker (cc/ld)",
+)
+def test_build_native_supports_i128_hard_ops_with_runtime_helpers(tmp_path: Path):
+    src = tmp_path / "i128.astra"
+    out = tmp_path / "i128.exe"
+    src.write_text(
+        """
+fn main() -> Int {
+  let a: i128 = 20 as i128;
+  let b: i128 = 3 as i128;
+  let m: i128 = a * b;
+  let d: i128 = a / b;
+  let r: i128 = a % b;
+  return (m as Int) + (d as Int) + (r as Int);
+}
+"""
+    )
+    st = build(str(src), str(out), "native", profile="debug", overflow="trap")
+    assert st in {"built", "cached"}
+    cp = subprocess.run([str(out)], capture_output=True, text=True)
+    assert cp.returncode == 68
+
+
+def test_resolve_overflow_mode_profile_defaults():
+    assert build_mod._resolve_overflow_mode("debug", "debug", check=False) == "trap"
+    assert build_mod._resolve_overflow_mode("release", "debug", check=False) == "wrap"
+    assert build_mod._resolve_overflow_mode("debug", "debug", check=True) == "trap"
+    assert build_mod._resolve_overflow_mode("release", "trap", check=False) == "trap"
+    assert build_mod._resolve_overflow_mode("debug", "wrap", check=False) == "wrap"
+
+
+def test_build_cache_key_includes_profile_and_overflow(tmp_path: Path):
+    src = tmp_path / "main.astra"
+    out = tmp_path / "main.py"
+    src.write_text("fn main() -> Int { return 0; }")
+    st1 = build(str(src), str(out), "py", profile="debug", overflow="debug")
+    st2 = build(str(src), str(out), "py", profile="debug", overflow="debug")
+    st3 = build(str(src), str(out), "py", profile="release", overflow="debug")
+    st4 = build(str(src), str(out), "py", profile="release", overflow="debug")
+    st5 = build(str(src), str(out), "py", profile="release", overflow="trap")
+    assert st1 in {"built", "cached"}
+    assert st2 == "cached"
+    assert st3 == "built"
+    assert st4 == "cached"
+    assert st5 == "built"

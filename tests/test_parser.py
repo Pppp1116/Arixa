@@ -1,8 +1,11 @@
 from astra.ast import (
+    AlignOfTypeExpr,
+    AlignOfValueExpr,
     AssignStmt,
     AwaitExpr,
     Binary,
     BreakStmt,
+    CastExpr,
     ContinueStmt,
     DeferStmt,
     DropStmt,
@@ -14,6 +17,8 @@ from astra.ast import (
     ImportDecl,
     IndexExpr,
     LetStmt,
+    SizeOfTypeExpr,
+    SizeOfValueExpr,
     StructDecl,
     TypeAliasDecl,
     Unary,
@@ -186,3 +191,25 @@ def test_nil_keyword_is_rejected():
         assert False
     except SemanticError as e:
         assert "undefined name nil" in str(e)
+
+
+def test_parse_bitwise_shift_cast_and_layout_queries():
+    src = """
+fn main() -> Int {
+  let x: u8 = 3 as u8;
+  let y: u8 = (x << (1 as u8)) | (1 as u8);
+  let a = sizeof(u16);
+  let b = alignof(u16);
+  let c = size_of(y);
+  let d = align_of(y);
+  return (y as Int) + a + b + c + d;
+}
+"""
+    prog = parse(src)
+    fn = prog.items[0]
+    assert isinstance(fn.body[0].expr, CastExpr)
+    assert isinstance(fn.body[1].expr, Binary)
+    assert isinstance(fn.body[2].expr, SizeOfTypeExpr)
+    assert isinstance(fn.body[3].expr, AlignOfTypeExpr)
+    assert isinstance(fn.body[4].expr, SizeOfValueExpr)
+    assert isinstance(fn.body[5].expr, AlignOfValueExpr)

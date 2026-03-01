@@ -157,7 +157,50 @@ fn main() -> Int {
     asm = to_x86_64(prog)
     assert_valid_x86_64_assembly(asm)
     assert "rbp+16" in asm
-    assert "push qword" in asm
+    assert ("push qword" in asm) or ("push rax" in asm)
+
+
+def test_x86_64_uses_width_correct_parameter_spills():
+    src = """
+fn f(a: u8, b: u16, c: u32, d: i64) -> Int {
+  return (a as Int) + (b as Int) + (c as Int) + (d as Int);
+}
+fn main() -> Int {
+  return f(1 as u8, 2 as u16, 3 as u32, 4 as i64);
+}
+"""
+    prog = parse(src)
+    analyze(prog)
+    asm = to_x86_64(prog)
+    assert_valid_x86_64_assembly(asm)
+    assert "mov byte [rbp-" in asm
+    assert "mov word [rbp-" in asm
+    assert "mov dword [rbp-" in asm
+
+
+def test_x86_64_i128_hard_ops_select_helper_symbols_by_overflow_mode():
+    src = """
+fn main() -> Int {
+  let a: i128 = 20 as i128;
+  let b: i128 = 3 as i128;
+  let m: i128 = a * b;
+  let d: i128 = a / b;
+  let r: i128 = a % b;
+  return (m as Int) + (d as Int) + (r as Int);
+}
+"""
+    prog = parse(src)
+    analyze(prog)
+    asm_trap = to_x86_64(prog, overflow_mode="trap")
+    asm_wrap = to_x86_64(prog, overflow_mode="wrap")
+    assert_valid_x86_64_assembly(asm_trap)
+    assert_valid_x86_64_assembly(asm_wrap)
+    assert "extern astra_i128_mul_trap" in asm_trap
+    assert "extern astra_i128_div_trap" in asm_trap
+    assert "extern astra_i128_mod_trap" in asm_trap
+    assert "extern astra_i128_mul_wrap" in asm_wrap
+    assert "extern astra_i128_div_wrap" in asm_wrap
+    assert "extern astra_i128_mod_wrap" in asm_wrap
 
 
 def test_x86_64_supports_indirect_function_pointer_calls():
@@ -499,3 +542,22 @@ def test_emit_ir_writes_json(tmp_path: Path):
     text = ir.read_text()
     assert '"name": "main"' in text
     assert '"ops"' in text
+
+
+def test_runtime_assembly_exports_i128_helper_symbols():
+    text = Path("runtime/x86_64_linux_runtime.s").read_text()
+    for sym in (
+        "astra_i128_mul_wrap",
+        "astra_i128_mul_trap",
+        "astra_u128_mul_wrap",
+        "astra_u128_mul_trap",
+        "astra_i128_div_wrap",
+        "astra_i128_div_trap",
+        "astra_u128_div_wrap",
+        "astra_u128_div_trap",
+        "astra_i128_mod_wrap",
+        "astra_i128_mod_trap",
+        "astra_u128_mod_wrap",
+        "astra_u128_mod_trap",
+    ):
+        assert f"global {sym}" in text

@@ -96,6 +96,16 @@ def _fold_expr(e):
                     return ("lit", a // b if isinstance(a, int) and isinstance(b, int) else a / b)
                 if e[1] == "%":
                     return ("lit", a % b)
+                if e[1] == "&":
+                    return ("lit", int(a) & int(b))
+                if e[1] == "|":
+                    return ("lit", int(a) | int(b))
+                if e[1] == "^":
+                    return ("lit", int(a) ^ int(b))
+                if e[1] == "<<":
+                    return ("lit", int(a) << int(b))
+                if e[1] == ">>":
+                    return ("lit", int(a) >> int(b))
                 if e[1] == "==":
                     return ("lit", a == b)
                 if e[1] == "!=":
@@ -113,6 +123,12 @@ def _fold_expr(e):
                 if e[1] == "||":
                     return ("lit", bool(a) or bool(b))
         return ("bin", e[1], l, r)
+    if e[0] == "cast":
+        return ("cast", _fold_expr(e[1]), e[2])
+    if e[0] in {"sizeof_type", "alignof_type"}:
+        return e
+    if e[0] in {"sizeof_value", "alignof_value"}:
+        return (e[0], _fold_expr(e[1]))
     if e[0] in {"call", "index", "field", "array"}:
         return tuple(_fold_expr(x) if isinstance(x, tuple) else x for x in e)
     return e
@@ -169,10 +185,10 @@ def _optimize_stmt(st: Any, env: dict[str, Any], mutable_names: set[str]) -> tup
                     env.pop(st.target.value, None)
                 else:
                     env[st.target.value] = _literal_node(lit, st.expr)
-            elif st.op in {"+=", "-=", "*=", "/=", "%="}:
+            elif st.op in {"+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="}:
                 left = _literal_value(env.get(st.target.value))
                 right = _literal_value(st.expr)
-                merged = _eval_binary_const(st.op[0], left, right)
+                merged = _eval_binary_const(st.op[:-1], left, right)
                 if merged is _NO_LITERAL:
                     env.pop(st.target.value, None)
                 else:
@@ -350,6 +366,16 @@ def _fold_ast_expr(expr: Any, env: dict[str, Any], mutable_names: set[str]) -> A
         if expr.op == "/":
             if rval == 1 and _is_pure_expr(expr.left):
                 return expr.left
+        if expr.op in {"|", "^"}:
+            if rval == 0 and _is_pure_expr(expr.left):
+                return expr.left
+            if lval == 0 and _is_pure_expr(expr.right):
+                return expr.right
+        if expr.op == "&":
+            if rval == -1 and _is_pure_expr(expr.left):
+                return expr.left
+            if lval == -1 and _is_pure_expr(expr.right):
+                return expr.right
         if expr.op == "??":
             if lval is None:
                 return expr.right
@@ -385,6 +411,14 @@ def _fold_ast_expr(expr: Any, env: dict[str, Any], mutable_names: set[str]) -> A
         expr.fields = [(name, _fold_ast_expr(value, env, mutable_names)) for name, value in expr.fields]
         return expr
     if isinstance(expr, TypeAnnotated):
+        expr.expr = _fold_ast_expr(expr.expr, env, mutable_names)
+        return expr
+    if isinstance(expr, CastExpr):
+        expr.expr = _fold_ast_expr(expr.expr, env, mutable_names)
+        return expr
+    if isinstance(expr, (SizeOfTypeExpr, AlignOfTypeExpr)):
+        return expr
+    if isinstance(expr, (SizeOfValueExpr, AlignOfValueExpr)):
         expr.expr = _fold_ast_expr(expr.expr, env, mutable_names)
         return expr
     return expr
@@ -427,6 +461,12 @@ def _is_pure_expr(expr: Any) -> bool:
         return all(_is_pure_expr(v) for _, v in expr.fields)
     if isinstance(expr, TypeAnnotated):
         return _is_pure_expr(expr.expr)
+    if isinstance(expr, CastExpr):
+        return _is_pure_expr(expr.expr)
+    if isinstance(expr, (SizeOfTypeExpr, AlignOfTypeExpr)):
+        return True
+    if isinstance(expr, (SizeOfValueExpr, AlignOfValueExpr)):
+        return _is_pure_expr(expr.expr)
     return False
 
 
@@ -454,6 +494,12 @@ def _may_trap_expr(expr: Any) -> bool:
         return any(_may_trap_expr(v) for _, v in expr.fields)
     if isinstance(expr, TypeAnnotated):
         return _may_trap_expr(expr.expr)
+    if isinstance(expr, CastExpr):
+        return _may_trap_expr(expr.expr)
+    if isinstance(expr, (SizeOfTypeExpr, AlignOfTypeExpr)):
+        return False
+    if isinstance(expr, (SizeOfValueExpr, AlignOfValueExpr)):
+        return _may_trap_expr(expr.expr)
     # Conservative: calls/await/index/field are observable or may trap.
     return True
 
@@ -473,6 +519,16 @@ def _eval_binary_const(op: str, left: Any, right: Any) -> Any:
         return left / right
     if op == "%" and right != 0:
         return left % right
+    if op == "&":
+        return int(left) & int(right)
+    if op == "|":
+        return int(left) | int(right)
+    if op == "^":
+        return int(left) ^ int(right)
+    if op == "<<":
+        return int(left) << int(right)
+    if op == ">>":
+        return int(left) >> int(right)
     if op == "==":
         return left == right
     if op == "!=":
@@ -569,7 +625,7 @@ def _dse_stmts(stmts: list[Any], live_out: set[str]) -> tuple[list[Any], set[str
                 if st.op == "=":
                     live.discard(st.target.value)
                     live |= uses
-                elif st.op in {"+=", "-=", "*=", "/=", "%="}:
+                elif st.op in {"+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="}:
                     # Compound assignments read the previous target value.
                     live |= uses | {st.target.value}
                 else:
@@ -688,6 +744,12 @@ def _used_names_expr(expr: Any) -> set[str]:
             out |= _used_names_expr(value)
         return out
     if isinstance(expr, TypeAnnotated):
+        return _used_names_expr(expr.expr)
+    if isinstance(expr, CastExpr):
+        return _used_names_expr(expr.expr)
+    if isinstance(expr, (SizeOfTypeExpr, AlignOfTypeExpr)):
+        return set()
+    if isinstance(expr, (SizeOfValueExpr, AlignOfValueExpr)):
         return _used_names_expr(expr.expr)
     return set()
 

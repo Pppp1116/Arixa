@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 
 from astra.ast import *
+from astra.layout import LayoutError, canonical_type as _layout_canonical_type, layout_of_type
 
 
 class SemanticError(Exception):
@@ -20,6 +22,22 @@ NUMERIC_TYPES = {"Int", "Float", "Any"} | INT_TYPES | FLOAT_TYPES
 PRIMITIVES = {"Int", "Float", "String", "str", "Bool", "Any", "Void", "Never", "Bytes"} | INT_TYPES | FLOAT_TYPES
 COPY_SCALAR_TYPES = {"Int", "Float", "Bool"} | INT_TYPES | FLOAT_TYPES
 NONE_LIT_TYPE = "<none>"
+
+_INT_INFO: dict[str, tuple[int, bool]] = {
+    "Int": (64, True),
+    "isize": (64, True),
+    "usize": (64, False),
+    "i8": (8, True),
+    "u8": (8, False),
+    "i16": (16, True),
+    "u16": (16, False),
+    "i32": (32, True),
+    "u32": (32, False),
+    "i64": (64, True),
+    "u64": (64, False),
+    "i128": (128, True),
+    "u128": (128, False),
+}
 
 
 def _is_option_type(typ: str) -> bool:
@@ -76,6 +94,22 @@ def _canonical_type(typ: str) -> str:
     if _is_vec_type(typ):
         return f"Vec<{_canonical_type(_vec_inner(typ))}>"
     return typ
+
+
+def _int_info(typ: str) -> tuple[int, bool] | None:
+    return _INT_INFO.get(_canonical_type(typ))
+
+
+def _is_int_type(typ: str) -> bool:
+    return _int_info(typ) is not None
+
+
+def _is_float_type(typ: str) -> bool:
+    return _canonical_type(typ) in {"Float", "f32", "f64"}
+
+
+def _is_numeric_scalar_type(typ: str) -> bool:
+    return _is_int_type(typ) or _is_float_type(typ)
 
 
 def _is_unsized_value_type(typ: str) -> bool:
@@ -427,6 +461,64 @@ def _require_sized_value_type(filename: str, line: int, col: int, typ: str, what
         return
     if _is_unsized_value_type(typ):
         raise SemanticError(_diag(filename, line, col, f"unsized type {typ} is not allowed by value for {what}; use & or &mut"))
+
+
+def _require_strict_int_operands(filename: str, line: int, col: int, op: str, left: str, right: str):
+    l = _canonical_type(left)
+    r = _canonical_type(right)
+    if not _is_int_type(l) or not _is_int_type(r):
+        raise SemanticError(_diag(filename, line, col, f"operator {op} expects integer operands, got {left} and {right}"))
+    if l != r:
+        raise SemanticError(_diag(filename, line, col, f"operator {op} requires matching integer types, got {left} and {right}"))
+
+
+def _cast_supported(src: str, dst: str) -> bool:
+    return _is_numeric_scalar_type(src) and _is_numeric_scalar_type(dst)
+
+
+def _int_cast_bounds(bits: int, signed: bool) -> tuple[int, int]:
+    if signed:
+        return -(1 << (bits - 1)), (1 << (bits - 1)) - 1
+    return 0, (1 << bits) - 1
+
+
+def _saturating_float_to_int(value: float, bits: int, signed: bool) -> int:
+    if math.isnan(value):
+        return 0
+    lo, hi = _int_cast_bounds(bits, signed)
+    if value == float("inf"):
+        return hi
+    if value == float("-inf"):
+        return lo if signed else 0
+    v = math.trunc(value)
+    if v < lo:
+        return lo
+    if v > hi:
+        return hi
+    return v
+
+
+def _require_compound_assign_compat(filename: str, line: int, col: int, op: str, lhs: str, rhs: str):
+    if op == "=":
+        _require_type(filename, line, col, lhs, rhs, "assignment")
+        return
+    _require_type(filename, line, col, lhs, rhs, "assignment")
+    bop = op[:-1]
+    lc = _canonical_type(lhs)
+    rc = _canonical_type(rhs)
+    if bop in {"+", "-", "*", "/", "%"}:
+        if _is_int_type(lc) and _is_int_type(rc):
+            _require_strict_int_operands(filename, line, col, bop, lhs, rhs)
+            return
+        if _is_float_type(lc) and _is_float_type(rc):
+            return
+        if bop == "+" and lc in {"String", "str"} and rc in {"String", "str"}:
+            return
+        raise SemanticError(_diag(filename, line, col, f"operator {op} requires matching numeric types; use explicit cast"))
+    if bop in {"&", "|", "^", "<<", ">>"}:
+        _require_strict_int_operands(filename, line, col, bop, lhs, rhs)
+        return
+    raise SemanticError(_diag(filename, line, col, f"unsupported assignment operator {op}"))
 
 
 def _consume_if_move_name(expr: Any, expr_ty: str, move: _MoveState, filename: str, line: int, col: int):
@@ -817,7 +909,7 @@ def _check_stmt(
             lhs = _lookup(st.target.value, scopes)
             if lhs is None:
                 raise SemanticError(_diag(filename, st.line, st.col, f"assignment to undefined name {st.target.value}"))
-            _require_type(filename, st.line, st.col, lhs, rhs, st.target.value)
+            _require_compound_assign_compat(filename, st.line, st.col, st.op, lhs, rhs)
             if _is_ref_type(lhs):
                 if isinstance(st.expr, Unary) and st.expr.op in {"&", "&mut"} and isinstance(st.expr.expr, Name):
                     owner = st.expr.expr.value
@@ -847,7 +939,8 @@ def _check_stmt(
             _assign(st.target.value, lhs, scopes, filename, st.line, st.col)
             move.reinitialize(st.target.value)
             return
-        _infer(st.target, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
+        lhs = _infer(st.target, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
+        _require_compound_assign_compat(filename, st.line, st.col, st.op, lhs, rhs)
         return
     if isinstance(st, ReturnStmt):
         expr_ty = "Void" if st.expr is None else _infer(st.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
@@ -1168,6 +1261,32 @@ def _infer(
                 return _typed(e, "Any")
             return _typed(e, f"fn({', '.join(sig.args)}) -> {sig.ret}")
         raise SemanticError(_diag(filename, e.line, e.col, f"undefined name {e.value}"))
+    if isinstance(e, SizeOfTypeExpr):
+        try:
+            layout_of_type(e.type_name, structs, mode="query")
+        except LayoutError as err:
+            raise SemanticError(_diag(filename, e.line, e.col, str(err))) from err
+        setattr(e, "query_type", _canonical_type(e.type_name))
+        return _typed(e, "Int")
+    if isinstance(e, AlignOfTypeExpr):
+        try:
+            layout_of_type(e.type_name, structs, mode="query")
+        except LayoutError as err:
+            raise SemanticError(_diag(filename, e.line, e.col, str(err))) from err
+        setattr(e, "query_type", _canonical_type(e.type_name))
+        return _typed(e, "Int")
+    if isinstance(e, (SizeOfValueExpr, AlignOfValueExpr)):
+        # Query forms are type-only and must not consume moves/borrows from the source expression.
+        owned_copy = owned.copy() if owned is not None else None
+        borrow_copy = borrow.copy()
+        move_copy = move.copy()
+        val_ty = _infer(e.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned_copy, borrow_copy, move_copy, filename, fn_name)
+        try:
+            layout_of_type(val_ty, structs, mode="query")
+        except LayoutError as err:
+            raise SemanticError(_diag(filename, e.line, e.col, str(err))) from err
+        setattr(e, "query_type", _canonical_type(val_ty))
+        return _typed(e, "Int")
     if isinstance(e, AwaitExpr):
         return _typed(e, _infer(e.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name))
     if isinstance(e, Unary):
@@ -1198,6 +1317,12 @@ def _infer(
                 raise SemanticError(_diag(filename, e.line, e.col, f"cannot dereference non-reference type {inner}"))
             return _typed(e, _strip_ref(inner))
         return _typed(e, inner)
+    if isinstance(e, CastExpr):
+        src = _infer(e.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
+        dst = _canonical_type(e.type_name)
+        if not _cast_supported(src, dst):
+            raise SemanticError(_diag(filename, e.line, e.col, f"unsupported cast from {src} to {e.type_name}"))
+        return _typed(e, dst)
     if isinstance(e, Binary):
         l = _infer(e.left, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
         r = _infer(e.right, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name)
@@ -1205,12 +1330,22 @@ def _infer(
             if l in {"String", "str", "Any"} or r in {"String", "str", "Any"}:
                 if e.op == "+" and (l in {"String", "str"} or r in {"String", "str"}):
                     return _typed(e, "String")
-            if l not in NUMERIC_TYPES or r not in NUMERIC_TYPES:
-                raise SemanticError(_diag(filename, e.line, e.col, f"numeric operator {e.op} expects numbers"))
-            if l in {"Float"} | FLOAT_TYPES or r in {"Float"} | FLOAT_TYPES:
-                return _typed(e, "Float")
-            return _typed(e, "Int")
+            if _is_int_type(l) and _is_int_type(r):
+                _require_strict_int_operands(filename, e.line, e.col, e.op, l, r)
+                return _typed(e, _canonical_type(l))
+            if _is_float_type(l) and _is_float_type(r):
+                return _typed(e, _canonical_type(l))
+            if (_is_int_type(l) and _is_float_type(r)) or (_is_float_type(l) and _is_int_type(r)):
+                raise SemanticError(_diag(filename, e.line, e.col, f"mixed int/float arithmetic requires explicit cast for operator {e.op}"))
+            raise SemanticError(_diag(filename, e.line, e.col, f"numeric operator {e.op} expects numeric operands"))
+        if e.op in {"&", "|", "^", "<<", ">>"}:
+            _require_strict_int_operands(filename, e.line, e.col, e.op, l, r)
+            return _typed(e, _canonical_type(l))
         if e.op in {"==", "!=", "<", "<=", ">", ">="}:
+            if _is_int_type(l) and _is_int_type(r):
+                _require_strict_int_operands(filename, e.line, e.col, e.op, l, r)
+            elif (_is_int_type(l) and _is_float_type(r)) or (_is_float_type(l) and _is_int_type(r)):
+                raise SemanticError(_diag(filename, e.line, e.col, f"mixed int/float comparison requires explicit cast for operator {e.op}"))
             return _typed(e, "Bool")
         if e.op in {"&&", "||"}:
             _require_type(filename, e.line, e.col, "Bool", l, f"{e.op} left operand")

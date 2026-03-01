@@ -15,6 +15,24 @@ global astra_alloc
 global astra_free
 global astra_panic
 global astra_fmod
+global astra_i128_mul_wrap
+global astra_i128_mul_trap
+global astra_u128_mul_wrap
+global astra_u128_mul_trap
+global astra_i128_div_wrap
+global astra_i128_div_trap
+global astra_u128_div_wrap
+global astra_u128_div_trap
+global astra_i128_mod_wrap
+global astra_i128_mod_trap
+global astra_u128_mod_wrap
+global astra_u128_mod_trap
+
+extern __multi3
+extern __divti3
+extern __modti3
+extern __udivti3
+extern __umodti3
 
 ; void astra_print_i64(i64 value)
 astra_print_i64:
@@ -195,3 +213,189 @@ astra_fmod:
   movsd xmm0, qword [rsp]
   leave
   ret
+
+; i128 astra_i128_mul_wrap(i128 a, i128 b)
+; i128 astra_i128_mul_trap(i128 a, i128 b)
+; u128 astra_u128_mul_wrap(u128 a, u128 b)
+; u128 astra_u128_mul_trap(u128 a, u128 b)
+; SysV split-eightbyte args:
+;   a.low=rdi, a.high=rsi, b.low=rdx, b.high=rcx
+; Return:
+;   rax=low, rdx=high
+astra_i128_mul_wrap:
+  push rbp
+  mov rbp, rsp
+  call __multi3
+  leave
+  ret
+
+astra_i128_mul_trap:
+  push rbp
+  mov rbp, rsp
+  sub rsp, 64
+  mov qword [rbp-32], rdi
+  mov qword [rbp-24], rsi
+  mov qword [rbp-16], rdx
+  mov qword [rbp-8], rcx
+  call __multi3
+  mov qword [rbp-64], rax
+  mov qword [rbp-56], rdx
+  mov r8, qword [rbp-16]
+  or r8, qword [rbp-8]
+  jz .i128_mul_trap_done
+  mov rdi, qword [rbp-64]
+  mov rsi, qword [rbp-56]
+  mov rdx, qword [rbp-16]
+  mov rcx, qword [rbp-8]
+  call __divti3
+  cmp rax, qword [rbp-32]
+  jne .i128_mul_trap_overflow
+  cmp rdx, qword [rbp-24]
+  jne .i128_mul_trap_overflow
+.i128_mul_trap_done:
+  mov rax, qword [rbp-64]
+  mov rdx, qword [rbp-56]
+  leave
+  ret
+.i128_mul_trap_overflow:
+  ud2
+
+astra_u128_mul_wrap:
+  push rbp
+  mov rbp, rsp
+  call __multi3
+  leave
+  ret
+
+astra_u128_mul_trap:
+  push rbp
+  mov rbp, rsp
+  sub rsp, 64
+  mov qword [rbp-32], rdi
+  mov qword [rbp-24], rsi
+  mov qword [rbp-16], rdx
+  mov qword [rbp-8], rcx
+  call __multi3
+  mov qword [rbp-64], rax
+  mov qword [rbp-56], rdx
+  mov r8, qword [rbp-16]
+  or r8, qword [rbp-8]
+  jz .u128_mul_trap_done
+  mov rdi, qword [rbp-64]
+  mov rsi, qword [rbp-56]
+  mov rdx, qword [rbp-16]
+  mov rcx, qword [rbp-8]
+  call __udivti3
+  cmp rax, qword [rbp-32]
+  jne .u128_mul_trap_overflow
+  cmp rdx, qword [rbp-24]
+  jne .u128_mul_trap_overflow
+.u128_mul_trap_done:
+  mov rax, qword [rbp-64]
+  mov rdx, qword [rbp-56]
+  leave
+  ret
+.u128_mul_trap_overflow:
+  ud2
+
+; i128/u128 division and modulo helpers.
+; Division-by-zero always traps (ud2).
+astra_i128_div_wrap:
+  push rbp
+  mov rbp, rsp
+  mov r8, rdx
+  or r8, rcx
+  jnz .i128_div_wrap_ok
+  ud2
+.i128_div_wrap_ok:
+  call __divti3
+  leave
+  ret
+
+astra_i128_div_trap:
+  push rbp
+  mov rbp, rsp
+  mov r8, rdx
+  or r8, rcx
+  jnz .i128_div_trap_nz
+  ud2
+.i128_div_trap_nz:
+  cmp rdx, -1
+  jne .i128_div_trap_ok
+  cmp rcx, -1
+  jne .i128_div_trap_ok
+  cmp rdi, 0
+  jne .i128_div_trap_ok
+  mov r8, 0x8000000000000000
+  cmp rsi, r8
+  jne .i128_div_trap_ok
+  ud2
+.i128_div_trap_ok:
+  call __divti3
+  leave
+  ret
+
+astra_u128_div_wrap:
+  push rbp
+  mov rbp, rsp
+  mov r8, rdx
+  or r8, rcx
+  jnz .u128_div_wrap_ok
+  ud2
+.u128_div_wrap_ok:
+  call __udivti3
+  leave
+  ret
+
+astra_u128_div_trap:
+  jmp astra_u128_div_wrap
+
+astra_i128_mod_wrap:
+  push rbp
+  mov rbp, rsp
+  mov r8, rdx
+  or r8, rcx
+  jnz .i128_mod_wrap_ok
+  ud2
+.i128_mod_wrap_ok:
+  call __modti3
+  leave
+  ret
+
+astra_i128_mod_trap:
+  push rbp
+  mov rbp, rsp
+  mov r8, rdx
+  or r8, rcx
+  jnz .i128_mod_trap_nz
+  ud2
+.i128_mod_trap_nz:
+  cmp rdx, -1
+  jne .i128_mod_trap_ok
+  cmp rcx, -1
+  jne .i128_mod_trap_ok
+  cmp rdi, 0
+  jne .i128_mod_trap_ok
+  mov r8, 0x8000000000000000
+  cmp rsi, r8
+  jne .i128_mod_trap_ok
+  ud2
+.i128_mod_trap_ok:
+  call __modti3
+  leave
+  ret
+
+astra_u128_mod_wrap:
+  push rbp
+  mov rbp, rsp
+  mov r8, rdx
+  or r8, rcx
+  jnz .u128_mod_wrap_ok
+  ud2
+.u128_mod_wrap_ok:
+  call __umodti3
+  leave
+  ret
+
+astra_u128_mod_trap:
+  jmp astra_u128_mod_wrap

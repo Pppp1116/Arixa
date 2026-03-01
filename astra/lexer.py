@@ -29,6 +29,8 @@ KEYWORDS = {
     "none",
     "in",
     "as",
+    "sizeof",
+    "alignof",
 }
 
 MULTI_TOKENS = [
@@ -50,6 +52,11 @@ MULTI_TOKENS = [
     "*=",
     "/=",
     "%=",
+    "<<=",
+    ">>=",
+    "&=",
+    "|=",
+    "^=",
     "<<",
     ">>",
     "..",

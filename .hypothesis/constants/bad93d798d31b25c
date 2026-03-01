@@ -1,0 +1,4 @@
+# file: /home/pedro/Downloads/programming-language-/astra/lexer.py
+# hypothesis_version: 6.151.9
+
+['!=', '"', '"""', '%=', '&&', '&&=', '&=', "'", '*/', '*=', '+=', '-=', '->', '.', '..', '...', '/*', '//', '///', '/=', '::', '<<', '<<=', '<=', '<input>', '==', '=>', '>=', '>>', '>>=', '??', 'BOOL', 'CHAR', 'DOC_COMMENT', 'EOF', 'ERROR', 'FLOAT', 'IDENT', 'INT', 'STR', 'STR_MULTI', '\\', '^=', '_', 'alignof', 'as', 'async', 'await', 'break', 'comptime', 'continue', 'defer', 'drop', 'else', 'enum', 'extern', 'false', 'fixed', 'fn', 'for', 'if', 'impl', 'import', 'in', 'let', 'match', 'mut', 'none', 'pub', 'return', 'sizeof', 'struct', 'true', 'type', 'unsafe', 'unterminated char', 'unterminated string', 'while', '|=', '||', '||=']

@@ -1,0 +1,4 @@
+# file: /home/pedro/Downloads/programming-language-/astra/optimizer.py
+# hypothesis_version: 6.151.9
+
+['!', '!=', '%', '%=', '&', '&&', '&=', '*', '*=', '+', '+=', '-', '-=', '/', '/=', '<', '<<', '<<=', '<=', '=', '==', '>', '>=', '>>', '>>=', '??', '^', '^=', 'alignof_type', 'alignof_value', 'array', 'assign', 'await', 'bin', 'call', 'cast', 'col', 'expr', 'field', 'for', 'if', 'index', 'let', 'line', 'lit', 'match', 'pos', 'ret', 'sizeof_type', 'sizeof_value', 'un', 'while', '|', '|=', '||']

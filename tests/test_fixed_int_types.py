@@ -86,12 +86,12 @@ fn main() -> Int {{
 def test_integer_width_types_work_in_numeric_expressions(ty: str):
     src = f"""
 fn bump(x: {ty}) -> Int {{
-  let y = x + 1;
-  return y * 2;
+  let y: {ty} = x + (1 as {ty});
+  return (y * (2 as {ty})) as Int;
 }}
 
 fn main() -> Int {{
-  return bump(4);
+  return bump(4 as {ty});
 }}
 """
     analyze(parse(src))
@@ -101,7 +101,7 @@ fn main() -> Int {{
 def test_fixed_in_for_initializer_is_immutable(ty: str):
     src = f"""
 fn main() -> Int {{
-  for fixed i: {ty} = 0; i < 2; i += 1 {{
+  for fixed i: {ty} = 0 as {ty}; i < (2 as {ty}); i += (1 as {ty}) {{
     print(i);
   }}
   return 0;

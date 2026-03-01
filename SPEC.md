@@ -24,11 +24,12 @@ keyword         = "fn" | "let" | "fixed" | "return" | "if" | "else" | "while"
                 | "for" | "break" | "continue" | "struct" | "enum" | "type"
                 | "import" | "mut" | "pub" | "extern" | "async" | "await"
                 | "unsafe" | "impl" | "match" | "defer" | "drop"
-                | "comptime" | "none" | "in" | "as" ;
+                | "comptime" | "none" | "in" | "as" | "sizeof" | "alignof" ;
 
 multi_op        = "&&=" | "||=" | "..." | "::" | "=>" | "->" | "==" | "!="
                 | "<=" | ">=" | "&&" | "||" | "??"
                 | "+=" | "-=" | "*=" | "/=" | "%="
+                | "&=" | "|=" | "^=" | "<<=" | ">>="
                 | "<<" | ">>" | ".." ;
 single_op       = "{" | "}" | "(" | ")" | "<" | ">" | ";" | "," | "=" | "+"
                 | "-" | "*" | "/" | "%" | "!" | "?" | "[" | "]" | ":"
@@ -43,17 +44,25 @@ Notes:
 ## 2. Expression Grammar
 
 ```ebnf
-expr            = binary_expr ;
-binary_expr     = unary_expr { bin_op unary_expr } ;
-unary_expr      = [ "await" ] ( ( "-" | "!" | "~" | "*" | "&" [ "mut" ] ) unary_expr
-                  | postfix_expr ) ;
+expr            = coalesce_expr ;
+coalesce_expr   = logic_or_expr [ "??" coalesce_expr ] ;
+logic_or_expr   = logic_and_expr { "||" logic_and_expr } ;
+logic_and_expr  = bit_or_expr { "&&" bit_or_expr } ;
+bit_or_expr     = bit_xor_expr { "|" bit_xor_expr } ;
+bit_xor_expr    = bit_and_expr { "^" bit_and_expr } ;
+bit_and_expr    = compare_expr { "&" compare_expr } ;
+compare_expr    = shift_expr { ("==" | "!=" | "<" | "<=" | ">" | ">=") shift_expr } ;
+shift_expr      = add_expr { ("<<" | ">>") add_expr } ;
+add_expr        = mul_expr { ("+" | "-") mul_expr } ;
+mul_expr        = unary_expr { ("*" | "/" | "%") unary_expr } ;
+unary_expr      = [ "await" ] ( ( "-" | "!" | "~" | "*" | "&" [ "mut" ] ) unary_expr | cast_expr ) ;
+cast_expr       = postfix_expr { "as" type } ;
 postfix_expr    = atom { "." ident | "[" expr "]" | "(" [expr {"," expr}] ")" } ;
-atom            = int_lit | float_lit | str_lit | char_lit
-                | bool_lit | "none" | ident | array_lit | "(" expr ")" ;
+atom            = int_lit | float_lit | str_lit | char_lit | bool_lit
+                | "none" | ident | array_lit | "(" expr ")" | layout_query ;
 array_lit       = "[" [expr {"," expr}] "]" ;
-
-bin_op          = "??" | "||" | "&&" | "==" | "!=" | "<" | "<=" | ">" | ">="
-                | "+" | "-" | "*" | "/" | "%" ;
+layout_query    = "sizeof" "(" type ")" | "alignof" "(" type ")"
+                | "size_of" "(" expr ")" | "align_of" "(" expr ")" ;
 ```
 
 Precedence (high to low):
@@ -61,11 +70,15 @@ Precedence (high to low):
 2. Unary: `await`, unary `-`, `!`, `~`, deref `*`, borrow `&`/`&mut`
 3. Multiplicative: `* / %`
 4. Additive: `+ -`
-5. Comparison: `< <= > >=`
-6. Equality: `== !=`
-7. Logical AND: `&&`
-8. Logical OR: `||`
-9. Coalesce: `??`
+5. Shift: `<< >>`
+6. Comparison: `< <= > >=`
+7. Equality: `== !=`
+8. Bitwise AND: `&`
+9. Bitwise XOR: `^`
+10. Bitwise OR: `|`
+11. Logical AND: `&&`
+12. Logical OR: `||`
+13. Coalesce: `??`
 
 Associativity:
 - Current parser behavior is left-associative for all binary operators, including `??`.
@@ -96,7 +109,7 @@ for_stmt        = "for" ( ident "in" expr
                 | [ (let_stmt | fixed_stmt | expr ";") ] [expr] ";" [assign_or_expr] ) block ;
 match_stmt      = "match" expr "{" { expr "=>" block [","] } "}" ;
 
-assign_stmt     = expr ( "=" | "+=" | "-=" | "*=" | "/=" | "%=" ) expr ";" ;
+assign_stmt     = expr ( "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" ) expr ";" ;
 assign_or_expr  = assign_stmt | expr ;
 expr_stmt       = expr ";" ;
 ```
@@ -158,6 +171,15 @@ Owned-state checks:
 - `&&`, `||`, and `??` are short-circuiting.
 - `defer` executes in LIFO order at function exit.
 
+Numeric semantics:
+- Integer arithmetic/bitwise/shift operators require matching integer types.
+- Mixed int/float arithmetic and comparison are rejected unless explicit cast (`expr as Type`) is used.
+- Right shift is arithmetic for signed integer types and logical for unsigned integer types.
+- Overflow mode is controlled by build/check configuration:
+  - `build --profile debug` => effective default `trap`
+  - `build --profile release` => effective default `wrap`
+  - `--overflow trap|wrap|debug` overrides profile defaults (`debug` resolves by profile)
+
 ## 7. Backend-Defined Behavior Boundaries (`py` vs `x86_64`)
 
 Frontend (lex/parse/semantic) is shared; backend differences begin at lowering/codegen.
@@ -175,8 +197,9 @@ Common contract:
 - System V ABI-oriented lowering with explicit int/SSE classes.
 - `Int` lowers to 64-bit integer ABI representation.
 - Runtime ABI symbols are required for lowered builtins (`astra_*` shims).
+- `i128`/`u128` lowering uses split register returns (`rax` low, `rdx` high) and runtime helpers for hard ops (`mul/div/mod`).
 - Backend has explicit unsupported-case errors for some constructs/types; these are `CODEGEN` errors.
-- `native` target additionally requires external toolchain (`nasm`, `ld`).
+- `native` target additionally requires external toolchain (`nasm` and linker via `cc`/`ld`).
 
 Normative boundary rule:
 - If a program passes semantic analysis but fails only due to backend lowering limits, failure must be reported as backend-defined (`CODEGEN`) rather than semantic invalidity.

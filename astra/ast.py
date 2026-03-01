@@ -307,3 +307,44 @@ class TypeAnnotated:
     pos: int = 0
     line: int = 0
     col: int = 0
+
+
+@dataclass
+class CastExpr:
+    expr: Any
+    type_name: str
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class SizeOfTypeExpr:
+    type_name: str
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class AlignOfTypeExpr:
+    type_name: str
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class SizeOfValueExpr:
+    expr: Any
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class AlignOfValueExpr:
+    expr: Any
+    pos: int = 0
+    line: int = 0
+    col: int = 0

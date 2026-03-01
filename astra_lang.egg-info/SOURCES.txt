@@ -12,6 +12,7 @@ astra/debugger.py
 astra/docgen.py
 astra/formatter.py
 astra/ir.py
+astra/layout.py
 astra/lexer.py
 astra/linter.py
 astra/lsp.py

@@ -231,6 +231,38 @@ def test_unsized_str_local_by_value_is_rejected():
         assert "unsized type str" in str(e)
 
 
+def test_mixed_int_float_arithmetic_requires_explicit_cast():
+    src = "fn main() -> Int { let x = 1 + 2.0; return 0; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "requires explicit cast" in str(e)
+
+
+def test_strict_integer_binary_requires_matching_types():
+    src = "fn main() -> Int { let a: u8 = 1 as u8; let b: u16 = 2 as u16; let x = a + b; return 0; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "matching integer types" in str(e)
+
+
+def test_layout_query_semantics_for_type_and_value_forms():
+    src = "struct P { a Int, b u8 } fn main() -> Int { let p = P(1, 2 as u8); return sizeof(P) + alignof(P) + size_of(p.a) + align_of(p.b); }"
+    analyze(parse(src))
+
+
+def test_layout_query_rejects_opaque_and_unsized_types():
+    src = "fn main() -> Int { return sizeof(String); }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "not queryable" in str(e)
+
+
 def test_mutable_borrow_blocks_shared_borrow():
     src = "fn main() -> Int { let mut x = 1; let r = &mut x; let s = &x; return 0; }"
     try:

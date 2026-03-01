@@ -8,14 +8,18 @@ from astra.parser import ParseError, parse
 
 # Keep expression precedence aligned with parser behavior.
 FMT_BIN_PREC = dict(PARSER_BIN_PREC)
-_PREC_ATOM = 9
-_PREC_POSTFIX = 8
-_PREC_UNARY = 7
+_MAX_BIN_PREC = max(FMT_BIN_PREC.values(), default=1)
+_PREC_CAST = _MAX_BIN_PREC + 1
+_PREC_UNARY = _MAX_BIN_PREC + 2
+_PREC_POSTFIX = _MAX_BIN_PREC + 3
+_PREC_ATOM = _MAX_BIN_PREC + 4
 
 
 def _expr_prec(e) -> int:
     if isinstance(e, Binary):
         return FMT_BIN_PREC[e.op]
+    if isinstance(e, CastExpr):
+        return _PREC_CAST
     if isinstance(e, (AwaitExpr, Unary)):
         return _PREC_UNARY
     if isinstance(e, (Call, IndexExpr, FieldExpr)):
@@ -49,6 +53,8 @@ def _fmt_expr(e) -> str:
         return f"await {_fmt_expr_with_prec(e.expr, _PREC_UNARY)}"
     if isinstance(e, Unary):
         return f"{e.op}{_fmt_expr_with_prec(e.expr, _PREC_UNARY)}"
+    if isinstance(e, CastExpr):
+        return f"{_fmt_expr_with_prec(e.expr, _PREC_CAST)} as {e.type_name}"
     if isinstance(e, Binary):
         p = FMT_BIN_PREC[e.op]
         left = _fmt_expr_with_prec(e.left, p, right_child=False)
@@ -65,6 +71,14 @@ def _fmt_expr(e) -> str:
         return f"{obj}.{e.field}"
     if isinstance(e, ArrayLit):
         return f"[{', '.join(_fmt_expr(x) for x in e.elements)}]"
+    if isinstance(e, SizeOfTypeExpr):
+        return f"sizeof({e.type_name})"
+    if isinstance(e, AlignOfTypeExpr):
+        return f"alignof({e.type_name})"
+    if isinstance(e, SizeOfValueExpr):
+        return f"size_of({_fmt_expr(e.expr)})"
+    if isinstance(e, AlignOfValueExpr):
+        return f"align_of({_fmt_expr(e.expr)})"
     return "/* unsupported */"
 
 

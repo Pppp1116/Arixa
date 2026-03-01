@@ -8,12 +8,15 @@ from pathlib import Path
 from astra import __version__ as ASTRA_VERSION
 from astra.ast import (
     ArrayLit,
+    AlignOfTypeExpr,
+    AlignOfValueExpr,
     AssignStmt,
     AwaitExpr,
     Binary,
     BoolLit,
     BreakStmt,
     Call,
+    CastExpr,
     ComptimeStmt,
     ContinueStmt,
     DeferStmt,
@@ -34,6 +37,8 @@ from astra.ast import (
     NilLit,
     Program,
     ReturnStmt,
+    SizeOfTypeExpr,
+    SizeOfValueExpr,
     StructDecl,
     TypeAliasDecl,
     TypeAnnotated,
@@ -135,6 +140,8 @@ def _build_fingerprint(
     emit_ir: str | None,
     strict: bool,
     freestanding: bool,
+    profile: str,
+    overflow_mode: str,
 ) -> str:
     inputs = [
         {"path": p.as_posix(), "sha256": _sha256_file(p)}
@@ -146,18 +153,70 @@ def _build_fingerprint(
         "emit_ir": bool(emit_ir),
         "strict": bool(strict),
         "freestanding": bool(freestanding),
+        "profile": profile,
+        "overflow_mode": overflow_mode,
         "inputs": inputs,
         "toolchain": _toolchain_stamp(),
     }
     return _hash(json.dumps(payload, sort_keys=True, separators=(",", ":")))
 
 
+def _resolve_overflow_mode(profile: str, overflow: str, *, check: bool = False) -> str:
+    if overflow not in {"trap", "wrap", "debug"}:
+        raise RuntimeError(f"BUILD <input>:1:1: unsupported overflow mode {overflow}")
+    if overflow == "trap":
+        return "trap"
+    if overflow == "wrap":
+        return "wrap"
+    if check:
+        return "trap"
+    return "trap" if profile == "debug" else "wrap"
+
+
 _STRICT_TOP_LEVEL = {FnDecl, StructDecl, EnumDecl, TypeAliasDecl, ImportDecl, ExternFnDecl}
 _STRICT_STMTS = {LetStmt, AssignStmt, ReturnStmt, ExprStmt, DropStmt, IfStmt, MatchStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, ComptimeStmt, DeferStmt}
-_STRICT_EXPRS = {Literal, BoolLit, NilLit, Name, Unary, Binary, Call, IndexExpr, FieldExpr, ArrayLit, AwaitExpr, TypeAnnotated}
+_STRICT_EXPRS = {
+    Literal,
+    BoolLit,
+    NilLit,
+    Name,
+    Unary,
+    Binary,
+    Call,
+    IndexExpr,
+    FieldExpr,
+    ArrayLit,
+    AwaitExpr,
+    TypeAnnotated,
+    CastExpr,
+    SizeOfTypeExpr,
+    AlignOfTypeExpr,
+    SizeOfValueExpr,
+    AlignOfValueExpr,
+}
 _STRICT_UNARY_OPS = {"-", "!", "~", "&", "&mut", "*"}
-_STRICT_BINARY_OPS = {"+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">=", "&&", "||", "??"}
-_STRICT_ASSIGN_OPS = {"=", "+=", "-=", "*=", "/=", "%="}
+_STRICT_BINARY_OPS = {
+    "+",
+    "-",
+    "*",
+    "/",
+    "%",
+    "&",
+    "|",
+    "^",
+    "<<",
+    ">>",
+    "==",
+    "!=",
+    "<",
+    "<=",
+    ">",
+    ">=",
+    "&&",
+    "||",
+    "??",
+}
+_STRICT_ASSIGN_OPS = {"=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="}
 
 
 def _strict_walk_expr(e: object, errs: list[str]) -> None:
@@ -195,6 +254,14 @@ def _strict_walk_expr(e: object, errs: list[str]) -> None:
         _strict_walk_expr(e.expr, errs)
         return
     if isinstance(e, TypeAnnotated):
+        _strict_walk_expr(e.expr, errs)
+        return
+    if isinstance(e, CastExpr):
+        _strict_walk_expr(e.expr, errs)
+        return
+    if isinstance(e, (SizeOfTypeExpr, AlignOfTypeExpr)):
+        return
+    if isinstance(e, (SizeOfValueExpr, AlignOfValueExpr)):
         _strict_walk_expr(e.expr, errs)
         return
 
@@ -282,9 +349,10 @@ def _strict_validate_program(prog: Program, src_file: Path) -> None:
 
 def _build_native_x86_64(asm: str, out_path: str, src_file: Path):
     nasm = shutil.which("nasm")
+    cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
     ld = shutil.which("ld")
-    if nasm is None or ld is None:
-        raise RuntimeError(f"CODEGEN {src_file}:1:1: native target requires `nasm` and `ld` in PATH")
+    if nasm is None or (cc is None and ld is None):
+        raise RuntimeError(f"CODEGEN {src_file}:1:1: native target requires `nasm` and a linker (`cc`/`ld`) in PATH")
     runtime_asm = Path(__file__).resolve().parent.parent / "runtime" / "x86_64_linux_runtime.s"
     if not runtime_asm.exists():
         raise RuntimeError(f"CODEGEN {src_file}:1:1: missing runtime object source at {runtime_asm}")
@@ -303,10 +371,16 @@ def _build_native_x86_64(asm: str, out_path: str, src_file: Path):
         if cp.returncode != 0:
             detail = (cp.stderr or cp.stdout or "").strip()
             raise RuntimeError(f"CODEGEN {src_file}:1:1: runtime assemble failed{': ' + detail if detail else ''}")
-        cp = subprocess.run([ld, str(obj_path), str(rt_obj_path), "-o", str(out)], capture_output=True, text=True)
-        if cp.returncode != 0:
-            detail = (cp.stderr or cp.stdout or "").strip()
-            raise RuntimeError(f"CODEGEN {src_file}:1:1: ld failed{': ' + detail if detail else ''}")
+        if cc is not None:
+            cp = subprocess.run([cc, "-nostdlib", "-no-pie", str(obj_path), str(rt_obj_path), "-lgcc", "-o", str(out)], capture_output=True, text=True)
+            if cp.returncode != 0:
+                detail = (cp.stderr or cp.stdout or "").strip()
+                raise RuntimeError(f"CODEGEN {src_file}:1:1: link failed via cc{': ' + detail if detail else ''}")
+        else:
+            cp = subprocess.run([ld, str(obj_path), str(rt_obj_path), "-o", str(out)], capture_output=True, text=True)
+            if cp.returncode != 0:
+                detail = (cp.stderr or cp.stdout or "").strip()
+                raise RuntimeError(f"CODEGEN {src_file}:1:1: ld failed{': ' + detail if detail else ''}")
     out.chmod(out.stat().st_mode | 0o111)
 
 def build(
@@ -316,16 +390,24 @@ def build(
     emit_ir: str | None = None,
     strict: bool = False,
     freestanding: bool = False,
+    profile: str = "debug",
+    overflow: str = "debug",
 ):
     src_file = Path(src_path)
-    digest = _build_fingerprint(src_file, target, emit_ir, strict, freestanding)
-    cache_key = f"{src_file.resolve().as_posix()}::{target}::{int(bool(strict))}::{int(bool(freestanding))}::{int(bool(emit_ir))}"
+    if profile not in {"debug", "release"}:
+        raise RuntimeError(f"BUILD {src_file}:1:1: unsupported profile {profile}")
+    overflow_mode = _resolve_overflow_mode(profile, overflow, check=False)
+    digest = _build_fingerprint(src_file, target, emit_ir, strict, freestanding, profile, overflow_mode)
+    cache_key = (
+        f"{src_file.resolve().as_posix()}::{target}::{int(bool(strict))}::{int(bool(freestanding))}::"
+        f"{int(bool(emit_ir))}::{profile}::{overflow_mode}"
+    )
     cache = json.loads(CACHE.read_text()) if CACHE.exists() else {}
     if cache.get(cache_key) == digest and Path(out_path).exists():
         return 'cached'
     src = src_file.read_text()
     prog = parse(src, filename=str(src_file))
-    run_comptime(prog, filename=str(src_file))
+    run_comptime(prog, filename=str(src_file), overflow_mode=overflow_mode)
     analyze(prog, filename=str(src_file), freestanding=freestanding)
     optimize_program(prog)
     if strict:
@@ -336,15 +418,15 @@ def build(
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps([{"name": f.name, "ops": f.ops} for f in ir.funcs], indent=2))
     if target == "py":
-        out = to_python(prog, freestanding=freestanding)
+        out = to_python(prog, freestanding=freestanding, overflow_mode=overflow_mode)
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         Path(out_path).write_text(out)
     elif target == "x86_64":
-        out = to_x86_64(prog, freestanding=freestanding)
+        out = to_x86_64(prog, freestanding=freestanding, overflow_mode=overflow_mode)
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         Path(out_path).write_text(out)
     elif target == "native":
-        asm = to_x86_64(prog, freestanding=freestanding)
+        asm = to_x86_64(prog, freestanding=freestanding, overflow_mode=overflow_mode)
         _build_native_x86_64(asm, out_path, src_file)
     else:
         raise RuntimeError(f"BUILD {src_file}:1:1: unsupported target {target}")

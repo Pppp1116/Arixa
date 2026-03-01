@@ -103,4 +103,14 @@ def _expr(e):
         return ("field", _expr(e.obj), e.field)
     if isinstance(e, ArrayLit):
         return ("array", [_expr(x) for x in e.elements])
+    if isinstance(e, CastExpr):
+        return ("cast", _expr(e.expr), e.type_name)
+    if isinstance(e, SizeOfTypeExpr):
+        return ("sizeof_type", e.type_name)
+    if isinstance(e, AlignOfTypeExpr):
+        return ("alignof_type", e.type_name)
+    if isinstance(e, SizeOfValueExpr):
+        return ("sizeof_value", _expr(e.expr))
+    if isinstance(e, AlignOfValueExpr):
+        return ("alignof_value", _expr(e.expr))
     return ("unk",)

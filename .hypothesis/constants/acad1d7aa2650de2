@@ -1,0 +1,4 @@
+# file: /home/pedro/Downloads/programming-language-/astra/formatter.py
+# hypothesis_version: 6.151.9
+
+[' else {', '"', "'", ', ', '/* unsupported */', '__main__', 'async ', 'false', 'file', 'fixed', 'formatted', 'impl ', 'let', 'mut ', 'none', 'pub ', 'true', 'unsafe ', '{', '}']

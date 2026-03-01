@@ -10,22 +10,27 @@ class ParseError(SyntaxError):
 
 BIN_PREC = {
     "??": 1,
-    "||": 1,
-    "&&": 2,
-    "==": 3,
-    "!=": 3,
-    "<": 4,
-    "<=": 4,
-    ">": 4,
-    ">=": 4,
-    "+": 5,
-    "-": 5,
-    "*": 6,
-    "/": 6,
-    "%": 6,
+    "||": 2,
+    "&&": 3,
+    "|": 4,
+    "^": 5,
+    "&": 6,
+    "==": 7,
+    "!=": 7,
+    "<": 8,
+    "<=": 8,
+    ">": 8,
+    ">=": 8,
+    "<<": 9,
+    ">>": 9,
+    "+": 10,
+    "-": 10,
+    "*": 11,
+    "/": 11,
+    "%": 11,
 }
 
-ASSIGN_OPS = {"=", "+=", "-=", "*=", "/=", "%="}
+ASSIGN_OPS = {"=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="}
 
 
 def _diag(code: str, filename: str, line: int, col: int, msg: str) -> str:
@@ -436,13 +441,20 @@ class Parser:
         return MatchStmt(expr, arms, tok.pos, tok.line, tok.col)
 
     def parse_expr(self, min_prec: int = 1):
-        left = self.parse_unary()
+        left = self.parse_cast()
         while self.cur().kind in BIN_PREC and BIN_PREC[self.cur().kind] >= min_prec:
             op_tok = self.eat(self.cur().kind)
             prec = BIN_PREC[op_tok.kind]
             right = self.parse_expr(prec + 1)
             left = Binary(op_tok.kind, left, right, op_tok.pos, op_tok.line, op_tok.col)
         return left
+
+    def parse_cast(self):
+        expr = self.parse_unary()
+        while self.opt("as"):
+            tok = self.toks[self.i - 1]
+            expr = CastExpr(expr, self.parse_type(), tok.pos, tok.line, tok.col)
+        return expr
 
     def parse_unary(self):
         if self.opt("await"):
@@ -483,6 +495,16 @@ class Parser:
 
     def parse_atom(self):
         tok = self.cur()
+        if self.opt("sizeof"):
+            self.eat("(")
+            typ = self.parse_type()
+            self.eat(")")
+            return SizeOfTypeExpr(typ, tok.pos, tok.line, tok.col)
+        if self.opt("alignof"):
+            self.eat("(")
+            typ = self.parse_type()
+            self.eat(")")
+            return AlignOfTypeExpr(typ, tok.pos, tok.line, tok.col)
         if self.opt("INT"):
             return Literal(int(tok.text), tok.pos, tok.line, tok.col)
         if self.opt("FLOAT"):
@@ -496,6 +518,13 @@ class Parser:
         if self.opt("none"):
             return NilLit(tok.pos, tok.line, tok.col)
         if self.opt("IDENT"):
+            if tok.text in {"size_of", "align_of"} and self.cur().kind == "(":
+                self.eat("(")
+                inner = self.parse_expr()
+                self.eat(")")
+                if tok.text == "size_of":
+                    return SizeOfValueExpr(inner, tok.pos, tok.line, tok.col)
+                return AlignOfValueExpr(inner, tok.pos, tok.line, tok.col)
             return Name(tok.text, tok.pos, tok.line, tok.col)
         if self.opt("["):
             elems = []

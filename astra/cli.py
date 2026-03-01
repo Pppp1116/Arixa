@@ -10,14 +10,24 @@ from astra.semantic import analyze
 
 
 def cmd_build(a):
-    state = build(a.input, a.output, a.target, emit_ir=a.emit_ir, strict=a.strict, freestanding=a.freestanding)
+    state = build(
+        a.input,
+        a.output,
+        a.target,
+        emit_ir=a.emit_ir,
+        strict=a.strict,
+        freestanding=a.freestanding,
+        profile=a.profile,
+        overflow=a.overflow,
+    )
     print(state)
 
 
 def cmd_check(a):
     src = Path(a.input).read_text()
     prog = parse(src, filename=a.input)
-    run_comptime(prog, filename=a.input)
+    overflow_mode = "trap" if a.overflow == "debug" else a.overflow
+    run_comptime(prog, filename=a.input, overflow_mode=overflow_mode)
     analyze(prog, filename=a.input, freestanding=a.freestanding)
     print("ok")
 
@@ -58,11 +68,14 @@ def main(argv=None):
     b.add_argument("--emit-ir")
     b.add_argument("--strict", action="store_true")
     b.add_argument("--freestanding", action="store_true")
+    b.add_argument("--profile", choices=["debug", "release"], default="debug")
+    b.add_argument("--overflow", choices=["trap", "wrap", "debug"], default="debug")
     b.set_defaults(func=cmd_build)
 
     c = sp.add_parser("check")
     c.add_argument("input")
     c.add_argument("--freestanding", action="store_true")
+    c.add_argument("--overflow", choices=["trap", "wrap", "debug"], default="trap")
     c.set_defaults(func=cmd_check)
 
     r = sp.add_parser("run")

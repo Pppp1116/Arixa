@@ -4,6 +4,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from astra.ast import *
+from astra.layout import (
+    LayoutError,
+    align_to as _align_to,
+    canonical_type as _layout_canonical_type,
+    layout_of_struct,
+    layout_of_type,
+)
 
 
 class CodegenError(Exception):
@@ -17,9 +24,12 @@ def _diag(node: Any, msg: str) -> str:
 
 
 BIN_OP_MAP = {"&&": "and", "||": "or"}
+_PY_STRUCTS: dict[str, StructDecl] = {}
 
 
-def to_python(prog: Program, freestanding: bool = False) -> str:
+def to_python(prog: Program, freestanding: bool = False, overflow_mode: str = "trap") -> str:
+    global _PY_STRUCTS
+    _PY_STRUCTS = {item.name: item for item in prog.items if isinstance(item, StructDecl)}
     main_entry = "main"
     for item in prog.items:
         if isinstance(item, FnDecl) and item.name == "main":
@@ -37,6 +47,28 @@ def to_python(prog: Program, freestanding: bool = False) -> str:
         "_astra_sockets = {}",
         "_astra_next_sock = 1",
         "_astra_libs = {}",
+        "def __astra_cast(v, t):",
+        "    if t in ('Float', 'f32', 'f64'):",
+        "        return float(v)",
+        "    if t in ('Int', 'isize'): bits, signed = 64, True",
+        "    elif t == 'usize': bits, signed = 64, False",
+        "    elif t.startswith('i') and t[1:].isdigit(): bits, signed = int(t[1:]), True",
+        "    elif t.startswith('u') and t[1:].isdigit(): bits, signed = int(t[1:]), False",
+        "    else: return v",
+        "    if isinstance(v, float):",
+        "        if v != v: return 0",
+        "        if v == float('inf'):",
+        "            return (1 << (bits - 1)) - 1 if signed else (1 << bits) - 1",
+        "        if v == float('-inf'):",
+        "            return (-(1 << (bits - 1))) if signed else 0",
+        "        v = int(v)",
+        "    else:",
+        "        v = int(v)",
+        "    mask = (1 << bits) - 1",
+        "    out = v & mask",
+        "    if signed and out >= (1 << (bits - 1)):",
+        "        out -= (1 << bits)",
+        "    return out",
         "def print_(x): print(x); return None",
         "def len_(x): return len(x)",
         "def read_file(p): return pathlib.Path(p).read_text()",
@@ -273,12 +305,40 @@ def _expr(e):
         return "True" if e.value else "False"
     if isinstance(e, NilLit):
         return "None"
+    if isinstance(e, SizeOfTypeExpr):
+        try:
+            return str(layout_of_type(e.type_name, _PY_STRUCTS, mode="query").size)
+        except LayoutError as err:
+            raise CodegenError(_diag(e, str(err))) from err
+    if isinstance(e, AlignOfTypeExpr):
+        try:
+            return str(layout_of_type(e.type_name, _PY_STRUCTS, mode="query").align)
+        except LayoutError as err:
+            raise CodegenError(_diag(e, str(err))) from err
+    if isinstance(e, SizeOfValueExpr):
+        ty = getattr(e, "query_type", None) or getattr(e.expr, "inferred_type", None)
+        if not isinstance(ty, str):
+            raise CodegenError(_diag(e, "unable to resolve static type for size_of(expr)"))
+        try:
+            return str(layout_of_type(ty, _PY_STRUCTS, mode="query").size)
+        except LayoutError as err:
+            raise CodegenError(_diag(e, str(err))) from err
+    if isinstance(e, AlignOfValueExpr):
+        ty = getattr(e, "query_type", None) or getattr(e.expr, "inferred_type", None)
+        if not isinstance(ty, str):
+            raise CodegenError(_diag(e, "unable to resolve static type for align_of(expr)"))
+        try:
+            return str(layout_of_type(ty, _PY_STRUCTS, mode="query").align)
+        except LayoutError as err:
+            raise CodegenError(_diag(e, str(err))) from err
     if isinstance(e, Literal):
         return repr(e.value)
     if isinstance(e, Name):
         return e.value
     if isinstance(e, AwaitExpr):
         return f"await_result({_expr(e.expr)})"
+    if isinstance(e, CastExpr):
+        return f"__astra_cast({_expr(e.expr)}, {e.type_name!r})"
     if isinstance(e, Unary):
         if e.op == "!":
             return f"(not {_expr(e.expr)})"
@@ -412,6 +472,7 @@ class _FnCtx:
     runtime_symbols: set[str] = field(default_factory=set)
     module_ctx: "_ModuleCtx" | None = None
     structs: dict[str, StructDecl] = field(default_factory=dict)
+    overflow_mode: str = "trap"
 
 
 @dataclass(frozen=True)
@@ -420,6 +481,9 @@ class _AbiType:
     repr_name: str
     cls: str
     size: int = 8
+    align: int = 8
+    signed: bool | None = None
+    bits: int = 64
 
 
 @dataclass(frozen=True)
@@ -468,6 +532,22 @@ _INT_TYPES = {
     "usize",
 }
 _FLOAT_TYPES = {"Float", "f32", "f64"}
+_INT_ABI_INFO: dict[str, tuple[int, bool]] = {
+    "Int": (8, True),
+    "Bool": (1, False),
+    "i8": (1, True),
+    "u8": (1, False),
+    "i16": (2, True),
+    "u16": (2, False),
+    "i32": (4, True),
+    "u32": (4, False),
+    "i64": (8, True),
+    "u64": (8, False),
+    "isize": (8, True),
+    "usize": (8, False),
+    "i128": (16, True),
+    "u128": (16, False),
+}
 _INT_ARG_REGS = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
 _SSE_ARG_REGS = ["xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7"]
 _RUNTIME_ABI: dict[str, _FnSig] = {
@@ -642,18 +722,23 @@ def _lower_abi_type(typ: str, node: Any, *, allow_memory: bool = True) -> _AbiTy
         # Option<T> lowers as nullable pointer to boxed T payload.
         return _AbiType(c, "ptr", "int")
     if c in _INT_TYPES:
-        repr_name = "u8" if c == "Bool" else "i64"
-        return _AbiType(c, repr_name, "int")
+        size, signed = _INT_ABI_INFO[c]
+        if size == 16:
+            return _AbiType(c, c, "int128", size=16, align=16, signed=signed, bits=128)
+        repr_name = "u8" if c == "Bool" else f"i{size * 8}"
+        return _AbiType(c, repr_name, "int", size=size, align=size, signed=signed, bits=size * 8)
     if c in _FLOAT_TYPES:
-        return _AbiType(c, "f64", "sse")
+        if c == "f32":
+            return _AbiType(c, "f32", "sse", size=4, align=4, bits=32)
+        return _AbiType(c, "f64", "sse", size=8, align=8, bits=64)
     if c.startswith("&"):
-        return _AbiType(c, "ptr", "int")
+        return _AbiType(c, "ptr", "int", size=8, align=8, signed=False, bits=64)
     if c.startswith("fn("):
-        return _AbiType(c, "fnptr", "int")
+        return _AbiType(c, "fnptr", "int", size=8, align=8, signed=False, bits=64)
     if c in {"Void", "Never"}:
-        return _AbiType(c, c.lower(), "void", size=0)
+        return _AbiType(c, c.lower(), "void", size=0, align=1, bits=0)
     # Aggregate and dynamic values lower as opaque pointers.
-    return _AbiType(c, "ptr", "int")
+    return _AbiType(c, "ptr", "int", size=8, align=8, signed=False, bits=64)
 
 
 def _collect_fn_sigs(prog: Program) -> dict[str, _FnSig]:
@@ -693,7 +778,8 @@ def _string_label(text: str, module: _ModuleCtx) -> str:
     return module.string_labels[text]
 
 
-def to_x86_64(prog: Program, freestanding: bool = False) -> str:
+def to_x86_64(prog: Program, freestanding: bool = False, overflow_mode: str = "trap") -> str:
+    global _PY_STRUCTS
     main_entry = "main"
     for item in prog.items:
         if isinstance(item, FnDecl) and item.name == "main":
@@ -704,6 +790,7 @@ def to_x86_64(prog: Program, freestanding: bool = False) -> str:
     for item in prog.items:
         if isinstance(item, StructDecl):
             structs[item.name] = item
+    _PY_STRUCTS = structs
     module_ctx = _ModuleCtx()
 
     lines: list[str] = []
@@ -723,7 +810,7 @@ def to_x86_64(prog: Program, freestanding: bool = False) -> str:
             continue
         if not isinstance(item, FnDecl):
             continue
-        fn_lines, used_runtime = _x86_fn(item, fn_sigs, module_ctx, structs)
+        fn_lines, used_runtime = _x86_fn(item, fn_sigs, module_ctx, structs, overflow_mode=overflow_mode)
         lines.extend(fn_lines)
         lines.append("")
         runtime_symbols |= used_runtime
@@ -746,6 +833,7 @@ def _x86_fn(
     fn_sigs: dict[str, _FnSig],
     module_ctx: _ModuleCtx,
     structs: dict[str, StructDecl],
+    overflow_mode: str = "trap",
 ) -> tuple[list[str], set[str]]:
     fn_name = fn.symbol or fn.name
     sig = fn_sigs.get(fn_name)
@@ -760,6 +848,7 @@ def _x86_fn(
         local_types={name: typ for name, typ in fn.params},
         module_ctx=module_ctx,
         structs=structs,
+        overflow_mode=overflow_mode,
     )
 
     _prepare_defer_sites(fn.body, ctx, fn)
@@ -773,22 +862,36 @@ def _x86_fn(
         slot = _alloc_slot(ctx, name, abi)
         if abi.cls == "int":
             if int_i < len(_INT_ARG_REGS):
-                body.append(f"  mov qword [rbp-{slot}], {_INT_ARG_REGS[int_i]}")
+                body.extend(_store_from_int_reg(slot, abi, _INT_ARG_REGS[int_i]))
                 int_i += 1
             else:
                 off = 16 + stack_i * 8
                 body.append(f"  mov rax, qword [rbp+{off}]")
-                body.append(f"  mov qword [rbp-{slot}], rax")
+                body.extend(_store_from_reg(slot, abi))
                 stack_i += 1
             continue
+        if abi.cls == "int128":
+            if int_i + 1 < len(_INT_ARG_REGS):
+                lo = _INT_ARG_REGS[int_i]
+                hi = _INT_ARG_REGS[int_i + 1]
+                body += [f"  mov qword [rbp-{slot}], {lo}", f"  mov qword [rbp-{slot + 8}], {hi}"]
+                int_i += 2
+            else:
+                off = 16 + stack_i * 8
+                body += [f"  mov rax, qword [rbp+{off}]", f"  mov rdx, qword [rbp+{off + 8}]"]
+                body.extend(_store_from_reg(slot, abi))
+                stack_i += 2
+            continue
         if abi.cls == "sse":
+            mov = "movss" if abi.size == 4 else "movsd"
+            mem_sz = "dword" if abi.size == 4 else "qword"
             if sse_i < len(_SSE_ARG_REGS):
-                body.append(f"  movsd qword [rbp-{slot}], {_SSE_ARG_REGS[sse_i]}")
+                body.append(f"  {mov} {mem_sz} [rbp-{slot}], {_SSE_ARG_REGS[sse_i]}")
                 sse_i += 1
             else:
                 off = 16 + stack_i * 8
-                body.append(f"  movsd xmm15, qword [rbp+{off}]")
-                body.append(f"  movsd qword [rbp-{slot}], xmm15")
+                body.append(f"  {mov} xmm0, {mem_sz} [rbp+{off}]")
+                body.extend(_store_from_reg(slot, abi))
                 stack_i += 1
             continue
         raise CodegenError(_diag(fn, f"parameter type {typ} is unsupported on x86_64 backend"))
@@ -819,12 +922,16 @@ def _x86_fn(
             lines.append("  push rax")
         elif ret_abi.cls == "sse":
             lines += ["  sub rsp, 8", "  movsd qword [rsp], xmm0"]
+        elif ret_abi.cls == "int128":
+            lines += ["  sub rsp, 16", "  mov qword [rsp], rax", "  mov qword [rsp+8], rdx"]
         defer_code, _ = _x86_expr(site.expr, ctx)
         lines += defer_code
         if ret_abi.cls == "int":
             lines.append("  pop rax")
         elif ret_abi.cls == "sse":
             lines += ["  movsd xmm0, qword [rsp]", "  add rsp, 8"]
+        elif ret_abi.cls == "int128":
+            lines += ["  mov rax, qword [rsp]", "  mov rdx, qword [rsp+8]", "  add rsp, 16"]
         lines += [f"  jmp {loop}", f"{skip}:"]
     lines += ["  mov rsp, rbp", "  pop rbp", "  ret"]
     return lines, set(ctx.runtime_symbols)
@@ -868,10 +975,13 @@ def _prepare_defer_sites(stmts: list[Any], ctx: _FnCtx, fn_node: Any, in_loop: b
 def _alloc_slot(ctx: _FnCtx, name: str, abi: _AbiType) -> int:
     if name in ctx.slots:
         return ctx.slots[name]
-    ctx.next_slot += 8
-    ctx.slots[name] = ctx.next_slot
+    size = max(1, abi.size)
+    align = max(1, abi.align)
+    slot = _align_to(ctx.next_slot + size, align)
+    ctx.next_slot = slot
+    ctx.slots[name] = slot
     ctx.slot_types[name] = abi
-    return ctx.next_slot
+    return slot
 
 
 def _alloc_temp_slot(ctx: _FnCtx, abi: _AbiType) -> int:
@@ -929,6 +1039,10 @@ def _expr_type(e: Any, ctx: _FnCtx) -> str:
         if e.op == "!":
             return "Bool"
         return _expr_type(e.expr, ctx)
+    if isinstance(e, CastExpr):
+        return _canonical_type(e.type_name)
+    if isinstance(e, (SizeOfTypeExpr, AlignOfTypeExpr, SizeOfValueExpr, AlignOfValueExpr)):
+        return "Int"
     if isinstance(e, Binary):
         if e.op in {"==", "!=", "<", "<=", ">", ">=", "&&", "||"}:
             return "Bool"
@@ -982,42 +1096,156 @@ def _expr_type(e: Any, ctx: _FnCtx) -> str:
 
 def _coerce_value(code: list[str], from_abi: _AbiType, to_abi: _AbiType, node: Any) -> tuple[list[str], _AbiType]:
     if from_abi.cls == to_abi.cls:
+        if from_abi.cls == "int":
+            return code + _normalize_int_result(to_abi), to_abi
+        if from_abi.cls == "sse" and from_abi.size != to_abi.size:
+            if from_abi.size == 4 and to_abi.size == 8:
+                return code + ["  cvtss2sd xmm0, xmm0"], to_abi
+            if from_abi.size == 8 and to_abi.size == 4:
+                return code + ["  cvtsd2ss xmm0, xmm0"], to_abi
         return code, to_abi
+    if from_abi.cls == "int" and to_abi.cls == "int128":
+        out = code + _normalize_int_result(from_abi)
+        if from_abi.signed:
+            out.append("  cqo")
+        else:
+            out.append("  xor rdx, rdx")
+        return out, to_abi
+    if from_abi.cls == "int128" and to_abi.cls == "int":
+        return code + _normalize_int_result(to_abi), to_abi
     if from_abi.cls == "int" and to_abi.cls == "sse":
-        return code + ["  cvtsi2sd xmm0, rax"], to_abi
+        return code + [f"  {'cvtsi2ss' if to_abi.size == 4 else 'cvtsi2sd'} xmm0, rax"], to_abi
+    if from_abi.cls == "int128" and to_abi.cls == "sse":
+        return code + [f"  {'cvtsi2ss' if to_abi.size == 4 else 'cvtsi2sd'} xmm0, rax"], to_abi
     if from_abi.cls == "sse" and to_abi.cls == "int":
-        return code + ["  cvttsd2si rax, xmm0"], to_abi
+        return code + [f"  {'cvttss2si' if from_abi.size == 4 else 'cvttsd2si'} rax, xmm0"], to_abi
+    if from_abi.cls == "sse" and to_abi.cls == "int128":
+        out = code + [f"  {'cvttss2si' if from_abi.size == 4 else 'cvttsd2si'} rax, xmm0"]
+        if to_abi.signed:
+            out.append("  cqo")
+        else:
+            out.append("  xor rdx, rdx")
+        return out, to_abi
     raise CodegenError(_diag(node, f"cannot coerce {from_abi.src} to {to_abi.src} on x86_64 backend"))
+
+
+def _normalize_int_result(abi: _AbiType) -> list[str]:
+    if abi.cls != "int":
+        return []
+    if abi.size == 1:
+        return ["  movsx rax, al"] if abi.signed else ["  movzx rax, al"]
+    if abi.size == 2:
+        return ["  movsx rax, ax"] if abi.signed else ["  movzx rax, ax"]
+    if abi.size == 4:
+        return ["  movsxd rax, eax"] if abi.signed else ["  mov eax, eax"]
+    return []
+
+
+def _int_reg_alias(reg: str, size: int) -> str:
+    aliases = {
+        "rax": {1: "al", 2: "ax", 4: "eax", 8: "rax"},
+        "rdi": {1: "dil", 2: "di", 4: "edi", 8: "rdi"},
+        "rsi": {1: "sil", 2: "si", 4: "esi", 8: "rsi"},
+        "rdx": {1: "dl", 2: "dx", 4: "edx", 8: "rdx"},
+        "rcx": {1: "cl", 2: "cx", 4: "ecx", 8: "rcx"},
+        "r8": {1: "r8b", 2: "r8w", 4: "r8d", 8: "r8"},
+        "r9": {1: "r9b", 2: "r9w", 4: "r9d", 8: "r9"},
+    }
+    by_size = aliases.get(reg)
+    if by_size is None or size not in by_size:
+        raise CodegenError(f"unhandled register alias for {reg}/{size}")
+    return by_size[size]
+
+
+def _store_from_int_reg(slot: int, abi: _AbiType, reg: str) -> list[str]:
+    if abi.cls != "int":
+        raise CodegenError(f"internal: _store_from_int_reg expects int abi, got {abi.cls}")
+    mem = {1: "byte", 2: "word", 4: "dword", 8: "qword"}.get(abi.size)
+    if mem is None:
+        raise CodegenError(f"internal: unsupported int size {abi.size}")
+    return [f"  mov {mem} [rbp-{slot}], {_int_reg_alias(reg, abi.size)}"]
 
 
 def _store_from_reg(slot: int, abi: _AbiType) -> list[str]:
     if abi.cls == "int":
+        if abi.size == 1:
+            return [f"  mov byte [rbp-{slot}], al"]
+        if abi.size == 2:
+            return [f"  mov word [rbp-{slot}], ax"]
+        if abi.size == 4:
+            return [f"  mov dword [rbp-{slot}], eax"]
         return [f"  mov qword [rbp-{slot}], rax"]
+    if abi.cls == "int128":
+        return [f"  mov qword [rbp-{slot}], rax", f"  mov qword [rbp-{slot + 8}], rdx"]
     if abi.cls == "sse":
+        if abi.size == 4:
+            return [f"  movss dword [rbp-{slot}], xmm0"]
         return [f"  movsd qword [rbp-{slot}], xmm0"]
     raise CodegenError(f"unhandled store class {abi.cls}")
 
 
 def _load_to_reg(slot: int, abi: _AbiType) -> list[str]:
     if abi.cls == "int":
+        if abi.size == 1:
+            if abi.signed:
+                return [f"  movsx rax, byte [rbp-{slot}]"]
+            return [f"  movzx rax, byte [rbp-{slot}]"]
+        if abi.size == 2:
+            if abi.signed:
+                return [f"  movsx rax, word [rbp-{slot}]"]
+            return [f"  movzx rax, word [rbp-{slot}]"]
+        if abi.size == 4:
+            if abi.signed:
+                return [f"  movsxd rax, dword [rbp-{slot}]"]
+            return [f"  mov eax, dword [rbp-{slot}]"]
         return [f"  mov rax, qword [rbp-{slot}]"]
+    if abi.cls == "int128":
+        return [f"  mov rax, qword [rbp-{slot}]", f"  mov rdx, qword [rbp-{slot + 8}]"]
     if abi.cls == "sse":
+        if abi.size == 4:
+            return [f"  movss xmm0, dword [rbp-{slot}]"]
         return [f"  movsd xmm0, qword [rbp-{slot}]"]
     raise CodegenError(f"unhandled load class {abi.cls}")
 
 
 def _store_ptr_value(ptr_reg: str, abi: _AbiType) -> list[str]:
     if abi.cls == "int":
+        if abi.size == 1:
+            return [f"  mov byte [{ptr_reg}], al"]
+        if abi.size == 2:
+            return [f"  mov word [{ptr_reg}], ax"]
+        if abi.size == 4:
+            return [f"  mov dword [{ptr_reg}], eax"]
         return [f"  mov qword [{ptr_reg}], rax"]
+    if abi.cls == "int128":
+        return [f"  mov qword [{ptr_reg}], rax", f"  mov qword [{ptr_reg}+8], rdx"]
     if abi.cls == "sse":
+        if abi.size == 4:
+            return [f"  movss dword [{ptr_reg}], xmm0"]
         return [f"  movsd qword [{ptr_reg}], xmm0"]
     raise CodegenError(f"unhandled store class {abi.cls}")
 
 
 def _load_ptr_value(ptr_reg: str, abi: _AbiType) -> list[str]:
     if abi.cls == "int":
+        if abi.size == 1:
+            if abi.signed:
+                return [f"  movsx rax, byte [{ptr_reg}]"]
+            return [f"  movzx rax, byte [{ptr_reg}]"]
+        if abi.size == 2:
+            if abi.signed:
+                return [f"  movsx rax, word [{ptr_reg}]"]
+            return [f"  movzx rax, word [{ptr_reg}]"]
+        if abi.size == 4:
+            if abi.signed:
+                return [f"  movsxd rax, dword [{ptr_reg}]"]
+            return [f"  mov eax, dword [{ptr_reg}]"]
         return [f"  mov rax, qword [{ptr_reg}]"]
+    if abi.cls == "int128":
+        return [f"  mov rax, qword [{ptr_reg}]", f"  mov rdx, qword [{ptr_reg}+8]"]
     if abi.cls == "sse":
+        if abi.size == 4:
+            return [f"  movss xmm0, dword [{ptr_reg}]"]
         return [f"  movsd xmm0, qword [{ptr_reg}]"]
     raise CodegenError(f"unhandled load class {abi.cls}")
 
@@ -1026,9 +1254,13 @@ def _struct_field_info(struct_name: str, field: str, ctx: _FnCtx, node: Any) -> 
     decl = ctx.structs.get(struct_name)
     if decl is None:
         raise CodegenError(_diag(node, f"unknown struct type {struct_name} on x86_64 backend"))
+    try:
+        lay = layout_of_struct(struct_name, ctx.structs, mode="codegen")
+    except LayoutError as err:
+        raise CodegenError(_diag(node, str(err))) from err
     for idx, (fname, fty) in enumerate(decl.fields):
         if fname == field:
-            return idx, fty
+            return lay.field_offsets.get(fname, idx * 8), fty
     raise CodegenError(_diag(node, f"struct {struct_name} has no field {field}"))
 
 
@@ -1041,6 +1273,12 @@ def _array_like_elem_type(obj_ty: str) -> str | None:
     return None
 
 
+def _array_data_layout(elem_abi: _AbiType) -> tuple[int, int]:
+    header = _align_to(8, max(1, elem_abi.align))
+    stride = _align_to(max(1, elem_abi.size), max(1, elem_abi.align))
+    return header, stride
+
+
 def _x86_cond_jump_false(cond: Any, false_label: str, ctx: _FnCtx) -> list[str]:
     if isinstance(cond, Binary) and cond.op in {"==", "!=", "<", "<=", ">", ">="}:
         lty = _lower_abi_type(_expr_type(cond.left, ctx), cond.left)
@@ -1049,7 +1287,10 @@ def _x86_cond_jump_false(cond: Any, false_label: str, ctx: _FnCtx) -> list[str]:
             left, _ = _x86_expr(cond.left, ctx, expected=lty)
             right, _ = _x86_expr(cond.right, ctx, expected=rty)
             code = left + ["  push rax"] + right + ["  pop rbx", "  cmp rbx, rax"]
-            inv = {"==": "jne", "!=": "je", "<": "jge", "<=": "jg", ">": "jle", ">=": "jl"}[cond.op]
+            if lty.signed is False:
+                inv = {"==": "jne", "!=": "je", "<": "jae", "<=": "ja", ">": "jbe", ">=": "jb"}[cond.op]
+            else:
+                inv = {"==": "jne", "!=": "je", "<": "jge", "<=": "jg", ">": "jle", ">=": "jl"}[cond.op]
             return code + [f"  {inv} {false_label}"]
     code, abi = _x86_expr(cond, ctx, expected=_AbiType("Bool", "u8", "int"))
     if abi.cls != "int":
@@ -1071,47 +1312,80 @@ def _x86_stmt(st: Any, ctx: _FnCtx) -> list[str]:
             slot = _require_name_slot(st.target.value, ctx, st)
             lhs_type = ctx.local_types.get(st.target.value, "Int")
             lhs_abi = _lower_abi_type(lhs_type, st, allow_memory=False)
+            if st.op != "=" and lhs_abi.cls == "int128":
+                synth = Binary(st.op[:-1], Name(st.target.value, st.pos, st.line, st.col), st.expr, st.pos, st.line, st.col)
+                code, out_abi = _x86_expr(synth, ctx, expected=lhs_abi)
+                code, _ = _coerce_value(code, out_abi, lhs_abi, st)
+                return code + _store_from_reg(slot, lhs_abi)
             code, rhs_abi = _x86_expr(st.expr, ctx, expected=lhs_abi)
             code, _ = _coerce_value(code, rhs_abi, lhs_abi, st)
             if st.op == "=":
                 return code + _store_from_reg(slot, lhs_abi)
             if lhs_abi.cls == "int":
-                code += [f"  mov rbx, qword [rbp-{slot}]"]
+                code += ["  mov rcx, rax"] + _load_to_reg(slot, lhs_abi) + ["  mov rbx, rax"]
                 if st.op == "+=":
-                    code += ["  add rbx, rax", "  mov rax, rbx"]
+                    code += ["  add rbx, rcx", "  mov rax, rbx"]
                 elif st.op == "-=":
-                    code += ["  sub rbx, rax", "  mov rax, rbx"]
+                    code += ["  sub rbx, rcx", "  mov rax, rbx"]
                 elif st.op == "*=":
-                    code += ["  imul rbx, rax", "  mov rax, rbx"]
+                    code += ["  imul rbx, rcx", "  mov rax, rbx"]
                 elif st.op == "/=":
-                    code += ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx"]
+                    if lhs_abi.signed:
+                        code += ["  mov rax, rbx", "  cqo", "  idiv rcx"]
+                    else:
+                        code += ["  mov rax, rbx", "  xor rdx, rdx", "  div rcx"]
                 elif st.op == "%=":
-                    code += ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx", "  mov rax, rdx"]
+                    if lhs_abi.signed:
+                        code += ["  mov rax, rbx", "  cqo", "  idiv rcx", "  mov rax, rdx"]
+                    else:
+                        code += ["  mov rax, rbx", "  xor rdx, rdx", "  div rcx", "  mov rax, rdx"]
+                elif st.op == "&=":
+                    code += ["  and rbx, rcx", "  mov rax, rbx"]
+                elif st.op == "|=":
+                    code += ["  or rbx, rcx", "  mov rax, rbx"]
+                elif st.op == "^=":
+                    code += ["  xor rbx, rcx", "  mov rax, rbx"]
+                elif st.op == "<<=":
+                    code += ["  mov rax, rbx", "  shl rax, cl"]
+                elif st.op == ">>=":
+                    code += ["  mov rax, rbx", f"  {'sar' if lhs_abi.signed else 'shr'} rax, cl"]
                 else:
                     raise CodegenError(_diag(st, f"unsupported assignment op {st.op} on x86_64 backend"))
-                return code + [f"  mov qword [rbp-{slot}], rax"]
+                return code + _normalize_int_result(lhs_abi) + _store_from_reg(slot, lhs_abi)
             if lhs_abi.cls == "sse":
-                code += [f"  movsd xmm1, qword [rbp-{slot}]"]
+                op_sfx = "ss" if lhs_abi.size == 4 else "sd"
+                mov_sfx = "aps" if lhs_abi.size == 4 else "apd"
+                code += [f"  mov{mov_sfx} xmm2, xmm0"] + _load_to_reg(slot, lhs_abi) + [f"  mov{mov_sfx} xmm1, xmm0"]
                 if st.op == "+=":
-                    code += ["  addsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                    code += [f"  add{op_sfx} xmm1, xmm2", f"  mov{mov_sfx} xmm0, xmm1"]
                 elif st.op == "-=":
-                    code += ["  subsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                    code += [f"  sub{op_sfx} xmm1, xmm2", f"  mov{mov_sfx} xmm0, xmm1"]
                 elif st.op == "*=":
-                    code += ["  mulsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                    code += [f"  mul{op_sfx} xmm1, xmm2", f"  mov{mov_sfx} xmm0, xmm1"]
                 elif st.op == "/=":
-                    code += ["  divsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                    code += [f"  div{op_sfx} xmm1, xmm2", f"  mov{mov_sfx} xmm0, xmm1"]
                 elif st.op == "%=":
-                    code += ["  movapd xmm2, xmm0", "  movapd xmm0, xmm1", "  movapd xmm1, xmm2"] + _emit_call(
-                        symbol="astra_fmod",
-                        callee_slot=None,
-                        values=[],
-                        param_abis=[],
-                        ret_abi=_AbiType("Float", "f64", "sse"),
-                        ctx=ctx,
-                    )
+                    if lhs_abi.size == 4:
+                        code += ["  cvtss2sd xmm0, xmm1", "  cvtss2sd xmm1, xmm2"] + _emit_call(
+                            symbol="astra_fmod",
+                            callee_slot=None,
+                            values=[],
+                            param_abis=[],
+                            ret_abi=_AbiType("Float", "f64", "sse"),
+                            ctx=ctx,
+                        ) + ["  cvtsd2ss xmm0, xmm0"]
+                    else:
+                        code += [f"  mov{mov_sfx} xmm0, xmm1", f"  mov{mov_sfx} xmm1, xmm2"] + _emit_call(
+                            symbol="astra_fmod",
+                            callee_slot=None,
+                            values=[],
+                            param_abis=[],
+                            ret_abi=_AbiType("Float", "f64", "sse"),
+                            ctx=ctx,
+                        )
                 else:
                     raise CodegenError(_diag(st, f"unsupported assignment op {st.op} on floating point values"))
-                return code + [f"  movsd qword [rbp-{slot}], xmm0"]
+                return code + _store_from_reg(slot, lhs_abi)
             raise CodegenError(_diag(st, f"unsupported assignment type {lhs_type} on x86_64 backend"))
         if isinstance(st.target, Unary) and st.target.op == "*":
             lhs_type = _expr_type(st.target, ctx)
@@ -1124,93 +1398,132 @@ def _x86_stmt(st: Any, ctx: _FnCtx) -> list[str]:
             rhs_code, _ = _coerce_value(rhs_code, rhs_abi, lhs_abi, st)
             code += rhs_code
             if st.op == "=":
-                if lhs_abi.cls == "int":
-                    return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  mov qword [r11], rax"]
-                if lhs_abi.cls == "sse":
-                    return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  movsd qword [r11], xmm0"]
-                raise CodegenError(_diag(st, f"unsupported assignment type {lhs_type} on x86_64 backend"))
+                return code + [f"  mov r11, qword [rbp-{ptr_slot}]"] + _store_ptr_value("r11", lhs_abi)
             if lhs_abi.cls == "int":
-                code += [f"  mov r11, qword [rbp-{ptr_slot}]", "  mov rbx, qword [r11]"]
+                code += ["  mov rcx, rax", f"  mov r11, qword [rbp-{ptr_slot}]"] + _load_ptr_value("r11", lhs_abi) + ["  mov rbx, rax"]
                 if st.op == "+=":
-                    code += ["  add rbx, rax", "  mov rax, rbx"]
+                    code += ["  add rbx, rcx", "  mov rax, rbx"]
                 elif st.op == "-=":
-                    code += ["  sub rbx, rax", "  mov rax, rbx"]
+                    code += ["  sub rbx, rcx", "  mov rax, rbx"]
                 elif st.op == "*=":
-                    code += ["  imul rbx, rax", "  mov rax, rbx"]
+                    code += ["  imul rbx, rcx", "  mov rax, rbx"]
                 elif st.op == "/=":
-                    code += ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx"]
+                    if lhs_abi.signed:
+                        code += ["  mov rax, rbx", "  cqo", "  idiv rcx"]
+                    else:
+                        code += ["  mov rax, rbx", "  xor rdx, rdx", "  div rcx"]
                 elif st.op == "%=":
-                    code += ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx", "  mov rax, rdx"]
+                    if lhs_abi.signed:
+                        code += ["  mov rax, rbx", "  cqo", "  idiv rcx", "  mov rax, rdx"]
+                    else:
+                        code += ["  mov rax, rbx", "  xor rdx, rdx", "  div rcx", "  mov rax, rdx"]
+                elif st.op == "&=":
+                    code += ["  and rbx, rcx", "  mov rax, rbx"]
+                elif st.op == "|=":
+                    code += ["  or rbx, rcx", "  mov rax, rbx"]
+                elif st.op == "^=":
+                    code += ["  xor rbx, rcx", "  mov rax, rbx"]
+                elif st.op == "<<=":
+                    code += ["  mov rax, rbx", "  shl rax, cl"]
+                elif st.op == ">>=":
+                    code += ["  mov rax, rbx", f"  {'sar' if lhs_abi.signed else 'shr'} rax, cl"]
                 else:
                     raise CodegenError(_diag(st, f"unsupported assignment op {st.op} on x86_64 backend"))
-                return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  mov qword [r11], rax"]
+                return code + _normalize_int_result(lhs_abi) + [f"  mov r11, qword [rbp-{ptr_slot}]"] + _store_ptr_value("r11", lhs_abi)
             if lhs_abi.cls == "sse":
-                code += [f"  mov r11, qword [rbp-{ptr_slot}]", "  movsd xmm1, qword [r11]"]
+                op_sfx = "ss" if lhs_abi.size == 4 else "sd"
+                mov_sfx = "aps" if lhs_abi.size == 4 else "apd"
+                mem_sz = "dword" if lhs_abi.size == 4 else "qword"
+                code += [f"  mov r11, qword [rbp-{ptr_slot}]", f"  mov{op_sfx} xmm1, {mem_sz} [r11]"]
                 if st.op == "+=":
-                    code += ["  addsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                    code += [f"  add{op_sfx} xmm1, xmm0", f"  mov{mov_sfx} xmm0, xmm1"]
                 elif st.op == "-=":
-                    code += ["  subsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                    code += [f"  sub{op_sfx} xmm1, xmm0", f"  mov{mov_sfx} xmm0, xmm1"]
                 elif st.op == "*=":
-                    code += ["  mulsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                    code += [f"  mul{op_sfx} xmm1, xmm0", f"  mov{mov_sfx} xmm0, xmm1"]
                 elif st.op == "/=":
-                    code += ["  divsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                    code += [f"  div{op_sfx} xmm1, xmm0", f"  mov{mov_sfx} xmm0, xmm1"]
                 elif st.op == "%=":
-                    code += ["  movapd xmm2, xmm0", "  movapd xmm0, xmm1", "  movapd xmm1, xmm2"] + _emit_call(
-                        symbol="astra_fmod",
-                        callee_slot=None,
-                        values=[],
-                        param_abis=[],
-                        ret_abi=_AbiType("Float", "f64", "sse"),
-                        ctx=ctx,
-                    )
+                    if lhs_abi.size == 4:
+                        code += ["  movaps xmm2, xmm0", "  cvtss2sd xmm0, xmm1", "  cvtss2sd xmm1, xmm2"] + _emit_call(
+                            symbol="astra_fmod",
+                            callee_slot=None,
+                            values=[],
+                            param_abis=[],
+                            ret_abi=_AbiType("Float", "f64", "sse"),
+                            ctx=ctx,
+                        ) + ["  cvtsd2ss xmm0, xmm0"]
+                    else:
+                        code += [f"  mov{mov_sfx} xmm2, xmm0", f"  mov{mov_sfx} xmm0, xmm1", f"  mov{mov_sfx} xmm1, xmm2"] + _emit_call(
+                            symbol="astra_fmod",
+                            callee_slot=None,
+                            values=[],
+                            param_abis=[],
+                            ret_abi=_AbiType("Float", "f64", "sse"),
+                            ctx=ctx,
+                        )
                 else:
                     raise CodegenError(_diag(st, f"unsupported assignment op {st.op} on floating point values"))
-                return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  movsd qword [r11], xmm0"]
+                return code + [f"  mov r11, qword [rbp-{ptr_slot}]"] + _store_ptr_value("r11", lhs_abi)
             raise CodegenError(_diag(st, f"unsupported assignment type {lhs_type} on x86_64 backend"))
         if isinstance(st.target, FieldExpr):
             obj_ty = _canonical_type(_strip_ref_type(_expr_type(st.target.obj, ctx)))
-            idx, lhs_type = _struct_field_info(obj_ty, st.target.field, ctx, st.target)
+            field_off, lhs_type = _struct_field_info(obj_ty, st.target.field, ctx, st.target)
             lhs_abi = _lower_abi_type(lhs_type, st.target, allow_memory=False)
             obj_code, obj_abi = _x86_expr(st.target.obj, ctx, expected=_AbiType("usize", "ptr", "int"))
             obj_code, _ = _coerce_value(obj_code, obj_abi, _AbiType("usize", "ptr", "int"), st.target)
             ptr_slot = _alloc_temp_slot(ctx, _AbiType("usize", "ptr", "int"))
-            code = obj_code + [f"  lea r11, [rax+{idx * 8}]", f"  mov qword [rbp-{ptr_slot}], r11"]
+            code = obj_code + [f"  lea r11, [rax+{field_off}]", f"  mov qword [rbp-{ptr_slot}], r11"]
             rhs_code, rhs_abi = _x86_expr(st.expr, ctx, expected=lhs_abi)
             rhs_code, _ = _coerce_value(rhs_code, rhs_abi, lhs_abi, st)
             code += rhs_code
             if st.op == "=":
-                if lhs_abi.cls == "int":
-                    return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  mov qword [r11], rax"]
-                if lhs_abi.cls == "sse":
-                    return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  movsd qword [r11], xmm0"]
-                raise CodegenError(_diag(st, f"unsupported assignment type {lhs_type} on x86_64 backend"))
+                return code + [f"  mov r11, qword [rbp-{ptr_slot}]"] + _store_ptr_value("r11", lhs_abi)
             if lhs_abi.cls == "int":
-                code += [f"  mov r11, qword [rbp-{ptr_slot}]", "  mov rbx, qword [r11]"]
+                code += ["  mov rcx, rax", f"  mov r11, qword [rbp-{ptr_slot}]"] + _load_ptr_value("r11", lhs_abi) + ["  mov rbx, rax"]
                 if st.op == "+=":
-                    code += ["  add rbx, rax", "  mov rax, rbx"]
+                    code += ["  add rbx, rcx", "  mov rax, rbx"]
                 elif st.op == "-=":
-                    code += ["  sub rbx, rax", "  mov rax, rbx"]
+                    code += ["  sub rbx, rcx", "  mov rax, rbx"]
                 elif st.op == "*=":
-                    code += ["  imul rbx, rax", "  mov rax, rbx"]
+                    code += ["  imul rbx, rcx", "  mov rax, rbx"]
                 elif st.op == "/=":
-                    code += ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx"]
+                    if lhs_abi.signed:
+                        code += ["  mov rax, rbx", "  cqo", "  idiv rcx"]
+                    else:
+                        code += ["  mov rax, rbx", "  xor rdx, rdx", "  div rcx"]
                 elif st.op == "%=":
-                    code += ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx", "  mov rax, rdx"]
+                    if lhs_abi.signed:
+                        code += ["  mov rax, rbx", "  cqo", "  idiv rcx", "  mov rax, rdx"]
+                    else:
+                        code += ["  mov rax, rbx", "  xor rdx, rdx", "  div rcx", "  mov rax, rdx"]
+                elif st.op == "&=":
+                    code += ["  and rbx, rcx", "  mov rax, rbx"]
+                elif st.op == "|=":
+                    code += ["  or rbx, rcx", "  mov rax, rbx"]
+                elif st.op == "^=":
+                    code += ["  xor rbx, rcx", "  mov rax, rbx"]
+                elif st.op == "<<=":
+                    code += ["  mov rax, rbx", "  shl rax, cl"]
+                elif st.op == ">>=":
+                    code += ["  mov rax, rbx", f"  {'sar' if lhs_abi.signed else 'shr'} rax, cl"]
                 else:
                     raise CodegenError(_diag(st, f"unsupported assignment op {st.op} on x86_64 backend"))
-                return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  mov qword [r11], rax"]
+                return code + _normalize_int_result(lhs_abi) + [f"  mov r11, qword [rbp-{ptr_slot}]"] + _store_ptr_value("r11", lhs_abi)
             if lhs_abi.cls == "sse":
-                code += [f"  mov r11, qword [rbp-{ptr_slot}]", "  movsd xmm1, qword [r11]"]
+                op_sfx = "ss" if lhs_abi.size == 4 else "sd"
+                mov_sfx = "aps" if lhs_abi.size == 4 else "apd"
+                code += [f"  mov{mov_sfx} xmm2, xmm0", f"  mov r11, qword [rbp-{ptr_slot}]"] + _load_ptr_value("r11", lhs_abi) + [f"  mov{mov_sfx} xmm1, xmm0"]
                 if st.op == "+=":
-                    code += ["  addsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                    code += [f"  add{op_sfx} xmm1, xmm2", f"  mov{mov_sfx} xmm0, xmm1"]
                 elif st.op == "-=":
-                    code += ["  subsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                    code += [f"  sub{op_sfx} xmm1, xmm2", f"  mov{mov_sfx} xmm0, xmm1"]
                 elif st.op == "*=":
-                    code += ["  mulsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                    code += [f"  mul{op_sfx} xmm1, xmm2", f"  mov{mov_sfx} xmm0, xmm1"]
                 elif st.op == "/=":
-                    code += ["  divsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                    code += [f"  div{op_sfx} xmm1, xmm2", f"  mov{mov_sfx} xmm0, xmm1"]
                 elif st.op == "%=":
-                    code += ["  movapd xmm2, xmm0", "  movapd xmm0, xmm1", "  movapd xmm1, xmm2"] + _emit_call(
+                    code += [f"  mov{mov_sfx} xmm0, xmm1", f"  mov{mov_sfx} xmm1, xmm2"] + _emit_call(
                         symbol="astra_fmod",
                         callee_slot=None,
                         values=[],
@@ -1220,7 +1533,7 @@ def _x86_stmt(st: Any, ctx: _FnCtx) -> list[str]:
                     )
                 else:
                     raise CodegenError(_diag(st, f"unsupported assignment op {st.op} on floating point values"))
-                return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  movsd qword [r11], xmm0"]
+                return code + [f"  mov r11, qword [rbp-{ptr_slot}]"] + _store_ptr_value("r11", lhs_abi)
             raise CodegenError(_diag(st, f"unsupported assignment type {lhs_type} on x86_64 backend"))
         if isinstance(st.target, IndexExpr):
             obj_ty = _expr_type(st.target.obj, ctx)
@@ -1228,6 +1541,7 @@ def _x86_stmt(st: Any, ctx: _FnCtx) -> list[str]:
             if elem_ty is None:
                 raise CodegenError(_diag(st, f"index assignment requires Vec<T> or [T] target on x86_64 backend, got {obj_ty}"))
             lhs_abi = _lower_abi_type(elem_ty, st.target, allow_memory=False)
+            header_bytes, elem_stride = _array_data_layout(lhs_abi)
             base_code, base_abi = _x86_expr(st.target.obj, ctx, expected=_AbiType("usize", "ptr", "int"))
             base_code, _ = _coerce_value(base_code, base_abi, _AbiType("usize", "ptr", "int"), st.target.obj)
             base_slot = _alloc_temp_slot(ctx, _AbiType("usize", "ptr", "int"))
@@ -1263,55 +1577,83 @@ def _x86_stmt(st: Any, ctx: _FnCtx) -> list[str]:
                 f"{ok}:",
                 f"  mov r11, qword [rbp-{base_slot}]",
                 f"  mov rax, qword [rbp-{idx_slot}]",
-                "  lea r11, [r11+rax*8+8]",
-                f"  mov qword [rbp-{ptr_slot}], r11",
             ]
+            if elem_stride in {1, 2, 4, 8}:
+                code += [f"  lea r11, [r11+rax*{elem_stride}+{header_bytes}]"]
+            else:
+                code += [f"  mov rcx, rax", f"  imul rcx, {elem_stride}", f"  lea r11, [r11+rcx+{header_bytes}]"]
+            code += [f"  mov qword [rbp-{ptr_slot}], r11"]
             rhs_code, rhs_abi = _x86_expr(st.expr, ctx, expected=lhs_abi)
             rhs_code, _ = _coerce_value(rhs_code, rhs_abi, lhs_abi, st)
             code += rhs_code
             if st.op == "=":
-                if lhs_abi.cls == "int":
-                    return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  mov qword [r11], rax"]
-                if lhs_abi.cls == "sse":
-                    return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  movsd qword [r11], xmm0"]
-                raise CodegenError(_diag(st, f"unsupported assignment type {elem_ty} on x86_64 backend"))
+                return code + [f"  mov r11, qword [rbp-{ptr_slot}]"] + _store_ptr_value("r11", lhs_abi)
             if lhs_abi.cls == "int":
-                code += [f"  mov r11, qword [rbp-{ptr_slot}]", "  mov rbx, qword [r11]"]
+                code += ["  mov rcx, rax", f"  mov r11, qword [rbp-{ptr_slot}]"] + _load_ptr_value("r11", lhs_abi) + ["  mov rbx, rax"]
                 if st.op == "+=":
-                    code += ["  add rbx, rax", "  mov rax, rbx"]
+                    code += ["  add rbx, rcx", "  mov rax, rbx"]
                 elif st.op == "-=":
-                    code += ["  sub rbx, rax", "  mov rax, rbx"]
+                    code += ["  sub rbx, rcx", "  mov rax, rbx"]
                 elif st.op == "*=":
-                    code += ["  imul rbx, rax", "  mov rax, rbx"]
+                    code += ["  imul rbx, rcx", "  mov rax, rbx"]
                 elif st.op == "/=":
-                    code += ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx"]
+                    if lhs_abi.signed:
+                        code += ["  mov rax, rbx", "  cqo", "  idiv rcx"]
+                    else:
+                        code += ["  mov rax, rbx", "  xor rdx, rdx", "  div rcx"]
                 elif st.op == "%=":
-                    code += ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx", "  mov rax, rdx"]
+                    if lhs_abi.signed:
+                        code += ["  mov rax, rbx", "  cqo", "  idiv rcx", "  mov rax, rdx"]
+                    else:
+                        code += ["  mov rax, rbx", "  xor rdx, rdx", "  div rcx", "  mov rax, rdx"]
+                elif st.op == "&=":
+                    code += ["  and rbx, rcx", "  mov rax, rbx"]
+                elif st.op == "|=":
+                    code += ["  or rbx, rcx", "  mov rax, rbx"]
+                elif st.op == "^=":
+                    code += ["  xor rbx, rcx", "  mov rax, rbx"]
+                elif st.op == "<<=":
+                    code += ["  mov rax, rbx", "  shl rax, cl"]
+                elif st.op == ">>=":
+                    code += ["  mov rax, rbx", f"  {'sar' if lhs_abi.signed else 'shr'} rax, cl"]
                 else:
                     raise CodegenError(_diag(st, f"unsupported assignment op {st.op} on x86_64 backend"))
-                return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  mov qword [r11], rax"]
+                return code + _normalize_int_result(lhs_abi) + [f"  mov r11, qword [rbp-{ptr_slot}]"] + _store_ptr_value("r11", lhs_abi)
             if lhs_abi.cls == "sse":
-                code += [f"  mov r11, qword [rbp-{ptr_slot}]", "  movsd xmm1, qword [r11]"]
+                op_sfx = "ss" if lhs_abi.size == 4 else "sd"
+                mov_sfx = "aps" if lhs_abi.size == 4 else "apd"
+                mem_sz = "dword" if lhs_abi.size == 4 else "qword"
+                code += [f"  mov r11, qword [rbp-{ptr_slot}]", f"  mov{op_sfx} xmm1, {mem_sz} [r11]"]
                 if st.op == "+=":
-                    code += ["  addsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                    code += [f"  add{op_sfx} xmm1, xmm0", f"  mov{mov_sfx} xmm0, xmm1"]
                 elif st.op == "-=":
-                    code += ["  subsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                    code += [f"  sub{op_sfx} xmm1, xmm0", f"  mov{mov_sfx} xmm0, xmm1"]
                 elif st.op == "*=":
-                    code += ["  mulsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                    code += [f"  mul{op_sfx} xmm1, xmm0", f"  mov{mov_sfx} xmm0, xmm1"]
                 elif st.op == "/=":
-                    code += ["  divsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                    code += [f"  div{op_sfx} xmm1, xmm0", f"  mov{mov_sfx} xmm0, xmm1"]
                 elif st.op == "%=":
-                    code += ["  movapd xmm2, xmm0", "  movapd xmm0, xmm1", "  movapd xmm1, xmm2"] + _emit_call(
-                        symbol="astra_fmod",
-                        callee_slot=None,
-                        values=[],
-                        param_abis=[],
-                        ret_abi=_AbiType("Float", "f64", "sse"),
-                        ctx=ctx,
-                    )
+                    if lhs_abi.size == 4:
+                        code += ["  movaps xmm2, xmm0", "  cvtss2sd xmm0, xmm1", "  cvtss2sd xmm1, xmm2"] + _emit_call(
+                            symbol="astra_fmod",
+                            callee_slot=None,
+                            values=[],
+                            param_abis=[],
+                            ret_abi=_AbiType("Float", "f64", "sse"),
+                            ctx=ctx,
+                        ) + ["  cvtsd2ss xmm0, xmm0"]
+                    else:
+                        code += [f"  mov{mov_sfx} xmm2, xmm0", f"  mov{mov_sfx} xmm0, xmm1", f"  mov{mov_sfx} xmm1, xmm2"] + _emit_call(
+                            symbol="astra_fmod",
+                            callee_slot=None,
+                            values=[],
+                            param_abis=[],
+                            ret_abi=_AbiType("Float", "f64", "sse"),
+                            ctx=ctx,
+                        )
                 else:
                     raise CodegenError(_diag(st, f"unsupported assignment op {st.op} on floating point values"))
-                return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  movsd qword [r11], xmm0"]
+                return code + [f"  mov r11, qword [rbp-{ptr_slot}]"] + _store_ptr_value("r11", lhs_abi)
             raise CodegenError(_diag(st, f"unsupported assignment type {elem_ty} on x86_64 backend"))
         raise CodegenError(_diag(st, "x86_64 backend currently supports assignment to local names and dereferenced pointers"))
     if isinstance(st, ReturnStmt):
@@ -1321,6 +1663,8 @@ def _x86_stmt(st: Any, ctx: _FnCtx) -> list[str]:
                 return ["  xor rax, rax", f"  jmp {ctx.epilogue}"]
             if ret_abi.cls == "sse":
                 return ["  xorpd xmm0, xmm0", f"  jmp {ctx.epilogue}"]
+            if ret_abi.cls == "int128":
+                return ["  xor rax, rax", "  xor rdx, rdx", f"  jmp {ctx.epilogue}"]
             return [f"  jmp {ctx.epilogue}"]
         code, out_abi = _x86_expr(st.expr, ctx, expected=ret_abi)
         code, _ = _coerce_value(code, out_abi, ret_abi, st)
@@ -1479,15 +1823,14 @@ def _x86_expr(e: Any, ctx: _FnCtx, expected: _AbiType | None = None) -> tuple[li
             ptr_code, ptr_abi = _x86_expr(e.expr, ctx, expected=_AbiType("usize", "ptr", "int"))
             ty = _expr_type(e, ctx)
             val_abi = _lower_abi_type(ty, e, allow_memory=False)
-            if val_abi.cls == "int":
-                code = ptr_code + ["  mov rax, qword [rax]"]
-            else:
-                code = ptr_code + ["  movsd xmm0, qword [rax]"]
+            code = ptr_code + _load_ptr_value("rax", val_abi)
             return _coerce_value(code, val_abi, expected, e) if expected is not None else (code, val_abi)
         code, abi = _x86_expr(e.expr, ctx)
         if e.op == "-":
             if abi.cls == "int":
                 out = code + ["  neg rax"]
+            elif abi.cls == "int128":
+                out = code + ["  neg rax", "  adc rdx, 0", "  neg rdx"]
             elif abi.cls == "sse":
                 out = code + ["  movq rax, xmm0", "  xor rax, 0x8000000000000000", "  movq xmm0, rax"]
             else:
@@ -1500,13 +1843,84 @@ def _x86_expr(e: Any, ctx: _FnCtx, expected: _AbiType | None = None) -> tuple[li
             out = code + ["  cmp rax, 0", "  sete al", "  movzx rax, al"]
             return _coerce_value(out, out_abi, expected, e) if expected is not None else (out, out_abi)
         if e.op == "~":
-            if abi.cls != "int":
+            if abi.cls not in {"int", "int128"}:
                 raise CodegenError(_diag(e, "unary ~ expects integer/bool value on x86_64 backend"))
-            out = code + ["  not rax"]
-            return _coerce_value(out, _AbiType("Int", "i64", "int"), expected, e) if expected is not None else (out, _AbiType("Int", "i64", "int"))
+            if abi.cls == "int":
+                out = code + ["  not rax"] + _normalize_int_result(abi)
+                return _coerce_value(out, abi, expected, e) if expected is not None else (out, abi)
+            out = code + ["  not rax", "  not rdx"]
+            return _coerce_value(out, abi, expected, e) if expected is not None else (out, abi)
         raise CodegenError(_diag(e, f"unary operator {e.op} is unsupported on x86_64 backend"))
     if isinstance(e, AwaitExpr):
         return _x86_expr(e.expr, ctx, expected)
+    if isinstance(e, SizeOfTypeExpr):
+        try:
+            val = layout_of_type(e.type_name, ctx.structs, mode="query").size
+        except LayoutError as err:
+            raise CodegenError(_diag(e, str(err))) from err
+        abi = _AbiType("Int", "i64", "int")
+        code = [f"  mov rax, {val}"]
+        return _coerce_value(code, abi, expected, e) if expected is not None else (code, abi)
+    if isinstance(e, AlignOfTypeExpr):
+        try:
+            val = layout_of_type(e.type_name, ctx.structs, mode="query").align
+        except LayoutError as err:
+            raise CodegenError(_diag(e, str(err))) from err
+        abi = _AbiType("Int", "i64", "int")
+        code = [f"  mov rax, {val}"]
+        return _coerce_value(code, abi, expected, e) if expected is not None else (code, abi)
+    if isinstance(e, (SizeOfValueExpr, AlignOfValueExpr)):
+        ty = getattr(e, "query_type", None) or _expr_type(e.expr, ctx)
+        try:
+            lay = layout_of_type(ty, ctx.structs, mode="query")
+        except LayoutError as err:
+            raise CodegenError(_diag(e, str(err))) from err
+        val = lay.size if isinstance(e, SizeOfValueExpr) else lay.align
+        abi = _AbiType("Int", "i64", "int")
+        code = [f"  mov rax, {val}"]
+        return _coerce_value(code, abi, expected, e) if expected is not None else (code, abi)
+    if isinstance(e, CastExpr):
+        src_ty = _expr_type(e.expr, ctx)
+        dst_ty = _canonical_type(e.type_name)
+        src_abi = _lower_abi_type(src_ty, e.expr, allow_memory=False)
+        dst_abi = _lower_abi_type(dst_ty, e, allow_memory=False)
+        src_code, out_abi = _x86_expr(e.expr, ctx, expected=src_abi)
+        src_code, _ = _coerce_value(src_code, out_abi, src_abi, e.expr)
+        if src_abi.cls == "int" and dst_abi.cls == "int":
+            cast_code = src_code + _normalize_int_result(dst_abi)
+            return _coerce_value(cast_code, dst_abi, expected, e) if expected is not None else (cast_code, dst_abi)
+        if src_abi.cls == "int" and dst_abi.cls == "int128":
+            cast_code = src_code + _normalize_int_result(src_abi)
+            if src_abi.signed:
+                cast_code.append("  cqo")
+            else:
+                cast_code.append("  xor rdx, rdx")
+            return _coerce_value(cast_code, dst_abi, expected, e) if expected is not None else (cast_code, dst_abi)
+        if src_abi.cls == "int128" and dst_abi.cls == "int":
+            cast_code = src_code + _normalize_int_result(dst_abi)
+            return _coerce_value(cast_code, dst_abi, expected, e) if expected is not None else (cast_code, dst_abi)
+        if src_abi.cls == "int128" and dst_abi.cls == "int128":
+            return _coerce_value(src_code, dst_abi, expected, e) if expected is not None else (src_code, dst_abi)
+        if src_abi.cls == "int" and dst_abi.cls == "sse":
+            cast_code = src_code + [f"  {'cvtsi2ss' if dst_abi.size == 4 else 'cvtsi2sd'} xmm0, rax"]
+            return _coerce_value(cast_code, dst_abi, expected, e) if expected is not None else (cast_code, dst_abi)
+        if src_abi.cls == "int128" and dst_abi.cls == "sse":
+            cast_code = src_code + [f"  {'cvtsi2ss' if dst_abi.size == 4 else 'cvtsi2sd'} xmm0, rax"]
+            return _coerce_value(cast_code, dst_abi, expected, e) if expected is not None else (cast_code, dst_abi)
+        if src_abi.cls == "sse" and dst_abi.cls == "sse":
+            cast_code, _ = _coerce_value(src_code, src_abi, dst_abi, e)
+            return _coerce_value(cast_code, dst_abi, expected, e) if expected is not None else (cast_code, dst_abi)
+        if src_abi.cls == "sse" and dst_abi.cls == "int":
+            cast_code = src_code + [f"  {'cvttss2si' if src_abi.size == 4 else 'cvttsd2si'} rax, xmm0"] + _normalize_int_result(dst_abi)
+            return _coerce_value(cast_code, dst_abi, expected, e) if expected is not None else (cast_code, dst_abi)
+        if src_abi.cls == "sse" and dst_abi.cls == "int128":
+            cast_code = src_code + [f"  {'cvttss2si' if src_abi.size == 4 else 'cvttsd2si'} rax, xmm0"]
+            if dst_abi.signed:
+                cast_code.append("  cqo")
+            else:
+                cast_code.append("  xor rdx, rdx")
+            return _coerce_value(cast_code, dst_abi, expected, e) if expected is not None else (cast_code, dst_abi)
+        raise CodegenError(_diag(e, f"unsupported cast from {src_ty} to {dst_ty} on x86_64 backend"))
     if isinstance(e, TypeAnnotated):
         return _x86_expr(e.expr, ctx, expected)
     if isinstance(e, Binary):
@@ -1537,64 +1951,251 @@ def _x86_expr(e: Any, ctx: _FnCtx, expected: _AbiType | None = None) -> tuple[li
         lty = _lower_abi_type(_expr_type(e.left, ctx), e.left, allow_memory=False)
         rty = _lower_abi_type(_expr_type(e.right, ctx), e.right, allow_memory=False)
         if lty.cls == "sse" or rty.cls == "sse":
+            float_size = 8 if lty.size == 8 or rty.size == 8 else 4
+            float_abi = _AbiType("f64" if float_size == 8 else "f32", "f64" if float_size == 8 else "f32", "sse", size=float_size, align=float_size, bits=float_size * 8)
+            op_sfx = "sd" if float_size == 8 else "ss"
+            mov_sfx = "apd" if float_size == 8 else "aps"
+            mem_sz = "qword" if float_size == 8 else "dword"
             if e.op == "%":
-                arg_code, values = _eval_args_for_call(
-                    [e.left, e.right],
-                    [_AbiType("Float", "f64", "sse"), _AbiType("Float", "f64", "sse")],
-                    ctx,
-                )
+                arg_abi = _AbiType("Float", "f64", "sse")
+                arg_code, values = _eval_args_for_call([e.left, e.right], [arg_abi, arg_abi], ctx)
                 out = arg_code + _emit_call(
                     symbol="astra_fmod",
                     callee_slot=None,
                     values=values,
-                    param_abis=[_AbiType("Float", "f64", "sse"), _AbiType("Float", "f64", "sse")],
-                    ret_abi=_AbiType("Float", "f64", "sse"),
+                    param_abis=[arg_abi, arg_abi],
+                    ret_abi=arg_abi,
                     ctx=ctx,
                 )
-                return _coerce_value(out, _AbiType("Float", "f64", "sse"), expected, e) if expected is not None else (out, _AbiType("Float", "f64", "sse"))
-            left, _ = _x86_expr(e.left, ctx, expected=_AbiType("Float", "f64", "sse"))
-            right, _ = _x86_expr(e.right, ctx, expected=_AbiType("Float", "f64", "sse"))
-            code = left + ["  sub rsp, 8", "  movsd qword [rsp], xmm0"] + right + ["  movsd xmm1, qword [rsp]", "  add rsp, 8"]
+                if float_size == 4:
+                    out.append("  cvtsd2ss xmm0, xmm0")
+                    return _coerce_value(out, float_abi, expected, e) if expected is not None else (out, float_abi)
+                return _coerce_value(out, arg_abi, expected, e) if expected is not None else (out, arg_abi)
+            left, _ = _x86_expr(e.left, ctx, expected=float_abi)
+            right, _ = _x86_expr(e.right, ctx, expected=float_abi)
+            code = left + ["  sub rsp, 8", f"  mov{op_sfx} {mem_sz} [rsp], xmm0"] + right + [f"  mov{op_sfx} xmm1, {mem_sz} [rsp]", "  add rsp, 8"]
             if e.op == "+":
-                out = code + ["  addsd xmm0, xmm1"]
-                return _coerce_value(out, _AbiType("Float", "f64", "sse"), expected, e) if expected is not None else (out, _AbiType("Float", "f64", "sse"))
+                out = code + [f"  add{op_sfx} xmm0, xmm1"]
+                return _coerce_value(out, float_abi, expected, e) if expected is not None else (out, float_abi)
             if e.op == "-":
-                out = code + ["  subsd xmm1, xmm0", "  movapd xmm0, xmm1"]
-                return _coerce_value(out, _AbiType("Float", "f64", "sse"), expected, e) if expected is not None else (out, _AbiType("Float", "f64", "sse"))
+                out = code + [f"  sub{op_sfx} xmm1, xmm0", f"  mov{mov_sfx} xmm0, xmm1"]
+                return _coerce_value(out, float_abi, expected, e) if expected is not None else (out, float_abi)
             if e.op == "*":
-                out = code + ["  mulsd xmm0, xmm1"]
-                return _coerce_value(out, _AbiType("Float", "f64", "sse"), expected, e) if expected is not None else (out, _AbiType("Float", "f64", "sse"))
+                out = code + [f"  mul{op_sfx} xmm0, xmm1"]
+                return _coerce_value(out, float_abi, expected, e) if expected is not None else (out, float_abi)
             if e.op == "/":
-                out = code + ["  divsd xmm1, xmm0", "  movapd xmm0, xmm1"]
-                return _coerce_value(out, _AbiType("Float", "f64", "sse"), expected, e) if expected is not None else (out, _AbiType("Float", "f64", "sse"))
+                out = code + [f"  div{op_sfx} xmm1, xmm0", f"  mov{mov_sfx} xmm0, xmm1"]
+                return _coerce_value(out, float_abi, expected, e) if expected is not None else (out, float_abi)
             if e.op in {"==", "!=", "<", "<=", ">", ">="}:
                 cond = {"==": "sete", "!=": "setne", "<": "setb", "<=": "setbe", ">": "seta", ">=": "setae"}[e.op]
-                out = code + ["  ucomisd xmm1, xmm0", f"  {cond} al", "  movzx rax, al"]
+                out = code + [f"  ucomi{op_sfx} xmm1, xmm0", f"  {cond} al", "  movzx rax, al"]
                 out_abi = _AbiType("Bool", "u8", "int")
                 return _coerce_value(out, out_abi, expected, e) if expected is not None else (out, out_abi)
             raise CodegenError(_diag(e, f"binary operator {e.op} is unsupported for floats on x86_64 backend"))
+        if lty.cls == "int128" or rty.cls == "int128":
+            if lty.cls != "int128" or rty.cls != "int128":
+                raise CodegenError(_diag(e, "mixed 128-bit and non-128-bit integer ops require explicit cast"))
+            int128_abi = lty
+            left, _ = _x86_expr(e.left, ctx, expected=int128_abi)
+            left_slot = _alloc_temp_slot(ctx, int128_abi)
+            right, _ = _x86_expr(e.right, ctx, expected=int128_abi)
+            right_slot = _alloc_temp_slot(ctx, int128_abi)
+            code = left + _store_from_reg(left_slot, int128_abi) + right + _store_from_reg(right_slot, int128_abi)
+            code += [
+                f"  mov rax, qword [rbp-{left_slot}]",
+                f"  mov rdx, qword [rbp-{left_slot + 8}]",
+                f"  mov rcx, qword [rbp-{right_slot}]",
+                f"  mov r8, qword [rbp-{right_slot + 8}]",
+            ]
+            op = e.op
+            if op == "+":
+                out = code + ["  add rax, rcx", "  adc rdx, r8"]
+                return _coerce_value(out, int128_abi, expected, e) if expected is not None else (out, int128_abi)
+            if op == "-":
+                out = code + ["  sub rax, rcx", "  sbb rdx, r8"]
+                return _coerce_value(out, int128_abi, expected, e) if expected is not None else (out, int128_abi)
+            if op == "&":
+                out = code + ["  and rax, rcx", "  and rdx, r8"]
+                return _coerce_value(out, int128_abi, expected, e) if expected is not None else (out, int128_abi)
+            if op == "|":
+                out = code + ["  or rax, rcx", "  or rdx, r8"]
+                return _coerce_value(out, int128_abi, expected, e) if expected is not None else (out, int128_abi)
+            if op == "^":
+                out = code + ["  xor rax, rcx", "  xor rdx, r8"]
+                return _coerce_value(out, int128_abi, expected, e) if expected is not None else (out, int128_abi)
+            if op == "<<":
+                lt64 = _label(ctx, "i128_shl_lt64")
+                ge64 = _label(ctx, "i128_shl_ge64")
+                zero = _label(ctx, "i128_shl_zero")
+                done = _label(ctx, "i128_shl_done")
+                out = code + [
+                    f"  mov rcx, qword [rbp-{right_slot}]",
+                    "  cmp rcx, 128",
+                    f"  jae {zero}",
+                    "  cmp rcx, 64",
+                    f"  jae {ge64}",
+                    f"{lt64}:",
+                    "  shld rdx, rax, cl",
+                    "  shl rax, cl",
+                    f"  jmp {done}",
+                    f"{ge64}:",
+                    "  sub rcx, 64",
+                    "  mov rdx, rax",
+                    "  shl rdx, cl",
+                    "  xor rax, rax",
+                    f"  jmp {done}",
+                    f"{zero}:",
+                    "  xor rax, rax",
+                    "  xor rdx, rdx",
+                    f"{done}:",
+                ]
+                return _coerce_value(out, int128_abi, expected, e) if expected is not None else (out, int128_abi)
+            if op == ">>":
+                lt64 = _label(ctx, "i128_shr_lt64")
+                ge64 = _label(ctx, "i128_shr_ge64")
+                zero = _label(ctx, "i128_shr_zero")
+                done = _label(ctx, "i128_shr_done")
+                out = code + [
+                    f"  mov rcx, qword [rbp-{right_slot}]",
+                    "  cmp rcx, 128",
+                    f"  jae {zero}",
+                    "  cmp rcx, 64",
+                    f"  jae {ge64}",
+                    f"{lt64}:",
+                    "  shrd rax, rdx, cl",
+                    f"  {'sar' if int128_abi.signed else 'shr'} rdx, cl",
+                    f"  jmp {done}",
+                    f"{ge64}:",
+                    "  sub rcx, 64",
+                    "  mov rax, rdx",
+                    f"  {'sar' if int128_abi.signed else 'shr'} rax, cl",
+                ]
+                if int128_abi.signed:
+                    out += ["  mov rdx, qword [rbp-{0}]".format(left_slot + 8), "  sar rdx, 63"]
+                else:
+                    out += ["  xor rdx, rdx"]
+                out += [
+                    f"  jmp {done}",
+                    f"{zero}:",
+                ]
+                if int128_abi.signed:
+                    out += [
+                        "  mov rdx, qword [rbp-{0}]".format(left_slot + 8),
+                        "  sar rdx, 63",
+                        "  mov rax, rdx",
+                    ]
+                else:
+                    out += ["  xor rax, rax", "  xor rdx, rdx"]
+                out += [f"{done}:"]
+                return _coerce_value(out, int128_abi, expected, e) if expected is not None else (out, int128_abi)
+            if op in {"==", "!=", "<", "<=", ">", ">="}:
+                true_lbl = _label(ctx, "i128_cmp_true")
+                false_lbl = _label(ctx, "i128_cmp_false")
+                done_lbl = _label(ctx, "i128_cmp_done")
+                out = code
+                if op == "==":
+                    out += [
+                        "  cmp rdx, r8",
+                        f"  jne {false_lbl}",
+                        "  cmp rax, rcx",
+                        f"  jne {false_lbl}",
+                        f"  jmp {true_lbl}",
+                    ]
+                elif op == "!=":
+                    out += [
+                        "  cmp rdx, r8",
+                        f"  jne {true_lbl}",
+                        "  cmp rax, rcx",
+                        f"  jne {true_lbl}",
+                        f"  jmp {false_lbl}",
+                    ]
+                else:
+                    high_cmp_lt = "jl" if int128_abi.signed else "jb"
+                    high_cmp_gt = "jg" if int128_abi.signed else "ja"
+                    out += [
+                        "  cmp rdx, r8",
+                    ]
+                    if op in {"<", "<="}:
+                        out += [f"  {high_cmp_lt} {true_lbl}", f"  {high_cmp_gt} {false_lbl}"]
+                        out += ["  cmp rax, rcx", f"  {'jbe' if op == '<=' else 'jb'} {true_lbl}", f"  jmp {false_lbl}"]
+                    else:
+                        out += [f"  {high_cmp_gt} {true_lbl}", f"  {high_cmp_lt} {false_lbl}"]
+                        out += ["  cmp rax, rcx", f"  {'jae' if op == '>=' else 'ja'} {true_lbl}", f"  jmp {false_lbl}"]
+                out += [
+                    f"{true_lbl}:",
+                    "  mov rax, 1",
+                    f"  jmp {done_lbl}",
+                    f"{false_lbl}:",
+                    "  xor rax, rax",
+                    f"{done_lbl}:",
+                ]
+                out_abi = _AbiType("Bool", "u8", "int")
+                return _coerce_value(out, out_abi, expected, e) if expected is not None else (out, out_abi)
+            if op in {"*", "/", "%"}:
+                helper_op = {"*": "mul", "/": "div", "%": "mod"}[op]
+                symbol = _i128_helper_symbol(helper_op, bool(int128_abi.signed), ctx.overflow_mode)
+                out = code + [
+                    f"  mov rdi, qword [rbp-{left_slot}]",
+                    f"  mov rsi, qword [rbp-{left_slot + 8}]",
+                    f"  mov rdx, qword [rbp-{right_slot}]",
+                    f"  mov rcx, qword [rbp-{right_slot + 8}]",
+                    "  sub rsp, 8",
+                    f"  call {symbol}",
+                    "  add rsp, 8",
+                ]
+                ctx.runtime_symbols.add(symbol)
+                return _coerce_value(out, int128_abi, expected, e) if expected is not None else (out, int128_abi)
+            raise CodegenError(_diag(e, f"binary operator {op} is unsupported on 128-bit integers"))
 
-        left, _ = _x86_expr(e.left, ctx, expected=_AbiType("Int", "i64", "int"))
-        right, _ = _x86_expr(e.right, ctx, expected=_AbiType("Int", "i64", "int"))
+        int_abi = _lower_abi_type(_expr_type(e.left, ctx), e.left, allow_memory=False)
+        if int_abi.cls != "int":
+            int_abi = _AbiType("Int", "i64", "int")
+        left, _ = _x86_expr(e.left, ctx, expected=int_abi)
+        right, _ = _x86_expr(e.right, ctx, expected=int_abi)
         code = left + ["  push rax"] + right + ["  pop rbx"]
         op = e.op
         if op == "+":
-            out = code + ["  add rax, rbx"]
-            return _coerce_value(out, _AbiType("Int", "i64", "int"), expected, e) if expected is not None else (out, _AbiType("Int", "i64", "int"))
+            out = code + ["  add rax, rbx"] + _normalize_int_result(int_abi)
+            return _coerce_value(out, int_abi, expected, e) if expected is not None else (out, int_abi)
         if op == "-":
-            out = code + ["  sub rbx, rax", "  mov rax, rbx"]
-            return _coerce_value(out, _AbiType("Int", "i64", "int"), expected, e) if expected is not None else (out, _AbiType("Int", "i64", "int"))
+            out = code + ["  sub rbx, rax", "  mov rax, rbx"] + _normalize_int_result(int_abi)
+            return _coerce_value(out, int_abi, expected, e) if expected is not None else (out, int_abi)
         if op == "*":
-            out = code + ["  imul rax, rbx"]
-            return _coerce_value(out, _AbiType("Int", "i64", "int"), expected, e) if expected is not None else (out, _AbiType("Int", "i64", "int"))
+            out = code + ["  imul rax, rbx"] + _normalize_int_result(int_abi)
+            return _coerce_value(out, int_abi, expected, e) if expected is not None else (out, int_abi)
         if op == "/":
-            out = code + ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx"]
-            return _coerce_value(out, _AbiType("Int", "i64", "int"), expected, e) if expected is not None else (out, _AbiType("Int", "i64", "int"))
+            if int_abi.signed:
+                out = code + ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx"] + _normalize_int_result(int_abi)
+            else:
+                out = code + ["  mov rcx, rax", "  mov rax, rbx", "  xor rdx, rdx", "  div rcx"] + _normalize_int_result(int_abi)
+            return _coerce_value(out, int_abi, expected, e) if expected is not None else (out, int_abi)
         if op == "%":
-            out = code + ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx", "  mov rax, rdx"]
-            return _coerce_value(out, _AbiType("Int", "i64", "int"), expected, e) if expected is not None else (out, _AbiType("Int", "i64", "int"))
+            if int_abi.signed:
+                out = code + ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx", "  mov rax, rdx"] + _normalize_int_result(int_abi)
+            else:
+                out = code + ["  mov rcx, rax", "  mov rax, rbx", "  xor rdx, rdx", "  div rcx", "  mov rax, rdx"] + _normalize_int_result(int_abi)
+            return _coerce_value(out, int_abi, expected, e) if expected is not None else (out, int_abi)
+        if op == "&":
+            out = code + ["  and rax, rbx"] + _normalize_int_result(int_abi)
+            return _coerce_value(out, int_abi, expected, e) if expected is not None else (out, int_abi)
+        if op == "|":
+            out = code + ["  or rax, rbx"] + _normalize_int_result(int_abi)
+            return _coerce_value(out, int_abi, expected, e) if expected is not None else (out, int_abi)
+        if op == "^":
+            out = code + ["  xor rax, rbx"] + _normalize_int_result(int_abi)
+            return _coerce_value(out, int_abi, expected, e) if expected is not None else (out, int_abi)
+        if op == "<<":
+            out = code + ["  mov rcx, rax", "  mov rax, rbx", "  shl rax, cl"] + _normalize_int_result(int_abi)
+            return _coerce_value(out, int_abi, expected, e) if expected is not None else (out, int_abi)
+        if op == ">>":
+            shift = "sar" if int_abi.signed else "shr"
+            out = code + ["  mov rcx, rax", "  mov rax, rbx", f"  {shift} rax, cl"] + _normalize_int_result(int_abi)
+            return _coerce_value(out, int_abi, expected, e) if expected is not None else (out, int_abi)
         if op in {"==", "!=", "<", "<=", ">", ">="}:
-            cond = {"==": "sete", "!=": "setne", "<": "setl", "<=": "setle", ">": "setg", ">=": "setge"}[op]
+            if int_abi.signed:
+                cond = {"==": "sete", "!=": "setne", "<": "setl", "<=": "setle", ">": "setg", ">=": "setge"}[op]
+            else:
+                cond = {"==": "sete", "!=": "setne", "<": "setb", "<=": "setbe", ">": "seta", ">=": "setae"}[op]
             out = code + ["  cmp rbx, rax", f"  {cond} al", "  movzx rax, al"]
             out_abi = _AbiType("Bool", "u8", "int")
             return _coerce_value(out, out_abi, expected, e) if expected is not None else (out, out_abi)
@@ -1611,11 +2212,11 @@ def _x86_expr(e: Any, ctx: _FnCtx, expected: _AbiType | None = None) -> tuple[li
         return _x86_call_expr(e, ctx, expected)
     if isinstance(e, FieldExpr):
         obj_ty = _canonical_type(_strip_ref_type(_expr_type(e.obj, ctx)))
-        idx, field_ty = _struct_field_info(obj_ty, e.field, ctx, e)
+        field_off, field_ty = _struct_field_info(obj_ty, e.field, ctx, e)
         field_abi = _lower_abi_type(field_ty, e, allow_memory=False)
         obj_code, obj_abi = _x86_expr(e.obj, ctx, expected=_AbiType("usize", "ptr", "int"))
         obj_code, _ = _coerce_value(obj_code, obj_abi, _AbiType("usize", "ptr", "int"), e.obj)
-        code = obj_code + [f"  lea r11, [rax+{idx * 8}]"] + _load_ptr_value("r11", field_abi)
+        code = obj_code + [f"  lea r11, [rax+{field_off}]"] + _load_ptr_value("r11", field_abi)
         return _coerce_value(code, field_abi, expected, e) if expected is not None else (code, field_abi)
     if isinstance(e, IndexExpr):
         obj_ty = _expr_type(e.obj, ctx)
@@ -1623,6 +2224,7 @@ def _x86_expr(e: Any, ctx: _FnCtx, expected: _AbiType | None = None) -> tuple[li
         if elem_ty is None:
             raise CodegenError(_diag(e, f"indexing requires Vec<T> or [T] on x86_64 backend, got {obj_ty}"))
         elem_abi = _lower_abi_type(elem_ty, e, allow_memory=False)
+        header_bytes, elem_stride = _array_data_layout(elem_abi)
         base_code, base_abi = _x86_expr(e.obj, ctx, expected=_AbiType("usize", "ptr", "int"))
         base_code, _ = _coerce_value(base_code, base_abi, _AbiType("usize", "ptr", "int"), e.obj)
         base_slot = _alloc_temp_slot(ctx, _AbiType("usize", "ptr", "int"))
@@ -1657,22 +2259,29 @@ def _x86_expr(e: Any, ctx: _FnCtx, expected: _AbiType | None = None) -> tuple[li
             f"{ok}:",
             f"  mov r11, qword [rbp-{base_slot}]",
             f"  mov rax, qword [rbp-{idx_slot}]",
-            "  lea r11, [r11+rax*8+8]",
-        ] + _load_ptr_value("r11", elem_abi)
+        ]
+        if elem_stride in {1, 2, 4, 8}:
+            code += [f"  lea r11, [r11+rax*{elem_stride}+{header_bytes}]"]
+        else:
+            code += [f"  mov rcx, rax", f"  imul rcx, {elem_stride}", f"  lea r11, [r11+rcx+{header_bytes}]"]
+        code += _load_ptr_value("r11", elem_abi)
         return _coerce_value(code, elem_abi, expected, e) if expected is not None else (code, elem_abi)
     if isinstance(e, ArrayLit):
         if not e.elements:
             raise CodegenError(_diag(e, "empty array literal requires explicit type context on x86_64 backend"))
         elem_ty = _expr_type(e.elements[0], ctx)
         elem_abi = _lower_abi_type(elem_ty, e.elements[0], allow_memory=False)
-        total_bytes = 8 * (1 + len(e.elements))
-        code = _emit_runtime_alloc(total_bytes, ctx)
+        header_bytes, elem_stride = _array_data_layout(elem_abi)
+        total_bytes = header_bytes + elem_stride * len(e.elements)
+        total_align = max(8, elem_abi.align)
+        code = _emit_runtime_alloc(total_bytes, ctx, align_bytes=total_align)
         base_slot = _alloc_temp_slot(ctx, _AbiType("usize", "ptr", "int"))
         code += [f"  mov qword [rbp-{base_slot}], rax", f"  mov qword [rax], {len(e.elements)}"]
         for idx, elem in enumerate(e.elements):
             elem_code, out_abi = _x86_expr(elem, ctx, expected=elem_abi)
             elem_code, _ = _coerce_value(elem_code, out_abi, elem_abi, elem)
-            code += elem_code + [f"  mov r11, qword [rbp-{base_slot}]", f"  lea r11, [r11+{8 * (idx + 1)}]"] + _store_ptr_value("r11", elem_abi)
+            elem_off = header_bytes + idx * elem_stride
+            code += elem_code + [f"  mov r11, qword [rbp-{base_slot}]", f"  lea r11, [r11+{elem_off}]"] + _store_ptr_value("r11", elem_abi)
         code += [f"  mov rax, qword [rbp-{base_slot}]"]
         out_abi = _AbiType(_expr_type(e, ctx), "ptr", "int")
         return _coerce_value(code, out_abi, expected, e) if expected is not None else (code, out_abi)
@@ -1714,14 +2323,28 @@ def _eval_args_for_call(args: list[Any], param_abis: list[_AbiType], ctx: _FnCtx
     return code, values
 
 
-def _emit_int_source_to_reg(src: _CallValue, reg: str) -> list[str]:
+def _emit_int_source_to_reg(src: _CallValue, abi: _AbiType, reg: str) -> list[str]:
     if src.slot is not None:
-        return [f"  mov {reg}, qword [rbp-{src.slot}]"]
+        code = _load_to_reg(src.slot, abi)
+        if reg != "rax":
+            code.append(f"  mov {reg}, rax")
+        return code
     if src.imm is not None:
         return [f"  mov {reg}, {src.imm}"]
     if src.label is not None:
         return [f"  mov {reg}, {src.label}"]
     raise CodegenError("internal call arg source missing")
+
+
+def _emit_int128_source_to_regs(src: _CallValue, lo_reg: str, hi_reg: str) -> list[str]:
+    if src.slot is None:
+        raise CodegenError("int128 call args must be materialized in stack slots")
+    return [
+        f"  mov r10, qword [rbp-{src.slot}]",
+        f"  mov r11, qword [rbp-{src.slot + 8}]",
+        f"  mov {lo_reg}, r10",
+        f"  mov {hi_reg}, r11",
+    ]
 
 
 def _emit_call(
@@ -1745,17 +2368,29 @@ def _emit_call(
     for src, abi in zip(values, param_abis):
         if abi.cls == "int":
             if int_i < len(_INT_ARG_REGS):
-                reg_moves += _emit_int_source_to_reg(src, _INT_ARG_REGS[int_i])
+                reg_moves += _emit_int_source_to_reg(src, abi, _INT_ARG_REGS[int_i])
                 int_i += 1
             else:
                 stack_vals.append(src)
                 stack_abis.append(abi)
             continue
+        if abi.cls == "int128":
+            if int_i + 1 < len(_INT_ARG_REGS):
+                lo_reg = _INT_ARG_REGS[int_i]
+                hi_reg = _INT_ARG_REGS[int_i + 1]
+                reg_moves += _emit_int128_source_to_regs(src, lo_reg, hi_reg)
+                int_i += 2
+            else:
+                stack_vals.append(src)
+                stack_abis.append(abi)
+            continue
         if abi.cls == "sse":
+            mov = "movss" if abi.size == 4 else "movsd"
+            mem = "dword" if abi.size == 4 else "qword"
             if sse_i < len(_SSE_ARG_REGS):
                 if src.slot is None:
                     raise CodegenError("floating call args must be materialized in stack slots")
-                reg_moves.append(f"  movsd {_SSE_ARG_REGS[sse_i]}, qword [rbp-{src.slot}]")
+                reg_moves.append(f"  {mov} {_SSE_ARG_REGS[sse_i]}, {mem} [rbp-{src.slot}]")
                 sse_i += 1
             else:
                 stack_vals.append(src)
@@ -1763,13 +2398,13 @@ def _emit_call(
             continue
         # Opaque aggregate values are pointer-sized at the ABI boundary.
         if int_i < len(_INT_ARG_REGS):
-            reg_moves += _emit_int_source_to_reg(src, _INT_ARG_REGS[int_i])
+            reg_moves += _emit_int_source_to_reg(src, _AbiType(abi.src, "ptr", "int"), _INT_ARG_REGS[int_i])
             int_i += 1
         else:
             stack_vals.append(src)
             stack_abis.append(_AbiType(abi.src, "ptr", "int"))
 
-    stack_bytes = 8 * len(stack_vals)
+    stack_bytes = sum(16 if abi.cls == "int128" else 8 for abi in stack_abis)
     pad = (8 - (stack_bytes % 16)) % 16
     if pad:
         code.append(f"  sub rsp, {pad}")
@@ -1777,7 +2412,8 @@ def _emit_call(
     for src, abi in reversed(list(zip(stack_vals, stack_abis))):
         if abi.cls == "int":
             if src.slot is not None:
-                code.append(f"  push qword [rbp-{src.slot}]")
+                code += _load_to_reg(src.slot, abi)
+                code.append("  push rax")
             elif src.imm is not None:
                 code.append(f"  push {src.imm}")
             elif src.label is not None:
@@ -1785,10 +2421,18 @@ def _emit_call(
             else:
                 raise CodegenError("internal stack int arg source missing")
             continue
+        if abi.cls == "int128":
+            if src.slot is None:
+                raise CodegenError("stack int128 call args must come from slots")
+            code += [f"  push qword [rbp-{src.slot + 8}]", f"  push qword [rbp-{src.slot}]"]
+            continue
         if abi.cls == "sse":
             if src.slot is None:
                 raise CodegenError("stack floating call args must come from slots")
-            code += ["  sub rsp, 8", f"  movsd xmm15, qword [rbp-{src.slot}]", "  movsd qword [rsp], xmm15"]
+            if abi.size == 4:
+                code += ["  sub rsp, 8", f"  movss xmm15, dword [rbp-{src.slot}]", "  movss dword [rsp], xmm15"]
+            else:
+                code += ["  sub rsp, 8", f"  movsd xmm15, qword [rbp-{src.slot}]", "  movsd qword [rsp], xmm15"]
             continue
 
     code += reg_moves
@@ -1810,13 +2454,13 @@ def _emit_call(
     return code
 
 
-def _emit_runtime_alloc(size_bytes: int, ctx: _FnCtx) -> list[str]:
+def _emit_runtime_alloc(size_bytes: int, ctx: _FnCtx, *, align_bytes: int = 8) -> list[str]:
     code = _emit_call(
         symbol="astra_alloc",
         callee_slot=None,
         values=[
             _CallValue(_AbiType("usize", "i64", "int"), imm=max(1, size_bytes)),
-            _CallValue(_AbiType("usize", "i64", "int"), imm=8),
+            _CallValue(_AbiType("usize", "i64", "int"), imm=max(1, align_bytes)),
         ],
         param_abis=[_AbiType("usize", "i64", "int"), _AbiType("usize", "i64", "int")],
         ret_abi=_AbiType("usize", "ptr", "int"),
@@ -1826,20 +2470,36 @@ def _emit_runtime_alloc(size_bytes: int, ctx: _FnCtx) -> list[str]:
     return code
 
 
+def _i128_helper_symbol(op: str, signed: bool, overflow_mode: str) -> str:
+    if op not in {"mul", "div", "mod"}:
+        raise CodegenError(f"internal: unsupported i128 helper op {op}")
+    mode = "trap" if overflow_mode == "trap" else "wrap"
+    prefix = "i128" if signed else "u128"
+    return f"astra_{prefix}_{op}_{mode}"
+
+
 def _x86_call_expr(e: Call, ctx: _FnCtx, expected: _AbiType | None = None) -> tuple[list[str], _AbiType]:
     if isinstance(e.fn, Name) and e.fn.value in ctx.structs:
         decl = ctx.structs[e.fn.value]
         if len(e.args) != len(decl.fields):
             raise CodegenError(_diag(e, f"struct {decl.name} expects {len(decl.fields)} args, got {len(e.args)}"))
-        size_bytes = max(8, 8 * len(decl.fields))
-        code = _emit_runtime_alloc(size_bytes, ctx)
+        try:
+            struct_lay = layout_of_struct(decl.name, ctx.structs, mode="codegen")
+        except LayoutError as err:
+            raise CodegenError(_diag(e, str(err))) from err
+        size_bytes = max(1, struct_lay.size)
+        code = _emit_runtime_alloc(size_bytes, ctx, align_bytes=struct_lay.align)
         ptr_slot = _alloc_temp_slot(ctx, _AbiType("usize", "ptr", "int"))
         code += [f"  mov qword [rbp-{ptr_slot}], rax"]
-        for idx, ((_, fty), arg) in enumerate(zip(decl.fields, e.args)):
+        for (fname, fty), arg in zip(decl.fields, e.args):
+            try:
+                field_off = struct_lay.field_offsets[fname]
+            except KeyError:
+                raise CodegenError(_diag(e, f"internal missing layout for field {fname} in {decl.name}"))
             f_abi = _lower_abi_type(fty, arg, allow_memory=False)
             arg_code, out_abi = _x86_expr(arg, ctx, expected=f_abi)
             arg_code, _ = _coerce_value(arg_code, out_abi, f_abi, arg)
-            code += arg_code + [f"  mov r11, qword [rbp-{ptr_slot}]", f"  lea r11, [r11+{idx * 8}]"] + _store_ptr_value("r11", f_abi)
+            code += arg_code + [f"  mov r11, qword [rbp-{ptr_slot}]", f"  lea r11, [r11+{field_off}]"] + _store_ptr_value("r11", f_abi)
         code += [f"  mov rax, qword [rbp-{ptr_slot}]"]
         out_abi = _AbiType(decl.name, "ptr", "int")
         return _coerce_value(code, out_abi, expected, e) if expected is not None else (code, out_abi)
@@ -1851,6 +2511,7 @@ def _x86_call_expr(e: Call, ctx: _FnCtx, expected: _AbiType | None = None) -> tu
         if elem_ty is None:
             raise CodegenError(_diag(e, f"get() requires Vec<T> or [T] receiver on x86_64 backend, got {obj_ty}"))
         elem_abi = _lower_abi_type(elem_ty, e, allow_memory=False)
+        header_bytes, elem_stride = _array_data_layout(elem_abi)
         base_code, base_abi = _x86_expr(e.fn.obj, ctx, expected=_AbiType("usize", "ptr", "int"))
         base_code, _ = _coerce_value(base_code, base_abi, _AbiType("usize", "ptr", "int"), e.fn.obj)
         base_slot = _alloc_temp_slot(ctx, _AbiType("usize", "ptr", "int"))
@@ -1866,16 +2527,17 @@ def _x86_call_expr(e: Call, ctx: _FnCtx, expected: _AbiType | None = None) -> tu
             f"  mov rax, qword [rbp-{idx_slot}]",
             "  cmp rax, rbx",
             f"  jae {lbl_none}",
-            "  lea r11, [r11+rax*8+8]",
-        ] + _load_ptr_value("r11", elem_abi)
+        ]
+        if elem_stride in {1, 2, 4, 8}:
+            code += [f"  lea r11, [r11+rax*{elem_stride}+{header_bytes}]"]
+        else:
+            code += [f"  mov rcx, rax", f"  imul rcx, {elem_stride}", f"  lea r11, [r11+rcx+{header_bytes}]"]
+        code += _load_ptr_value("r11", elem_abi)
         # Box Some(value) as heap pointer.
         elem_slot = _alloc_temp_slot(ctx, elem_abi)
         code += _store_from_reg(elem_slot, elem_abi)
-        code += _emit_runtime_alloc(8, ctx)
-        if elem_abi.cls == "int":
-            code += [f"  mov rbx, qword [rbp-{elem_slot}]", "  mov qword [rax], rbx"]
-        else:
-            code += [f"  movsd xmm1, qword [rbp-{elem_slot}]", "  movsd qword [rax], xmm1"]
+        code += _emit_runtime_alloc(max(1, elem_abi.size), ctx, align_bytes=max(1, elem_abi.align))
+        code += _load_to_reg(elem_slot, elem_abi) + _store_ptr_value("rax", elem_abi)
         code += [f"  jmp {lbl_end}", f"{lbl_none}:", "  xor rax, rax", f"{lbl_end}:"]
         out_abi = _AbiType(f"Option<{elem_ty}>", "ptr", "int")
         return _coerce_value(code, out_abi, expected, e) if expected is not None else (code, out_abi)
