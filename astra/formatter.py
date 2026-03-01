@@ -55,6 +55,8 @@ def _fmt_expr(e) -> str:
         return f"{e.op}{_fmt_expr_with_prec(e.expr, _PREC_UNARY)}"
     if isinstance(e, CastExpr):
         return f"{_fmt_expr_with_prec(e.expr, _PREC_CAST)} as {type_text(e.type_name)}"
+    if isinstance(e, TypeAnnotated):
+        return f"{_fmt_expr_with_prec(e.expr, _PREC_CAST)} as {type_text(e.type_name)}"
     if isinstance(e, Binary):
         p = FMT_BIN_PREC[e.op]
         left = _fmt_expr_with_prec(e.left, p, right_child=False)
@@ -71,6 +73,8 @@ def _fmt_expr(e) -> str:
         return f"{obj}.{e.field}"
     if isinstance(e, ArrayLit):
         return f"[{', '.join(_fmt_expr(x) for x in e.elements)}]"
+    if isinstance(e, StructLit):
+        return f"{e.name}({', '.join(_fmt_expr(v) for _, v in e.fields)})"
     if isinstance(e, SizeOfTypeExpr):
         return f"sizeof({type_text(e.type_name)})"
     if isinstance(e, AlignOfTypeExpr):
@@ -111,6 +115,12 @@ def _fmt_stmt(st, ind: int) -> list[str]:
         return [f"{p}drop {_fmt_expr(st.expr)};"]
     if isinstance(st, DeferStmt):
         return [f"{p}defer {_fmt_expr(st.expr)};"]
+    if isinstance(st, UnsafeStmt):
+        out = [f"{p}unsafe {{"]
+        for s in st.body:
+            out.extend(_fmt_stmt(s, ind + 1))
+        out.append(f"{p}}}")
+        return out
     if isinstance(st, ComptimeStmt):
         out = [f"{p}comptime {{"]
         for s in st.body:
@@ -210,8 +220,9 @@ def _fmt_item(item) -> list[str]:
         pub = "pub " if item.pub else ""
         impl_kw = "impl " if item.is_impl else ""
         async_kw = "async " if item.async_fn else ""
+        unsafe_kw = "unsafe " if item.unsafe else ""
         sig = ", ".join(f"{n} {type_text(t)}" for n, t in item.params)
-        out.append(f"{pub}{impl_kw}{async_kw}fn {item.name}({sig}) -> {type_text(item.ret)} {{")
+        out.append(f"{pub}{impl_kw}{async_kw}{unsafe_kw}fn {item.name}({sig}) -> {type_text(item.ret)} {{")
         for st in item.body:
             out.extend(_fmt_stmt(st, 1))
         out.append("}")

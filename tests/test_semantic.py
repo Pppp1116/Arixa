@@ -207,7 +207,7 @@ def test_vec_indexing_returns_element_type():
 def test_vec_builtins_typecheck():
     src = """
 fn main() -> Int {
-  let mut v: Vec<Int> = vec_new();
+  let mut v: Vec<Int> = vec_new() as Vec<Int>;
   drop vec_push(v, 1);
   drop vec_push(v, 2);
   drop vec_set(v, 1, 9);
@@ -226,7 +226,7 @@ def test_vec_from_slice_infers_element_type():
 def test_vec_builtins_reject_element_type_mismatch():
     src = """
 fn main() -> Int {
-  let mut v: Vec<Int> = vec_new();
+  let mut v: Vec<Int> = vec_new() as Vec<Int>;
   drop vec_push(v, "x");
   return 0;
 }
@@ -594,3 +594,68 @@ def test_owned_internal_reassignment_leak_reports_exact_location():
             "SEM /tmp/owned_reassign_leak.astra:3:3: "
             "reassignment would leak owned allocation in p; free or move it first"
         )
+
+
+def test_any_to_concrete_requires_explicit_cast():
+    src = "fn main() -> Int { return join(1); }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "type mismatch for return" in str(e)
+
+
+def test_any_explicit_downcast_is_allowed():
+    src = "fn worker(x Int) -> Int { return x; } fn main() -> Int { let t = spawn(worker, 1); return join(t) as Int; }"
+    analyze(parse(src))
+
+
+def test_calling_unsafe_fn_requires_unsafe_context():
+    src = "unsafe fn danger() -> Int { return 1; } fn main() -> Int { return danger(); }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "requires unsafe context" in str(e)
+
+
+def test_unsafe_block_allows_calling_unsafe_fn():
+    src = "unsafe fn danger() -> Int { return 1; } fn main() -> Int { unsafe { return danger(); } }"
+    analyze(parse(src))
+
+
+def test_unsafe_fn_allows_calling_unsafe_fn():
+    src = "unsafe fn danger() -> Int { return 1; } unsafe fn main() -> Int { return danger(); }"
+    analyze(parse(src))
+
+
+def test_spawn_rejects_non_send_argument_types():
+    src = """
+fn worker(x Any) -> Int { return 0; }
+fn main() -> Int {
+  let x = from_json("1");
+  let t = spawn(worker, x);
+  return join(t) as Int;
+}
+"""
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "spawn arg 1 requires Send" in str(e)
+
+
+def test_spawn_rejects_shared_refs_to_non_sync_types():
+    src = """
+fn worker(v &Vec<Int>) -> Int { return vec_len(*v); }
+fn main() -> Int {
+  let v: Vec<Int> = vec_new() as Vec<Int>;
+  let t = spawn(worker, &v);
+  return join(t) as Int;
+}
+"""
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "spawn arg 1 requires Send" in str(e)

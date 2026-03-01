@@ -25,6 +25,7 @@ from astra.ast import (
     StructDecl,
     TypeAliasDecl,
     Unary,
+    UnsafeStmt,
 )
 from astra.parser import ParseError, parse
 from astra.semantic import SemanticError, analyze
@@ -88,6 +89,25 @@ fn main() -> Int { return 0; }
     assert isinstance(fn, FnDecl)
     assert fn.async_fn
     assert isinstance(fn.body[0].expr, AwaitExpr)
+
+
+def test_parse_unsafe_fn_and_block():
+    src = """
+unsafe fn poke(x Int) -> Int { return x; }
+fn main() -> Int {
+  unsafe {
+    let y = poke(7);
+    return y;
+  }
+}
+"""
+    prog = parse(src)
+    worker = prog.items[0]
+    main = prog.items[1]
+    assert isinstance(worker, FnDecl)
+    assert worker.unsafe
+    assert isinstance(main, FnDecl)
+    assert isinstance(main.body[0], UnsafeStmt)
 
 
 def test_parse_colon_typed_params_and_fields():

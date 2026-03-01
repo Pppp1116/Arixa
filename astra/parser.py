@@ -169,13 +169,10 @@ class Parser:
                 raise ParseError(self.errors[-1])
             return self.parse_extern_fn(is_pub, is_unsafe, doc)
         if self.cur().kind == "fn":
-            if is_unsafe:
-                self._err("unsafe is only valid with extern fn")
-                raise ParseError(self.errors[-1])
             if is_packed:
                 self._err("@packed is only valid on struct declarations")
                 raise ParseError(self.errors[-1])
-            return self.parse_fn(is_pub, is_async, doc, is_impl=is_impl)
+            return self.parse_fn(is_pub, is_async, doc, is_impl=is_impl, is_unsafe=is_unsafe)
         if is_impl:
             self._err("impl must be followed by fn")
             raise ParseError(self.errors[-1])
@@ -255,7 +252,14 @@ class Parser:
             col=tok.col,
         )
 
-    def parse_fn(self, is_pub: bool = False, is_async: bool = False, doc: str = "", is_impl: bool = False) -> FnDecl:
+    def parse_fn(
+        self,
+        is_pub: bool = False,
+        is_async: bool = False,
+        doc: str = "",
+        is_impl: bool = False,
+        is_unsafe: bool = False,
+    ) -> FnDecl:
         fn_tok = self.eat("fn")
         name = self.eat("IDENT").text
         generics = self._parse_generics()
@@ -272,6 +276,7 @@ class Parser:
             is_impl=is_impl,
             pub=is_pub,
             async_fn=is_async,
+            unsafe=is_unsafe,
             doc=doc,
             pos=fn_tok.pos,
             line=fn_tok.line,
@@ -436,6 +441,9 @@ class Parser:
             return self.parse_for(tok)
         if self.opt("match"):
             return self.parse_match(tok)
+        if self.opt("unsafe"):
+            body = self.parse_block()
+            return UnsafeStmt(body, tok.pos, tok.line, tok.col)
 
         lhs = self.parse_expr()
         if self.cur().kind in ASSIGN_OPS:

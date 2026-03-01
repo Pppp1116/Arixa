@@ -2,6 +2,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from astra.ast import Binary, FieldExpr, FnDecl, LetStmt, Literal, Name, Program, ReturnStmt, StructDecl, StructLit, TypeAnnotated
 from astra.asm_assert import assert_valid_llvm_ir
 from astra.build import build
 from astra.codegen import to_python
@@ -11,7 +12,7 @@ from astra.semantic import SemanticError, analyze
 
 
 def test_spawn_builtin_semantic_ok():
-    prog = parse("fn worker(x Int) -> Int { return x; } fn main() -> Int { let t = spawn(worker, 1); return join(t); }")
+    prog = parse("fn worker(x Int) -> Int { return x; } fn main() -> Int { let t = spawn(worker, 1); return join(t) as Int; }")
     analyze(prog)
 
 
@@ -31,6 +32,34 @@ def test_codegen_includes_memory_runtime_helpers():
     py = to_python(parse("fn main() -> Int { return 0; }"))
     assert "def alloc(n):" in py
     assert "def free(ptr):" in py
+
+
+def _manual_struct_literal_program() -> Program:
+    pair = StructDecl(name="Pair", generics=[], fields=[("x", "Int"), ("y", "Int")], methods=[])
+    p_lit = StructLit(name="Pair", fields=[("x", Literal(4)), ("y", Literal(6))])
+    ret = ReturnStmt(Binary("+", FieldExpr(Name("p"), "x"), TypeAnnotated(FieldExpr(Name("p"), "y"), "Int")))
+    main = FnDecl(name="main", generics=[], params=[], ret="Int", body=[LetStmt("p", p_lit), ret])
+    return Program(items=[pair, main])
+
+
+def test_struct_literal_and_type_annotation_semantics_are_supported():
+    prog = _manual_struct_literal_program()
+    analyze(prog)
+
+
+def test_python_codegen_supports_struct_literal_and_type_annotation():
+    prog = _manual_struct_literal_program()
+    py = to_python(prog, freestanding=True)
+    ns = {"__name__": "not_main"}
+    exec(py, ns)
+    assert ns["main"]() == 10
+
+
+def test_llvm_codegen_supports_struct_literal_and_type_annotation():
+    prog = _manual_struct_literal_program()
+    mod = to_llvm_ir(prog)
+    assert_valid_llvm_ir(mod)
+    assert "define i32 @main()" in mod
 
 
 def test_python_codegen_emits_width_aware_bit_intrinsic_calls():
@@ -203,6 +232,37 @@ fn main() -> Int {
     assert "shift_oob" in mod
 
 
+def test_llvm_int_divrem_emit_runtime_guards():
+    src = """
+fn divmod(a: Int, b: Int) -> Int {
+  return (a / b) + (a % b);
+}
+fn main() -> Int { return divmod(11, 3); }
+"""
+    mod = to_llvm_ir(parse(src))
+    assert_valid_llvm_ir(mod)
+    assert "sdiv" in mod
+    assert "srem" in mod
+    assert "divrem_bad" in mod
+    assert "llvm.trap" in mod
+
+
+def test_llvm_float_to_int_casts_use_saturating_intrinsics():
+    src = """
+fn main() -> Int {
+  let x: Float = 1.5;
+  let y: u8 = x as u8;
+  return (x as Int) + (y as Int);
+}
+"""
+    mod = to_llvm_ir(parse(src))
+    assert_valid_llvm_ir(mod)
+    assert "llvm.fptosi.sat.i64.f64" in mod
+    assert "llvm.fptoui.sat.i8.f64" in mod
+    assert "fptosi " not in mod
+    assert "fptoui " not in mod
+
+
 def test_llvm_lowering_covers_extended_runtime_builtins():
     src = """
 fn worker(x: Int) -> Int { return x + 1; }
@@ -279,7 +339,7 @@ def test_llvm_cross_target_emission():
 
 
 def test_join_of_unknown_tid_allowed_semantically():
-    prog = parse("fn main() -> Int { return join(999); }")
+    prog = parse("fn main() -> Int { return join(999) as Int; }")
     analyze(prog)
 
 
@@ -301,10 +361,29 @@ def test_selfhost_source_compiles_to_python(tmp_path: Path):
 
 
 def test_thread_calls_emit_in_python_output():
-    src = "fn worker(x Int) -> Int { return x; } fn main() -> Int { let t = spawn(worker, 3); return join(t); }"
+    src = "fn worker(x Int) -> Int { return x; } fn main() -> Int { let t = spawn(worker, 3); return join(t) as Int; }"
     py = to_python(parse(src))
     assert "spawn(worker, 3)" in py
     assert "join(t)" in py
+
+
+def test_llvm_any_casts_use_runtime_box_unbox_helpers():
+    src = """
+fn main() -> Int {
+  let x: Any = 7;
+  let y: Int = x as Int;
+  let s: Any = "ok";
+  let s2: String = s as String;
+  drop len(s2);
+  drop to_json(s);
+  return y;
+}
+"""
+    mod = to_llvm_ir(parse(src))
+    assert_valid_llvm_ir(mod)
+    assert "astra_any_box_i64" in mod
+    assert "astra_any_to_i64" in mod
+    assert "astra_any_box_str" in mod
 
 
 def test_memory_use_after_free_is_semantic_error():

@@ -204,7 +204,7 @@ def test_full_program_vector_workload(tmp_path: Path):
         "vector_workload",
         """
 fn main() -> Int {
-  let mut v: Vec<Int> = vec_new();
+  let mut v: Vec<Int> = vec_new() as Vec<Int>;
   let mut i = 1;
   while i <= 6 {
     drop vec_push(v, i * i);

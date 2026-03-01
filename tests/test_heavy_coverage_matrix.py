@@ -101,7 +101,7 @@ fn main() -> Int {
         "vec_option_coalesce",
         """
 fn main() -> Int {
-  let mut v: Vec<Int> = vec_new();
+  let mut v: Vec<Int> = vec_new() as Vec<Int>;
   drop vec_push(v, 10);
   drop vec_push(v, 20);
   let a: Option<Int> = vec_get(v, 0);

@@ -44,9 +44,11 @@ from astra.ast import (
     SizeOfTypeExpr,
     SizeOfValueExpr,
     StructDecl,
+    StructLit,
     TypeAliasDecl,
     TypeAnnotated,
     Unary,
+    UnsafeStmt,
     WhileStmt,
 )
 from astra.comptime import run_comptime
@@ -180,7 +182,7 @@ def _resolve_overflow_mode(profile: str, overflow: str, *, check: bool = False) 
 
 
 _STRICT_TOP_LEVEL = {FnDecl, StructDecl, EnumDecl, TypeAliasDecl, ImportDecl, ExternFnDecl}
-_STRICT_STMTS = {LetStmt, AssignStmt, ReturnStmt, ExprStmt, DropStmt, IfStmt, MatchStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, ComptimeStmt, DeferStmt}
+_STRICT_STMTS = {LetStmt, AssignStmt, ReturnStmt, ExprStmt, DropStmt, IfStmt, MatchStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, ComptimeStmt, DeferStmt, UnsafeStmt}
 _STRICT_EXPRS = {
     Literal,
     BoolLit,
@@ -192,6 +194,7 @@ _STRICT_EXPRS = {
     IndexExpr,
     FieldExpr,
     ArrayLit,
+    StructLit,
     AwaitExpr,
     TypeAnnotated,
     CastExpr,
@@ -258,6 +261,10 @@ def _strict_walk_expr(e: object, errs: list[str]) -> None:
     if isinstance(e, ArrayLit):
         for elem in e.elements:
             _strict_walk_expr(elem, errs)
+        return
+    if isinstance(e, StructLit):
+        for _, field_expr in e.fields:
+            _strict_walk_expr(field_expr, errs)
         return
     if isinstance(e, AwaitExpr):
         _strict_walk_expr(e.expr, errs)
@@ -339,6 +346,10 @@ def _strict_walk_stmt(st: object, errs: list[str]) -> None:
         return
     if isinstance(st, DeferStmt):
         _strict_walk_expr(st.expr, errs)
+        return
+    if isinstance(st, UnsafeStmt):
+        for x in st.body:
+            _strict_walk_stmt(x, errs)
         return
 
 

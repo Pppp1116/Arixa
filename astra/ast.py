@@ -32,6 +32,7 @@ class FnDecl:
     is_impl: bool = False
     pub: bool = False
     async_fn: bool = False
+    unsafe: bool = False
     symbol: str = ""
     doc: str = ""
     pos: int = 0
@@ -208,6 +209,14 @@ class ExprStmt:
 @dataclass
 class DropStmt:
     expr: Any
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class UnsafeStmt:
+    body: list[Any]
     pos: int = 0
     line: int = 0
     col: int = 0

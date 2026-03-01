@@ -417,6 +417,8 @@ def _expr(e: Any) -> str:
         return f"await_result({_expr(e.expr)})"
     if isinstance(e, CastExpr):
         return f"__astra_cast({_expr(e.expr)}, {_canonical_type(e.type_name)!r})"
+    if isinstance(e, TypeAnnotated):
+        return f"__astra_cast({_expr(e.expr)}, {_canonical_type(e.type_name)!r})"
     if isinstance(e, Unary):
         if e.op == "!":
             return f"(not {_expr(e.expr)})"
@@ -439,6 +441,25 @@ def _expr(e: Any) -> str:
         return f"({_expr(e.obj)}).{e.field}"
     if isinstance(e, ArrayLit):
         return f"[{', '.join(_expr(x) for x in e.elements)}]"
+    if isinstance(e, StructLit):
+        decl = _PY_STRUCTS.get(e.name)
+        field_map: dict[str, Any] = {}
+        for fname, fexpr in e.fields:
+            if fname in field_map:
+                raise CodegenError(_diag(e, f"duplicate field {fname} in struct literal {e.name}"))
+            field_map[fname] = fexpr
+        if decl is not None:
+            ordered_args: list[str] = []
+            declared = {fname for fname, _ in decl.fields}
+            for fname in field_map:
+                if fname not in declared:
+                    raise CodegenError(_diag(e, f"unknown field {fname} in struct literal {e.name}"))
+            for fname, _ in decl.fields:
+                if fname not in field_map:
+                    raise CodegenError(_diag(e, f"missing field {fname} in struct literal {e.name}"))
+                ordered_args.append(_expr(field_map[fname]))
+            return f"{e.name}({', '.join(ordered_args)})"
+        return f"{e.name}({', '.join(_expr(v) for _, v in e.fields)})"
     raise CodegenError(_diag(e, f"unsupported expression {type(e).__name__}"))
 
 
@@ -466,6 +487,11 @@ def _stmt_py(st: Any, ind: int) -> list[str]:
         return [f"{p}continue"]
     if isinstance(st, DeferStmt):
         return [f"{p}_astra_defer_stack.append(lambda: {_expr(st.expr)})"]
+    if isinstance(st, UnsafeStmt):
+        lines: list[str] = []
+        for s in st.body:
+            lines.extend(_stmt_py(s, ind))
+        return lines
     if isinstance(st, ComptimeStmt):
         return []
     if isinstance(st, ExprStmt):

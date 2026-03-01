@@ -533,6 +533,12 @@ class _Evaluator:
                 if isinstance(sig, _LoopSignal):
                     return sig
             return None
+        if isinstance(st, UnsafeStmt):
+            for s in st.body:
+                sig = self.exec_stmt(s, env, env_types)
+                if isinstance(sig, _LoopSignal):
+                    return sig
+            return None
         raise ComptimeError(_diag(self.filename, getattr(st, "line", 0), getattr(st, "col", 0), f"unsupported statement {type(st).__name__}"))
 
     def call_user_fn(self, fn: FnDecl, args: list[object], arg_types: list[str | None], depth: int):
@@ -705,6 +711,10 @@ def _collect_runtime_name_uses_stmt(stmt: Any, out: set[str]) -> None:
         return
     # Intentionally skip names used only inside comptime blocks; those do not require runtime materialization.
     if isinstance(stmt, ComptimeStmt):
+        return
+    if isinstance(stmt, UnsafeStmt):
+        for s in stmt.body:
+            _collect_runtime_name_uses_stmt(s, out)
         return
 
 

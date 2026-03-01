@@ -65,6 +65,10 @@ Conventions:
 - Right shift semantics are type-directed:
   - signed integers: arithmetic shift
   - unsigned integers: logical shift
+- Integer division/modulo in safe code trap on invalid operations:
+  - divisor is zero
+  - signed overflow case (`MIN / -1`, `MIN % -1`)
+- Float-to-int casts are saturating (`NaN -> 0`, out-of-range clamps to destination bounds).
 - Overflow mode is part of build/check configuration:
   - `check`: default `trap`
   - `build --profile debug`: default effective overflow `trap`
@@ -106,6 +110,9 @@ Conventions:
 - `Option<T>` models absence/presence; `Result<T, E>` models recoverable failures with error information.
 - `Never` is coercible to any type `T` (including `Void`).
 - In type joins, `Never` acts as bottom: `join(Never, T) = T` and `join(Never, Never) = Never`.
+- `Any` is a tagged dynamic value on native/LLVM backends.
+- Implicit conversion is one-way (`T -> Any`); `Any -> T` requires explicit cast (`as T`).
+- Casting between `Any` and reference/function-pointer types requires `unsafe` context.
 - Bare expression statements must have type `Void` or `Never`.
 - `drop expr;` consumes the value and runs its destructor immediately.
 - Use `let _ = expr;` (or `_ = expr;`) to ignore/discard expression results.
@@ -133,10 +140,17 @@ Conventions:
   - Direct indexing of `String`/`str` is rejected (UTF-8 text must be handled through byte/char APIs).
 - Safety guarantees: undefined identifiers rejected; arity/type mismatches rejected in semantic pass.
 
+## Safe/unsafe boundary
+- `unsafe fn` and `unsafe { ... }` mark operations that are outside the safe surface contract.
+- Calling an `unsafe fn` is only legal from unsafe context.
+- Safety violations in checked operations trap at runtime rather than invoking undefined behavior.
+
 ## Concurrency model
 - M:N runtime scheduling model conceptually.
 - `spawn` creates concurrent tasks and returns a task id; `join` waits for completion and yields the task result.
 - Async operations are poll-based and integrate with runtime event loop.
+- `spawn` enforces `Send`-like constraints on argument/return types in safe code.
+- Shared references passed across tasks require `Sync`-like compatibility of their pointee type.
 
 ## Modules and packages
 - File module = one `.astra` file.

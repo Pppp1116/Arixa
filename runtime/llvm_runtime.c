@@ -201,6 +201,264 @@ enum {
   OBJ_KIND_MAP = 2,
 };
 
+typedef enum {
+  ASTRA_ANY_NONE = 0,
+  ASTRA_ANY_INT = 1,
+  ASTRA_ANY_BOOL = 2,
+  ASTRA_ANY_FLOAT = 3,
+  ASTRA_ANY_STR = 4,
+  ASTRA_ANY_PTR = 5,
+  ASTRA_ANY_LIST = 6,
+  ASTRA_ANY_MAP = 7,
+} AstraAnyTag;
+
+typedef struct {
+  uintptr_t handle;
+  AstraAnyTag tag;
+  union {
+    int64_t i64;
+    double f64;
+    uintptr_t ptr;
+    _Bool b;
+  } value;
+} AstraAnyEntry;
+
+static AstraAnyEntry *g_any = NULL;
+static size_t g_any_len = 0;
+static size_t g_any_cap = 0;
+static uintptr_t g_next_any_handle = 0x5000000000000001ULL;
+
+static bool astra_any_reserve(size_t want) {
+  if (g_any_cap >= want) {
+    return true;
+  }
+  size_t next = g_any_cap == 0 ? 16 : g_any_cap * 2;
+  while (next < want) {
+    next *= 2;
+  }
+  AstraAnyEntry *p = (AstraAnyEntry *)realloc(g_any, next * sizeof(AstraAnyEntry));
+  if (p == NULL) {
+    return false;
+  }
+  g_any = p;
+  g_any_cap = next;
+  return true;
+}
+
+static AstraAnyEntry *astra_any_find(uintptr_t handle) {
+  for (size_t i = 0; i < g_any_len; i++) {
+    if (g_any[i].handle == handle) {
+      return &g_any[i];
+    }
+  }
+  return NULL;
+}
+
+static uintptr_t astra_any_alloc(AstraAnyTag tag) {
+  if (!astra_any_reserve(g_any_len + 1)) {
+    return 0;
+  }
+  uintptr_t h = g_next_any_handle;
+  g_next_any_handle += 2;
+  g_any[g_any_len].handle = h;
+  g_any[g_any_len].tag = tag;
+  g_any[g_any_len].value.ptr = 0;
+  g_any_len += 1;
+  return h;
+}
+
+static AstraAnyEntry *astra_any_expect(uintptr_t handle) {
+  AstraAnyEntry *entry = astra_any_find(handle);
+  if (entry == NULL) {
+    astra_trap();
+  }
+  return entry;
+}
+
+static int64_t astra_sat_f64_to_i64(double v) {
+  if (isnan(v)) {
+    return 0;
+  }
+  if (isinf(v)) {
+    return v > 0.0 ? INT64_MAX : INT64_MIN;
+  }
+  if (v >= (double)INT64_MAX) {
+    return INT64_MAX;
+  }
+  if (v <= (double)INT64_MIN) {
+    return INT64_MIN;
+  }
+  return (int64_t)trunc(v);
+}
+
+uintptr_t astra_any_box_i64(int64_t value) {
+  uintptr_t h = astra_any_alloc(ASTRA_ANY_INT);
+  if (h == 0) {
+    return 0;
+  }
+  AstraAnyEntry *entry = astra_any_expect(h);
+  entry->value.i64 = value;
+  return h;
+}
+
+uintptr_t astra_any_box_bool(_Bool value) {
+  uintptr_t h = astra_any_alloc(ASTRA_ANY_BOOL);
+  if (h == 0) {
+    return 0;
+  }
+  AstraAnyEntry *entry = astra_any_expect(h);
+  entry->value.b = value ? 1 : 0;
+  return h;
+}
+
+uintptr_t astra_any_box_f64(double value) {
+  uintptr_t h = astra_any_alloc(ASTRA_ANY_FLOAT);
+  if (h == 0) {
+    return 0;
+  }
+  AstraAnyEntry *entry = astra_any_expect(h);
+  entry->value.f64 = value;
+  return h;
+}
+
+uintptr_t astra_any_box_str(uintptr_t value) {
+  uintptr_t h = astra_any_alloc(ASTRA_ANY_STR);
+  if (h == 0) {
+    return 0;
+  }
+  AstraAnyEntry *entry = astra_any_expect(h);
+  entry->value.ptr = value;
+  return h;
+}
+
+uintptr_t astra_any_box_ptr(uintptr_t value) {
+  uintptr_t h = astra_any_alloc(ASTRA_ANY_PTR);
+  if (h == 0) {
+    return 0;
+  }
+  AstraAnyEntry *entry = astra_any_expect(h);
+  entry->value.ptr = value;
+  return h;
+}
+
+static uintptr_t astra_any_box_obj(AstraAnyTag tag, uintptr_t handle) {
+  uintptr_t h = astra_any_alloc(tag);
+  if (h == 0) {
+    return 0;
+  }
+  AstraAnyEntry *entry = astra_any_expect(h);
+  entry->value.ptr = handle;
+  return h;
+}
+
+int64_t astra_any_to_i64(uintptr_t value) {
+  AstraAnyEntry *entry = astra_any_expect(value);
+  if (entry->tag == ASTRA_ANY_INT) {
+    return entry->value.i64;
+  }
+  if (entry->tag == ASTRA_ANY_BOOL) {
+    return entry->value.b ? 1 : 0;
+  }
+  if (entry->tag == ASTRA_ANY_FLOAT) {
+    return astra_sat_f64_to_i64(entry->value.f64);
+  }
+  astra_trap();
+  return 0;
+}
+
+_Bool astra_any_to_bool(uintptr_t value) {
+  AstraAnyEntry *entry = astra_any_expect(value);
+  if (entry->tag == ASTRA_ANY_BOOL) {
+    return entry->value.b ? 1 : 0;
+  }
+  if (entry->tag == ASTRA_ANY_INT) {
+    return entry->value.i64 != 0;
+  }
+  if (entry->tag == ASTRA_ANY_FLOAT) {
+    return !isnan(entry->value.f64) && entry->value.f64 != 0.0;
+  }
+  astra_trap();
+  return 0;
+}
+
+double astra_any_to_f64(uintptr_t value) {
+  AstraAnyEntry *entry = astra_any_expect(value);
+  if (entry->tag == ASTRA_ANY_FLOAT) {
+    return entry->value.f64;
+  }
+  if (entry->tag == ASTRA_ANY_INT) {
+    return (double)entry->value.i64;
+  }
+  if (entry->tag == ASTRA_ANY_BOOL) {
+    return entry->value.b ? 1.0 : 0.0;
+  }
+  astra_trap();
+  return 0.0;
+}
+
+uintptr_t astra_any_to_str(uintptr_t value) {
+  AstraAnyEntry *entry = astra_any_expect(value);
+  if (entry->tag == ASTRA_ANY_STR) {
+    return entry->value.ptr;
+  }
+  astra_trap();
+  return 0;
+}
+
+uintptr_t astra_any_to_ptr(uintptr_t value) {
+  AstraAnyEntry *entry = astra_any_expect(value);
+  if (entry->tag == ASTRA_ANY_PTR || entry->tag == ASTRA_ANY_LIST || entry->tag == ASTRA_ANY_MAP) {
+    return entry->value.ptr;
+  }
+  astra_trap();
+  return 0;
+}
+
+static _Bool astra_any_equal(uintptr_t a, uintptr_t b) {
+  if (a == b) {
+    return 1;
+  }
+  AstraAnyEntry *ea = astra_any_find(a);
+  AstraAnyEntry *eb = astra_any_find(b);
+  if (ea == NULL || eb == NULL) {
+    return 0;
+  }
+  if (ea->tag != eb->tag) {
+    bool a_num = ea->tag == ASTRA_ANY_INT || ea->tag == ASTRA_ANY_BOOL || ea->tag == ASTRA_ANY_FLOAT;
+    bool b_num = eb->tag == ASTRA_ANY_INT || eb->tag == ASTRA_ANY_BOOL || eb->tag == ASTRA_ANY_FLOAT;
+    if (a_num && b_num) {
+      return astra_any_to_f64(a) == astra_any_to_f64(b);
+    }
+    return 0;
+  }
+  switch (ea->tag) {
+  case ASTRA_ANY_INT:
+    return ea->value.i64 == eb->value.i64;
+  case ASTRA_ANY_BOOL:
+    return ea->value.b == eb->value.b;
+  case ASTRA_ANY_FLOAT:
+    if (isnan(ea->value.f64) && isnan(eb->value.f64)) {
+      return 1;
+    }
+    return ea->value.f64 == eb->value.f64;
+  case ASTRA_ANY_STR: {
+    const char *sa = (const char *)ea->value.ptr;
+    const char *sb = (const char *)eb->value.ptr;
+    if (sa == NULL || sb == NULL) {
+      return sa == sb;
+    }
+    return strcmp(sa, sb) == 0;
+  }
+  case ASTRA_ANY_PTR:
+  case ASTRA_ANY_LIST:
+  case ASTRA_ANY_MAP:
+    return ea->value.ptr == eb->value.ptr;
+  case ASTRA_ANY_NONE:
+  default:
+    return 0;
+  }
+}
+
 static bool astra_obj_reserve(size_t want) {
   if (g_objs_cap >= want) {
     return true;
@@ -279,60 +537,72 @@ static bool astra_map_reserve(AstraMap *m, size_t want) {
   return true;
 }
 
+static AstraList *astra_expect_list(uintptr_t list_any) {
+  AstraAnyEntry *any = astra_any_expect(list_any);
+  if (any->tag != ASTRA_ANY_LIST) {
+    astra_trap();
+  }
+  ObjEntry *e = astra_obj_find(any->value.ptr);
+  if (e == NULL || e->kind != OBJ_KIND_LIST) {
+    astra_trap();
+  }
+  return (AstraList *)e->ptr;
+}
+
+static AstraMap *astra_expect_map(uintptr_t map_any) {
+  AstraAnyEntry *any = astra_any_expect(map_any);
+  if (any->tag != ASTRA_ANY_MAP) {
+    astra_trap();
+  }
+  ObjEntry *e = astra_obj_find(any->value.ptr);
+  if (e == NULL || e->kind != OBJ_KIND_MAP) {
+    astra_trap();
+  }
+  return (AstraMap *)e->ptr;
+}
+
 uintptr_t astra_list_new(void) {
   AstraList *xs = (AstraList *)calloc(1, sizeof(AstraList));
   if (xs == NULL) {
     return 0;
   }
-  return astra_obj_add(OBJ_KIND_LIST, xs);
+  uintptr_t obj_h = astra_obj_add(OBJ_KIND_LIST, xs);
+  if (obj_h == 0) {
+    return 0;
+  }
+  return astra_any_box_obj(ASTRA_ANY_LIST, obj_h);
 }
 
 uintptr_t astra_list_push(uintptr_t list_h, uintptr_t value) {
-  ObjEntry *e = astra_obj_find(list_h);
-  if (e == NULL || e->kind != OBJ_KIND_LIST) {
-    return -1;
-  }
-  AstraList *xs = (AstraList *)e->ptr;
+  AstraList *xs = astra_expect_list(list_h);
   if (!astra_list_reserve(xs, xs->len + 1)) {
-    return -1;
+    return (uintptr_t)-1;
   }
   xs->items[xs->len++] = value;
   return 0;
 }
 
 uintptr_t astra_list_get(uintptr_t list_h, uintptr_t index) {
-  ObjEntry *e = astra_obj_find(list_h);
-  if (e == NULL || e->kind != OBJ_KIND_LIST) {
-    return 0;
-  }
-  AstraList *xs = (AstraList *)e->ptr;
+  AstraList *xs = astra_expect_list(list_h);
   size_t i = (size_t)index;
   if (i >= xs->len) {
-    return 0;
+    return astra_any_box_i64(0);
   }
   return xs->items[i];
 }
 
 uintptr_t astra_list_set(uintptr_t list_h, uintptr_t index, uintptr_t value) {
-  ObjEntry *e = astra_obj_find(list_h);
-  if (e == NULL || e->kind != OBJ_KIND_LIST) {
-    return -1;
-  }
-  AstraList *xs = (AstraList *)e->ptr;
+  AstraList *xs = astra_expect_list(list_h);
   size_t i = (size_t)index;
   if (i >= xs->len) {
-    return -1;
+    return (uintptr_t)-1;
   }
   xs->items[i] = value;
   return 0;
 }
 
 uintptr_t astra_list_len(uintptr_t list_h) {
-  ObjEntry *e = astra_obj_find(list_h);
-  if (e == NULL || e->kind != OBJ_KIND_LIST) {
-    return 0;
-  }
-  AstraList *xs = (AstraList *)e->ptr;
+  AstraList *xs = astra_expect_list(list_h);
   return (uintptr_t)xs->len;
 }
 
@@ -341,17 +611,17 @@ uintptr_t astra_map_new(void) {
   if (m == NULL) {
     return 0;
   }
-  return astra_obj_add(OBJ_KIND_MAP, m);
+  uintptr_t obj_h = astra_obj_add(OBJ_KIND_MAP, m);
+  if (obj_h == 0) {
+    return 0;
+  }
+  return astra_any_box_obj(ASTRA_ANY_MAP, obj_h);
 }
 
 _Bool astra_map_has(uintptr_t map_h, uintptr_t key) {
-  ObjEntry *e = astra_obj_find(map_h);
-  if (e == NULL || e->kind != OBJ_KIND_MAP) {
-    return 0;
-  }
-  AstraMap *m = (AstraMap *)e->ptr;
+  AstraMap *m = astra_expect_map(map_h);
   for (size_t i = 0; i < m->len; i++) {
-    if (m->keys[i] == key) {
+    if (astra_any_equal(m->keys[i], key)) {
       return 1;
     }
   }
@@ -359,33 +629,25 @@ _Bool astra_map_has(uintptr_t map_h, uintptr_t key) {
 }
 
 uintptr_t astra_map_get(uintptr_t map_h, uintptr_t key) {
-  ObjEntry *e = astra_obj_find(map_h);
-  if (e == NULL || e->kind != OBJ_KIND_MAP) {
-    return 0;
-  }
-  AstraMap *m = (AstraMap *)e->ptr;
+  AstraMap *m = astra_expect_map(map_h);
   for (size_t i = 0; i < m->len; i++) {
-    if (m->keys[i] == key) {
+    if (astra_any_equal(m->keys[i], key)) {
       return m->vals[i];
     }
   }
-  return 0;
+  return astra_any_box_i64(0);
 }
 
 uintptr_t astra_map_set(uintptr_t map_h, uintptr_t key, uintptr_t value) {
-  ObjEntry *e = astra_obj_find(map_h);
-  if (e == NULL || e->kind != OBJ_KIND_MAP) {
-    return -1;
-  }
-  AstraMap *m = (AstraMap *)e->ptr;
+  AstraMap *m = astra_expect_map(map_h);
   for (size_t i = 0; i < m->len; i++) {
-    if (m->keys[i] == key) {
+    if (astra_any_equal(m->keys[i], key)) {
       m->vals[i] = value;
       return 0;
     }
   }
   if (!astra_map_reserve(m, m->len + 1)) {
-    return -1;
+    return (uintptr_t)-1;
   }
   m->keys[m->len] = key;
   m->vals[m->len] = value;
@@ -394,15 +656,21 @@ uintptr_t astra_map_set(uintptr_t map_h, uintptr_t key, uintptr_t value) {
 }
 
 uintptr_t astra_len_any(uintptr_t v) {
-  ObjEntry *e = astra_obj_find(v);
-  if (e == NULL) {
+  AstraAnyEntry *entry = astra_any_find(v);
+  if (entry == NULL) {
     return 0;
   }
-  if (e->kind == OBJ_KIND_LIST) {
-    return (uintptr_t)((AstraList *)e->ptr)->len;
+  if (entry->tag == ASTRA_ANY_LIST) {
+    AstraList *xs = astra_expect_list(v);
+    return (uintptr_t)xs->len;
   }
-  if (e->kind == OBJ_KIND_MAP) {
-    return (uintptr_t)((AstraMap *)e->ptr)->len;
+  if (entry->tag == ASTRA_ANY_MAP) {
+    AstraMap *m = astra_expect_map(v);
+    return (uintptr_t)m->len;
+  }
+  if (entry->tag == ASTRA_ANY_STR) {
+    const char *s = (const char *)entry->value.ptr;
+    return s == NULL ? 0 : (uintptr_t)strlen(s);
   }
   return 0;
 }
@@ -542,7 +810,7 @@ uintptr_t astra_args(void) {
   astra_load_cli_args();
   uintptr_t h = astra_list_new();
   for (size_t i = 0; i < g_cli_argc; i++) {
-    astra_list_push(h, (uintptr_t)g_cli_argv[i]);
+    astra_list_push(h, astra_any_box_str((uintptr_t)g_cli_argv[i]));
   }
   return h;
 }
@@ -600,7 +868,7 @@ uintptr_t astra_spawn_store(uintptr_t value) {
 uintptr_t astra_join(uintptr_t tid) {
   size_t idx = (size_t)tid;
   if (idx >= g_spawn_cap || !g_spawn[idx].used) {
-    return 0;
+    return astra_any_box_i64(0);
   }
   return g_spawn[idx].value;
 }
@@ -671,23 +939,76 @@ static char *astra_hex64x4(uint64_t a, uint64_t b, uint64_t c, uint64_t d) {
 }
 
 uintptr_t astra_to_json(uintptr_t v) {
+  AstraAnyEntry *entry = astra_any_find(v);
+  if (entry == NULL) {
+    return (uintptr_t)astra_strdup_s("null");
+  }
   char buf[64];
-  (void)snprintf(buf, sizeof(buf), "%lld", (long long)(int64_t)v);
-  return (uintptr_t)astra_strdup_s(buf);
+  if (entry->tag == ASTRA_ANY_INT) {
+    (void)snprintf(buf, sizeof(buf), "%lld", (long long)entry->value.i64);
+    return (uintptr_t)astra_strdup_s(buf);
+  }
+  if (entry->tag == ASTRA_ANY_BOOL) {
+    return (uintptr_t)astra_strdup_s(entry->value.b ? "true" : "false");
+  }
+  if (entry->tag == ASTRA_ANY_FLOAT) {
+    (void)snprintf(buf, sizeof(buf), "%.17g", entry->value.f64);
+    return (uintptr_t)astra_strdup_s(buf);
+  }
+  if (entry->tag == ASTRA_ANY_STR) {
+    const char *s = (const char *)entry->value.ptr;
+    return (uintptr_t)astra_strdup_s(s == NULL ? "" : s);
+  }
+  if (entry->tag == ASTRA_ANY_LIST || entry->tag == ASTRA_ANY_MAP || entry->tag == ASTRA_ANY_PTR) {
+    (void)snprintf(buf, sizeof(buf), "%llu", (unsigned long long)entry->value.ptr);
+    return (uintptr_t)astra_strdup_s(buf);
+  }
+  return (uintptr_t)astra_strdup_s("null");
 }
 
 uintptr_t astra_from_json(uintptr_t s_ptr) {
   const char *s = (const char *)s_ptr;
   if (s == NULL) {
-    return 0;
+    return astra_any_box_i64(0);
+  }
+  while (*s == ' ' || *s == '\n' || *s == '\r' || *s == '\t') {
+    s++;
+  }
+  if (strcmp(s, "true") == 0) {
+    return astra_any_box_bool(1);
+  }
+  if (strcmp(s, "false") == 0) {
+    return astra_any_box_bool(0);
+  }
+  size_t n = strlen(s);
+  if (n >= 2 && s[0] == '"' && s[n - 1] == '"') {
+    char *out = (char *)astra_heap_alloc(n - 1);
+    if (out == NULL) {
+      return astra_any_box_str((uintptr_t)astra_strdup_s(""));
+    }
+    memcpy(out, s + 1, n - 2);
+    out[n - 2] = '\0';
+    return astra_any_box_str((uintptr_t)out);
   }
   char *end = NULL;
   errno = 0;
   long long v = strtoll(s, &end, 10);
-  if (errno != 0 || end == s) {
-    return 0;
+  while (end != NULL && (*end == ' ' || *end == '\n' || *end == '\r' || *end == '\t')) {
+    end++;
   }
-  return (uintptr_t)(int64_t)v;
+  if (errno == 0 && end != NULL && end != s && *end == '\0') {
+    return astra_any_box_i64((int64_t)v);
+  }
+  end = NULL;
+  errno = 0;
+  double f = strtod(s, &end);
+  while (end != NULL && (*end == ' ' || *end == '\n' || *end == '\r' || *end == '\t')) {
+    end++;
+  }
+  if (errno == 0 && end != NULL && end != s && *end == '\0') {
+    return astra_any_box_f64(f);
+  }
+  return astra_any_box_i64(0);
 }
 
 uintptr_t astra_sha256(uintptr_t s_ptr) {
@@ -791,6 +1112,9 @@ i128 astra_i128_div_wrap(i128 a, i128 b) {
   if (b == 0) {
     astra_trap();
   }
+  if (a == astra_i128_min() && b == -1) {
+    astra_trap();
+  }
   return a / b;
 }
 
@@ -820,6 +1144,9 @@ u128 astra_u128_div_trap(u128 a, u128 b) {
 
 i128 astra_i128_mod_wrap(i128 a, i128 b) {
   if (b == 0) {
+    astra_trap();
+  }
+  if (a == astra_i128_min() && b == -1) {
     astra_trap();
   }
   return a % b;

@@ -160,6 +160,11 @@ def _optimize_stmt(st: Any, env: dict[str, Any], mutable_names: set[str]) -> tup
         body_out, _ = _optimize_stmts(st.body, dict(env), mutable_names)
         st.body = body_out
         return st, env, False
+    if isinstance(st, UnsafeStmt):
+        body_out, _ = _optimize_stmts(st.body, dict(env), mutable_names)
+        st.body = body_out
+        env.clear()
+        return st, env, _stmts_terminate(st.body)
     if isinstance(st, (BreakStmt, ContinueStmt)):
         return st, env, True
     if isinstance(st, DeferStmt):
@@ -181,7 +186,10 @@ def _merge_env(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
 def _stmts_terminate(stmts: list[Any]) -> bool:
     if not stmts:
         return False
-    return isinstance(stmts[-1], (ReturnStmt, BreakStmt, ContinueStmt))
+    tail = stmts[-1]
+    if isinstance(tail, UnsafeStmt):
+        return _stmts_terminate(tail.body)
+    return isinstance(tail, (ReturnStmt, BreakStmt, ContinueStmt))
 
 
 def _fold_target_expr(target: Any, env: dict[str, Any], mutable_names: set[str]) -> Any:
@@ -389,7 +397,7 @@ def _may_trap_expr(expr: Any) -> bool:
             rval = _literal_value(expr.right)
             if rval is _NO_LITERAL:
                 return True
-            return rval == 0
+            return rval == 0 or rval == -1
         return False
     if isinstance(expr, ArrayLit):
         return any(_may_trap_expr(e) for e in expr.elements)
@@ -479,6 +487,8 @@ def _collect_mutable_names(stmts: list[Any]) -> set[str]:
                 for _, body in st.arms:
                     walk(body)
             elif isinstance(st, ComptimeStmt):
+                walk(st.body)
+            elif isinstance(st, UnsafeStmt):
                 walk(st.body)
 
     walk(stmts)
@@ -669,6 +679,10 @@ def _cse_stmt(st: Any, avail: dict[Any, tuple[str, set[str]]]) -> tuple[Any | No
     if isinstance(st, ComptimeStmt):
         st.body, _ = _cse_stmts(st.body, {})
         return st, avail, False
+
+    if isinstance(st, UnsafeStmt):
+        st.body, _ = _cse_stmts(st.body, {})
+        return st, {}, _stmts_terminate(st.body)
 
     if isinstance(st, (BreakStmt, ContinueStmt)):
         return st, avail, True
@@ -918,6 +932,12 @@ def _dse_stmts(stmts: list[Any], live_out: set[str]) -> tuple[list[Any], set[str
             out_rev.append(st)
             live |= body_live
             continue
+        if isinstance(st, UnsafeStmt):
+            body_out, body_live = _dse_stmts(st.body, set(live))
+            st.body = body_out
+            out_rev.append(st)
+            live |= body_live
+            continue
         if isinstance(st, DeferStmt):
             out_rev.append(st)
             live |= _used_names_expr(st.expr)
@@ -1005,6 +1025,8 @@ def _names_assigned_stmts(stmts: list[Any]) -> set[str]:
                 for _, body in st.arms:
                     walk(body)
             elif isinstance(st, ComptimeStmt):
+                walk(st.body)
+            elif isinstance(st, UnsafeStmt):
                 walk(st.body)
 
     walk(stmts)

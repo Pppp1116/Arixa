@@ -45,6 +45,17 @@
 - borrow lifetimes are elided/inferred; returning a reference must tie to an input reference
 - default ownership transfer is move; scalar numerics/`Bool`/shared refs are copy-by-default
 - explicit cast syntax is supported: `expr as Type`
+- `Any` is a tagged dynamic value on LLVM/native:
+  - implicit upcast (`T -> Any`) is allowed
+  - downcast (`Any -> T`) requires explicit cast
+- casts between `Any` and reference/function-pointer types require unsafe context
+- unsafe surface:
+  - `unsafe fn` declarations
+  - `unsafe { ... }` blocks
+  - calling `unsafe fn` outside unsafe context is a semantic error
+- `spawn` safety checks:
+  - arguments must satisfy Send-like checks
+  - shared references captured by `spawn` require Sync-like pointee types
 - integer type syntax supports `iN`/`uN` where `N` is `1..128` (for example `u4`, `i127`)
 - integer literals support suffix typing like `15u4` and `3i7`
 - signed `i1` is rejected with a diagnostic hint (`did you mean u1?`)
@@ -82,6 +93,7 @@
   - modulo: `astra_i128_mod_{wrap|trap}`, `astra_u128_mod_{wrap|trap}`
   - args use split-eightbyte by-value halves: `a.low,a.high,b.low,b.high` in integer argument registers
   - division/modulo by zero always traps
+  - signed division/modulo overflow (`MIN / -1`, `MIN % -1`) always traps
 - Structured `defer` lowering supports full expressions (LIFO at function exit), including loop-hit counting.
 - Async/await declarations lower on x86 as direct native control flow.
 - Non-scalar values lower as opaque pointer-sized ABI handles in native mode.

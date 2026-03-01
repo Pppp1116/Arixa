@@ -242,7 +242,7 @@ def test_build_freestanding_supports_vec_builtins_without_runtime_symbols(tmp_pa
     src.write_text(
         """
 fn _start() -> Int {
-  let mut v: Vec<Int> = vec_new();
+  let mut v: Vec<Int> = vec_new() as Vec<Int>;
   drop vec_push(v, 40);
   drop vec_push(v, 2);
   let got: Option<Int> = vec_get(v, 1);

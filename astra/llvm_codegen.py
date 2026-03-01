@@ -305,7 +305,7 @@ def _packed_load_bits(ctx: _ModuleCtx, state: _FnState, base_ptr: ir.Value, sinf
     base_i8 = b.bitcast(base_ptr, i8.as_pointer())
     acc = ir.Constant(int_ty, 0)
     for i in range(nbytes):
-        p = b.gep(base_i8, [ir.Constant(i64, byte_off + i)], inbounds=True)
+        p = b.gep(base_i8, [ir.Constant(i64, byte_off + i)])
         by = b.load(p)
         ext = b.zext(by, int_ty)
         if i:
@@ -335,7 +335,7 @@ def _packed_store_bits(
 
     old = ir.Constant(int_ty, 0)
     for i in range(nbytes):
-        p = b.gep(base_i8, [ir.Constant(i64, byte_off + i)], inbounds=True)
+        p = b.gep(base_i8, [ir.Constant(i64, byte_off + i)])
         by = b.load(p)
         ext = b.zext(by, int_ty)
         if i:
@@ -363,7 +363,7 @@ def _packed_store_bits(
     for i in range(nbytes):
         part = b.lshr(merged, ir.Constant(int_ty, i * 8))
         out_b = b.trunc(part, i8)
-        p = b.gep(base_i8, [ir.Constant(i64, byte_off + i)], inbounds=True)
+        p = b.gep(base_i8, [ir.Constant(i64, byte_off + i)])
         b.store(out_b, p)
 
 
@@ -439,6 +439,87 @@ def _coerce_value(ctx: _ModuleCtx, state: _FnState, v: ir.Value, from_ty: str, t
     if from_c == to_c:
         return v
     b = state.builder
+    i64 = ir.IntType(64)
+
+    if from_c == "Any":
+        any_v = v
+        if not (isinstance(any_v.type, ir.IntType) and any_v.type.width == 64):
+            any_v = b.bitcast(any_v, i64)
+        if to_c == "Bool":
+            fn = _declare_runtime(ctx, "astra_any_to_bool")
+            return b.call(fn, [any_v])
+        if to_c in {"String", "str"}:
+            fn = _declare_runtime(ctx, "astra_any_to_str")
+            out = b.call(fn, [any_v])
+            lt = _llvm_type(ctx, to_c)
+            if isinstance(lt, ir.PointerType) and lt != out.type:
+                return b.bitcast(out, lt)
+            return out
+        if _is_float_type(to_c):
+            fn = _declare_runtime(ctx, "astra_any_to_f64")
+            out = b.call(fn, [any_v])
+            lt = _llvm_type(ctx, to_c)
+            if isinstance(lt, ir.FloatType):
+                return b.fptrunc(out, lt)
+            return out
+        lt = _llvm_type(ctx, to_c)
+        if isinstance(lt, ir.IntType):
+            fn = _declare_runtime(ctx, "astra_any_to_i64")
+            raw = b.call(fn, [any_v])
+            if lt.width < 64:
+                return b.trunc(raw, lt)
+            if lt.width > 64:
+                if _is_signed_int(to_c):
+                    return b.sext(raw, lt)
+                return b.zext(raw, lt)
+            return raw
+        if isinstance(lt, ir.PointerType):
+            fn = _declare_runtime(ctx, "astra_any_to_ptr")
+            raw = b.call(fn, [any_v])
+            return b.inttoptr(raw, lt)
+        raise CodegenError(_diag(node, f"cannot coerce Any to {to_c} in LLVM backend"))
+
+    if to_c == "Any":
+        lf = _llvm_type(ctx, from_c)
+        if from_c == "Bool":
+            in_v = v
+            if not (isinstance(in_v.type, ir.IntType) and in_v.type.width == 1):
+                in_v = b.trunc(in_v, ir.IntType(1))
+            fn = _declare_runtime(ctx, "astra_any_box_bool")
+            return b.call(fn, [in_v])
+        if from_c in {"String", "str"}:
+            in_v = v
+            if not isinstance(in_v.type, ir.PointerType):
+                raise CodegenError(_diag(node, f"cannot box non-pointer string value {from_c}"))
+            if in_v.type != ir.IntType(8).as_pointer():
+                in_v = b.bitcast(in_v, ir.IntType(8).as_pointer())
+            fn = _declare_runtime(ctx, "astra_any_box_str")
+            return b.call(fn, [in_v])
+        if _is_float_type(from_c):
+            in_v = v
+            if isinstance(in_v.type, ir.FloatType):
+                in_v = b.fpext(in_v, ir.DoubleType())
+            elif not isinstance(in_v.type, ir.DoubleType):
+                raise CodegenError(_diag(node, f"cannot box non-float value {from_c}"))
+            fn = _declare_runtime(ctx, "astra_any_box_f64")
+            return b.call(fn, [in_v])
+        if isinstance(lf, ir.IntType):
+            in_v = v
+            if lf.width < 64:
+                if _is_signed_int(from_c):
+                    in_v = b.sext(in_v, i64)
+                else:
+                    in_v = b.zext(in_v, i64)
+            elif lf.width > 64:
+                in_v = b.trunc(in_v, i64)
+            fn = _declare_runtime(ctx, "astra_any_box_i64")
+            return b.call(fn, [in_v])
+        if isinstance(lf, ir.PointerType):
+            raw = b.ptrtoint(v, i64)
+            fn = _declare_runtime(ctx, "astra_any_box_ptr")
+            return b.call(fn, [raw])
+        raise CodegenError(_diag(node, f"cannot box {from_c} into Any in LLVM backend"))
+
     lf = _llvm_type(ctx, from_c)
     lt = _llvm_type(ctx, to_c)
     if lf == lt:
@@ -456,9 +537,8 @@ def _coerce_value(ctx: _ModuleCtx, state: _FnState, v: ir.Value, from_ty: str, t
             return b.sitofp(v, lt)
         return b.uitofp(v, lt)
     if isinstance(lf, (ir.FloatType, ir.DoubleType)) and isinstance(lt, ir.IntType):
-        if _is_signed_int(to_c):
-            return b.fptosi(v, lt)
-        return b.fptoui(v, lt)
+        sat = _declare_fptoi_sat_intrinsic(ctx, bits=lt.width, signed=_is_signed_int(to_c), from_ty=lf)
+        return b.call(sat, [v])
     if isinstance(lf, ir.FloatType) and isinstance(lt, ir.DoubleType):
         return b.fpext(v, lt)
     if isinstance(lf, ir.DoubleType) and isinstance(lt, ir.FloatType):
@@ -492,6 +572,8 @@ def _expr_type(state: _FnState, e: Any) -> str:
         if e.value in state.var_types:
             return state.var_types[e.value]
     if isinstance(e, CastExpr):
+        return _canonical_type(e.type_name)
+    if isinstance(e, TypeAnnotated):
         return _canonical_type(e.type_name)
     if isinstance(e, Unary):
         if e.op in {"&", "&mut"}:
@@ -535,6 +617,8 @@ def _expr_type(state: _FnState, e: Any) -> str:
         elif base.startswith("&"):
             base = base[1:]
         return base
+    if isinstance(e, StructLit):
+        return _canonical_type(e.name)
     if isinstance(e, AwaitExpr):
         return _expr_type(state, e.expr)
     return "Int"
@@ -568,6 +652,26 @@ def _declare_runtime(ctx: _ModuleCtx, name: str) -> ir.Function:
         fnty = ir.FunctionType(ir.VoidType(), [i64])
     elif name == "astra_print_str":
         fnty = ir.FunctionType(ir.VoidType(), [i8p, i64])
+    elif name == "astra_any_box_i64":
+        fnty = ir.FunctionType(i64, [i64])
+    elif name == "astra_any_box_bool":
+        fnty = ir.FunctionType(i64, [i1])
+    elif name == "astra_any_box_f64":
+        fnty = ir.FunctionType(i64, [ir.DoubleType()])
+    elif name == "astra_any_box_str":
+        fnty = ir.FunctionType(i64, [i8p])
+    elif name == "astra_any_box_ptr":
+        fnty = ir.FunctionType(i64, [i64])
+    elif name == "astra_any_to_i64":
+        fnty = ir.FunctionType(i64, [i64])
+    elif name == "astra_any_to_bool":
+        fnty = ir.FunctionType(i1, [i64])
+    elif name == "astra_any_to_f64":
+        fnty = ir.FunctionType(ir.DoubleType(), [i64])
+    elif name == "astra_any_to_str":
+        fnty = ir.FunctionType(i8p, [i64])
+    elif name == "astra_any_to_ptr":
+        fnty = ir.FunctionType(i64, [i64])
     elif name == "astra_len_any":
         fnty = ir.FunctionType(i64, [i64])
     elif name == "astra_len_str":
@@ -668,6 +772,24 @@ def _declare_intrinsic(ctx: _ModuleCtx, base: str, bits: int) -> ir.Function:
     return fn
 
 
+def _declare_fptoi_sat_intrinsic(ctx: _ModuleCtx, bits: int, signed: bool, from_ty: ir.Type) -> ir.Function:
+    if isinstance(from_ty, ir.FloatType):
+        src = "f32"
+    elif isinstance(from_ty, ir.DoubleType):
+        src = "f64"
+    else:
+        raise CodegenError(f"internal: unsupported float source type for saturating cast: {from_ty}")
+    op = "fptosi" if signed else "fptoui"
+    name = f"llvm.{op}.sat.i{bits}.{src}"
+    fn = ctx.fn_map.get(name)
+    if isinstance(fn, ir.Function):
+        return fn
+    fnty = ir.FunctionType(ir.IntType(bits), [from_ty])
+    fn = ir.Function(ctx.module, fnty, name=name)
+    ctx.fn_map[name] = fn
+    return fn
+
+
 def _declare_trap(ctx: _ModuleCtx) -> ir.Function:
     name = "llvm.trap"
     fn = ctx.fn_map.get(name)
@@ -744,7 +866,7 @@ def _alloc_bytes(ctx: _ModuleCtx, state: _FnState, size_i64: ir.Value, align_i64
 
     b.position_at_end(ok_block)
     b.store(new_off, off)
-    ptr = b.gep(heap, [zero, aligned_off], inbounds=True)
+    ptr = b.gep(heap, [zero, aligned_off])
     if ptr.type != i8p:
         ptr = b.bitcast(ptr, i8p)
     return ptr
@@ -779,8 +901,8 @@ def _sequence_parts(ctx: _ModuleCtx, state: _FnState, obj_expr: Any, overflow_mo
         handle = state.builder.load(handle)
     handle_i8 = _as_i8_ptr(state, handle, node)
     hdr_ptr = state.builder.bitcast(handle_i8, ctx.slice_header_ty.as_pointer())
-    len_ptr = state.builder.gep(hdr_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)], inbounds=True)
-    data_ptr = state.builder.gep(hdr_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)], inbounds=True)
+    len_ptr = state.builder.gep(hdr_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+    data_ptr = state.builder.gep(hdr_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
     ln = state.builder.load(len_ptr)
     data = state.builder.load(data_ptr)
     return elem_ty, ln, data
@@ -846,6 +968,52 @@ def _emit_shift_trap_guard(ctx: _ModuleCtx, state: _FnState, rv: ir.Value, signe
     b.position_at_end(in_range)
 
 
+def _emit_divrem_trap_guard(ctx: _ModuleCtx, state: _FnState, lv: ir.Value, rv: ir.Value, signed: bool) -> None:
+    if not isinstance(lv.type, ir.IntType) or not isinstance(rv.type, ir.IntType):
+        raise CodegenError("internal: checked div/rem requires integer operands")
+    if lv.type.width != rv.type.width:
+        raise CodegenError("internal: checked div/rem requires matching integer widths")
+
+    b = state.builder
+    fn = state.fn_ir
+    zero = ir.Constant(rv.type, 0)
+    bad = b.icmp_unsigned("==", rv, zero)
+    if signed:
+        min_v = ir.Constant(lv.type, 1 << (lv.type.width - 1))
+        neg_one = ir.Constant(rv.type, -1)
+        min_div_neg_one = b.and_(
+            b.icmp_signed("==", lv, min_v),
+            b.icmp_signed("==", rv, neg_one),
+        )
+        bad = b.or_(bad, min_div_neg_one)
+
+    ok_block = fn.append_basic_block("divrem_ok")
+    bad_block = fn.append_basic_block("divrem_bad")
+    b.cbranch(bad, bad_block, ok_block)
+
+    b.position_at_end(bad_block)
+    trap = _declare_trap(ctx)
+    b.call(trap, [])
+    b.unreachable()
+
+    b.position_at_end(ok_block)
+
+
+def _lower_checked_divrem(
+    ctx: _ModuleCtx,
+    state: _FnState,
+    lv: ir.Value,
+    rv: ir.Value,
+    signed: bool,
+    is_div: bool,
+) -> ir.Value:
+    _emit_divrem_trap_guard(ctx, state, lv, rv, signed=signed)
+    b = state.builder
+    if is_div:
+        return b.sdiv(lv, rv) if signed else b.udiv(lv, rv)
+    return b.srem(lv, rv) if signed else b.urem(lv, rv)
+
+
 def _lower_checked_shift(
     ctx: _ModuleCtx,
     state: _FnState,
@@ -902,20 +1070,26 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
     def _as_string_ptr(v: _Value, node: Any) -> ir.Value:
         return _coerce_value(ctx, state, v.value, v.ty, "String", node)
 
-    def _as_any_i64(v: _Value, node: Any) -> ir.Value:
+    def _as_i64(v: _Value, node: Any) -> ir.Value:
         return _coerce_value(ctx, state, v.value, v.ty, "Int", node)
+
+    def _as_any_i64(v: _Value, node: Any) -> ir.Value:
+        return _coerce_value(ctx, state, v.value, v.ty, "Any", node)
 
     if base == "vec_new":
         if len(call.args) != 0:
             raise CodegenError(_diag(call, "vec_new expects 0 arguments"))
         header_i8 = _alloc_bytes(ctx, state, ir.Constant(i64, 16), ir.Constant(i64, 8), call)
         header_ptr = b.bitcast(header_i8, ctx.slice_header_ty.as_pointer())
-        len_ptr = b.gep(header_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)], inbounds=True)
-        data_ptr = b.gep(header_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)], inbounds=True)
+        len_ptr = b.gep(header_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+        data_ptr = b.gep(header_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
         b.store(ir.Constant(i64, 0), len_ptr)
         b.store(ir.Constant(i8p, None), data_ptr)
         out_ty = _expr_type(state, call)
-        return _Value(header_i8, out_ty if _is_vec_type(out_ty) else "Any")
+        if _is_vec_type(out_ty):
+            return _Value(header_i8, out_ty)
+        boxed = _coerce_value(ctx, state, header_i8, "&u8", "Any", call)
+        return _Value(boxed, "Any")
 
     if base == "vec_from":
         if len(call.args) != 1:
@@ -938,8 +1112,8 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
         elem_ty = _vec_inner_type(vec_ty)
         vec_i8 = _as_i8_ptr(state, vec.value, call.args[0])
         hdr_ptr = b.bitcast(vec_i8, ctx.slice_header_ty.as_pointer())
-        len_ptr = b.gep(hdr_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)], inbounds=True)
-        data_ptr = b.gep(hdr_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)], inbounds=True)
+        len_ptr = b.gep(hdr_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+        data_ptr = b.gep(hdr_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
         ln = b.load(len_ptr)
 
         if base == "vec_len":
@@ -966,7 +1140,7 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
             b.cbranch(in_bounds, some_block, none_block)
 
             b.position_at_end(some_block)
-            elem_ptr = b.gep(typed_data, [idx64], inbounds=True)
+            elem_ptr = b.gep(typed_data, [idx64])
             some_val = _as_i8_ptr(state, elem_ptr, call)
             b.branch(end_block)
             some_block = b.block
@@ -985,7 +1159,7 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
             if len(call.args) != 3:
                 raise CodegenError(_diag(call, "vec_set expects 3 arguments"))
             _emit_oob_trap(ctx, state, idx64, ln)
-            elem_ptr = b.gep(typed_data, [idx64], inbounds=True)
+            elem_ptr = b.gep(typed_data, [idx64])
             val = _compile_expr(ctx, state, call.args[2], overflow_mode=overflow_mode)
             vv = _coerce_value(ctx, state, val.value, val.ty, elem_ty, call.args[2])
             b.store(vv, elem_ptr)
@@ -1017,7 +1191,7 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
 
             b.position_at_end(cont_block)
             new_typed = b.bitcast(new_data_i8, elem_ll.as_pointer())
-            tail_ptr = b.gep(new_typed, [ln], inbounds=True)
+            tail_ptr = b.gep(new_typed, [ln])
             val = _compile_expr(ctx, state, call.args[1], overflow_mode=overflow_mode)
             vv = _coerce_value(ctx, state, val.value, val.ty, elem_ty, call.args[1])
             b.store(vv, tail_ptr)
@@ -1031,7 +1205,7 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
         arg_node = call.args[0]
         if isinstance(arg_node, Literal) and isinstance(arg_node.value, str):
             g = _get_string_global(ctx, arg_node.value)
-            ptr = b.gep(g, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)], inbounds=True)
+            ptr = b.gep(g, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
             fn = _declare_runtime(ctx, "astra_print_str")
             b.call(fn, [ptr, ir.Constant(i64, len(arg_node.value.encode("utf-8")))])
         else:
@@ -1044,7 +1218,7 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
                 fn = _declare_runtime(ctx, "astra_print_str")
                 b.call(fn, [sp, ln])
             else:
-                v = _as_any_i64(arg, call)
+                v = _as_i64(arg, call)
                 fn = _declare_runtime(ctx, "astra_print_i64")
                 b.call(fn, [v])
         return _Value(ir.Constant(i64, 0), "Void")
@@ -1111,13 +1285,16 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
             raise CodegenError(_diag(call, "arg expects 1 argument"))
         idx = _compile_expr(ctx, state, call.args[0])
         fn = _declare_runtime(ctx, "astra_arg")
-        out = b.call(fn, [_as_any_i64(idx, call.args[0])])
+        out = b.call(fn, [_as_i64(idx, call.args[0])])
         return _Value(out, "String")
 
     if base == "spawn":
         if len(call.args) < 1:
             raise CodegenError(_diag(call, "spawn expects at least a function argument"))
         pseudo = Call(fn=call.args[0], args=call.args[1:], pos=call.pos, line=call.line, col=call.col)
+        resolved = getattr(call, "spawn_resolved_name", None)
+        if isinstance(resolved, str):
+            pseudo.resolved_name = resolved
         out = _compile_call(ctx, state, pseudo, overflow_mode=overflow_mode)
         fn = _declare_runtime(ctx, "astra_spawn_store")
         tid = b.call(fn, [_as_any_i64(out, call)])
@@ -1128,7 +1305,7 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
             raise CodegenError(_diag(call, "join expects 1 argument"))
         t = _compile_expr(ctx, state, call.args[0])
         fn = _declare_runtime(ctx, "astra_join")
-        out = b.call(fn, [_as_any_i64(t, call.args[0])])
+        out = b.call(fn, [_as_i64(t, call.args[0])])
         return _Value(out, "Any")
 
     if base == "list_new":
@@ -1152,7 +1329,7 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
         xs = _compile_expr(ctx, state, call.args[0])
         idx = _compile_expr(ctx, state, call.args[1])
         fn = _declare_runtime(ctx, "astra_list_get")
-        out = b.call(fn, [_as_any_i64(xs, call.args[0]), _as_any_i64(idx, call.args[1])])
+        out = b.call(fn, [_as_any_i64(xs, call.args[0]), _as_i64(idx, call.args[1])])
         return _Value(out, "Any")
 
     if base == "list_set":
@@ -1164,7 +1341,7 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
         fn = _declare_runtime(ctx, "astra_list_set")
         out = b.call(
             fn,
-            [_as_any_i64(xs, call.args[0]), _as_any_i64(idx, call.args[1]), _as_any_i64(v, call.args[2])],
+            [_as_any_i64(xs, call.args[0]), _as_i64(idx, call.args[1]), _as_any_i64(v, call.args[2])],
         )
         return _Value(out, "Int")
 
@@ -1243,7 +1420,7 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
         sid = _compile_expr(ctx, state, call.args[0])
         d = _compile_expr(ctx, state, call.args[1])
         fn = _declare_runtime(ctx, "astra_tcp_send")
-        out = b.call(fn, [_as_any_i64(sid, call.args[0]), _as_string_ptr(d, call.args[1])])
+        out = b.call(fn, [_as_i64(sid, call.args[0]), _as_string_ptr(d, call.args[1])])
         return _Value(out, "Int")
 
     if base == "tcp_recv":
@@ -1252,7 +1429,7 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
         sid = _compile_expr(ctx, state, call.args[0])
         n = _compile_expr(ctx, state, call.args[1])
         fn = _declare_runtime(ctx, "astra_tcp_recv")
-        out = b.call(fn, [_as_any_i64(sid, call.args[0]), _as_any_i64(n, call.args[1])])
+        out = b.call(fn, [_as_i64(sid, call.args[0]), _as_i64(n, call.args[1])])
         return _Value(out, "String")
 
     if base == "tcp_close":
@@ -1260,7 +1437,7 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
             raise CodegenError(_diag(call, "tcp_close expects 1 argument"))
         sid = _compile_expr(ctx, state, call.args[0])
         fn = _declare_runtime(ctx, "astra_tcp_close")
-        out = b.call(fn, [_as_any_i64(sid, call.args[0])])
+        out = b.call(fn, [_as_i64(sid, call.args[0])])
         return _Value(out, "Int")
 
     if base == "to_json":
@@ -1338,7 +1515,7 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
             raise CodegenError(_diag(call, "sleep_ms expects 1 argument"))
         ms = _compile_expr(ctx, state, call.args[0])
         fn = _declare_runtime(ctx, "astra_sleep_ms")
-        out = b.call(fn, [_as_any_i64(ms, call.args[0])])
+        out = b.call(fn, [_as_i64(ms, call.args[0])])
         return _Value(out, "Int")
 
     if base == "panic":
@@ -1347,7 +1524,7 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
         arg_node = call.args[0]
         if isinstance(arg_node, Literal) and isinstance(arg_node.value, str):
             g = _get_string_global(ctx, arg_node.value)
-            ptr = b.gep(g, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)], inbounds=True)
+            ptr = b.gep(g, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
             l = ir.Constant(i64, len(arg_node.value.encode("utf-8")))
         else:
             a = _compile_expr(ctx, state, arg_node)
@@ -1382,6 +1559,45 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
     raise CodegenError(_diag(call, f"internal: unexpected builtin dispatch {base}"))
 
 
+def _compile_struct_init(
+    ctx: _ModuleCtx,
+    state: _FnState,
+    struct_name: str,
+    field_exprs: dict[str, Any],
+    node: Any,
+    overflow_mode: str,
+) -> _Value:
+    sinfo = ctx.structs.get(struct_name)
+    if sinfo is None:
+        raise CodegenError(_diag(node, f"unknown struct {struct_name}"))
+    declared_fields = {fname for fname, _ in sinfo.decl.fields}
+    for fname in field_exprs:
+        if fname not in declared_fields:
+            raise CodegenError(_diag(node, f"unknown field {fname} for struct {struct_name}"))
+    for fname, _ in sinfo.decl.fields:
+        if fname not in field_exprs:
+            raise CodegenError(_diag(node, f"missing field {fname} for struct {struct_name}"))
+    size, align = _storage_size_align(ctx, struct_name, node)
+    ptr_i8 = _alloc_bytes(
+        ctx,
+        state,
+        ir.Constant(ir.IntType(64), size),
+        ir.Constant(ir.IntType(64), align),
+        node,
+    )
+    ptr = state.builder.bitcast(ptr_i8, sinfo.ty.as_pointer())
+    for i, ((fname, _), fty) in enumerate(zip(sinfo.decl.fields, sinfo.field_types)):
+        arg_node = field_exprs[fname]
+        a = _compile_expr(ctx, state, arg_node, overflow_mode=overflow_mode)
+        cv = _coerce_value(ctx, state, a.value, a.ty, fty, arg_node)
+        if sinfo.packed:
+            _packed_store_bits(ctx, state, ptr, sinfo, fname, cv, node)
+        else:
+            fld = state.builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), i)])
+            state.builder.store(cv, fld)
+    return _Value(ptr, struct_name)
+
+
 def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: str) -> _Value:
     if isinstance(call.fn, FieldExpr) and call.fn.field == "get":
         if len(call.args) != 1:
@@ -1406,7 +1622,7 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
         b.cbranch(in_bounds, some_block, none_block)
 
         b.position_at_end(some_block)
-        elem_ptr = b.gep(data_ptr, [idx64], inbounds=True)
+        elem_ptr = b.gep(data_ptr, [idx64])
         some_val = _as_i8_ptr(state, elem_ptr, call)
         b.branch(end_block)
         some_block = b.block
@@ -1428,24 +1644,8 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
             sinfo = ctx.structs[name]
             if len(call.args) != len(sinfo.field_types):
                 raise CodegenError(_diag(call, f"struct {name} expects {len(sinfo.field_types)} args, got {len(call.args)}"))
-            size, align = _storage_size_align(ctx, name, call)
-            ptr_i8 = _alloc_bytes(
-                ctx,
-                state,
-                ir.Constant(ir.IntType(64), size),
-                ir.Constant(ir.IntType(64), align),
-                call,
-            )
-            ptr = state.builder.bitcast(ptr_i8, sinfo.ty.as_pointer())
-            for i, ((fname, _), arg, fty) in enumerate(zip(sinfo.decl.fields, call.args, sinfo.field_types)):
-                a = _compile_expr(ctx, state, arg)
-                cv = _coerce_value(ctx, state, a.value, a.ty, fty, arg)
-                if sinfo.packed:
-                    _packed_store_bits(ctx, state, ptr, sinfo, fname, cv, call)
-                else:
-                    fld = state.builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), i)], inbounds=True)
-                    state.builder.store(cv, fld)
-            return _Value(ptr, name)
+            fields = {fname: arg for (fname, _), arg in zip(sinfo.decl.fields, call.args)}
+            return _compile_struct_init(ctx, state, name, fields, call, overflow_mode)
 
         if resolved in {
             "print",
@@ -1606,7 +1806,7 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
             return _Value(ir.Constant(ir.DoubleType(), float(e.value)), "Float")
         if isinstance(e.value, str):
             g = _get_string_global(ctx, e.value)
-            ptr = b.gep(g, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)], inbounds=True)
+            ptr = b.gep(g, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
             return _Value(ptr, "String", str_len=len(e.value.encode("utf-8")))
         raise CodegenError(_diag(e, f"internal: unexpected literal type {type(e.value).__name__}"))
     if isinstance(e, Name):
@@ -1781,9 +1981,9 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
         if e.op == "*":
             return _Value(b.mul(lv, rv), lty)
         if e.op == "/":
-            return _Value(b.sdiv(lv, rv) if signed else b.udiv(lv, rv), lty)
+            return _Value(_lower_checked_divrem(ctx, state, lv, rv, signed=signed, is_div=True), lty)
         if e.op == "%":
-            return _Value(b.srem(lv, rv) if signed else b.urem(lv, rv), lty)
+            return _Value(_lower_checked_divrem(ctx, state, lv, rv, signed=signed, is_div=False), lty)
         if e.op == "&":
             return _Value(b.and_(lv, rv), lty)
         if e.op == "|":
@@ -1842,8 +2042,15 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
             else:
                 val = raw_field
             return _Value(val, fty)
-        fld = b.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx)], inbounds=True)
+        fld = b.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx)])
         return _Value(b.load(fld), fty)
+    if isinstance(e, StructLit):
+        field_map: dict[str, Any] = {}
+        for fname, fexpr in e.fields:
+            if fname in field_map:
+                raise CodegenError(_diag(e, f"duplicate field {fname} in struct literal {e.name}"))
+            field_map[fname] = fexpr
+        return _compile_struct_init(ctx, state, e.name, field_map, e, overflow_mode)
     if isinstance(e, TypeAnnotated):
         inner = _compile_expr(ctx, state, e.expr, overflow_mode=overflow_mode)
         return _Value(_coerce_value(ctx, state, inner.value, inner.ty, _canonical_type(e.type_name), e), _canonical_type(e.type_name))
@@ -1901,7 +2108,7 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
             e,
         )
         _emit_oob_trap(ctx, state, idx64, ln)
-        elem_ptr = b.gep(data_ptr, [idx64], inbounds=True)
+        elem_ptr = b.gep(data_ptr, [idx64])
         return _Value(b.load(elem_ptr), elem_ty)
     if isinstance(e, ArrayLit):
         arr_ty = _canonical_type(_expr_type(state, e))
@@ -1915,8 +2122,8 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
         i8p = ir.IntType(8).as_pointer()
         header_i8 = _alloc_bytes(ctx, state, ir.Constant(i64, 16), ir.Constant(i64, 8), e)
         header_ptr = b.bitcast(header_i8, ctx.slice_header_ty.as_pointer())
-        len_ptr = b.gep(header_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)], inbounds=True)
-        data_ptr = b.gep(header_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)], inbounds=True)
+        len_ptr = b.gep(header_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+        data_ptr = b.gep(header_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
         b.store(ir.Constant(i64, len(vals)), len_ptr)
         if vals:
             elem_sz, elem_align = _storage_size_align(ctx, elem_ty, e)
@@ -1926,7 +2133,7 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
             elem_ll = _llvm_type(ctx, elem_ty)
             typed = b.bitcast(data_i8, elem_ll.as_pointer())
             for i, vv in enumerate(vals):
-                p = b.gep(typed, [ir.Constant(i64, i)], inbounds=True)
+                p = b.gep(typed, [ir.Constant(i64, i)])
                 b.store(vv, p)
         else:
             b.store(ir.Constant(i8p, None), data_ptr)
@@ -1955,6 +2162,8 @@ def _collect_defer_sites(stmts: list[Any], out: list[DeferStmt]) -> None:
             for _, arm in st.arms:
                 _collect_defer_sites(arm, out)
         elif isinstance(st, ComptimeStmt):
+            _collect_defer_sites(st.body, out)
+        elif isinstance(st, UnsafeStmt):
             _collect_defer_sites(st.body, out)
 
 
@@ -2010,9 +2219,9 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
             elif st.op == "*=":
                 out = b.mul(lv.value, rv.value)
             elif st.op == "/=":
-                out = b.sdiv(lv.value, rv.value) if signed else b.udiv(lv.value, rv.value)
+                out = _lower_checked_divrem(ctx, state, lv.value, rv.value, signed=signed, is_div=True)
             elif st.op == "%=":
-                out = b.srem(lv.value, rv.value) if signed else b.urem(lv.value, rv.value)
+                out = _lower_checked_divrem(ctx, state, lv.value, rv.value, signed=signed, is_div=False)
             elif st.op == "&=":
                 out = b.and_(lv.value, rv.value)
             elif st.op == "|=":
@@ -2071,9 +2280,9 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
                         elif st.op == "*=":
                             out = b.mul(lv, rv)
                         elif st.op == "/=":
-                            out = b.sdiv(lv, rv) if signed else b.udiv(lv, rv)
+                            out = _lower_checked_divrem(ctx, state, lv, rv, signed=signed, is_div=True)
                         elif st.op == "%=":
-                            out = b.srem(lv, rv) if signed else b.urem(lv, rv)
+                            out = _lower_checked_divrem(ctx, state, lv, rv, signed=signed, is_div=False)
                         elif st.op == "&=":
                             out = b.and_(lv, rv)
                         elif st.op == "|=":
@@ -2096,7 +2305,7 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
                 _packed_store_bits(ctx, state, ptr, sinfo, st.target.field, out, st)
                 return
 
-            fld = b.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx)], inbounds=True)
+            fld = b.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx)])
             if st.op == "=":
                 b.store(rv, fld)
                 return
@@ -2124,9 +2333,9 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
                 elif st.op == "*=":
                     out = b.mul(lv, rv)
                 elif st.op == "/=":
-                    out = b.sdiv(lv, rv) if signed else b.udiv(lv, rv)
+                    out = _lower_checked_divrem(ctx, state, lv, rv, signed=signed, is_div=True)
                 elif st.op == "%=":
-                    out = b.srem(lv, rv) if signed else b.urem(lv, rv)
+                    out = _lower_checked_divrem(ctx, state, lv, rv, signed=signed, is_div=False)
                 elif st.op == "&=":
                     out = b.and_(lv, rv)
                 elif st.op == "|=":
@@ -2152,7 +2361,7 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
                 st,
             )
             _emit_oob_trap(ctx, state, idx64, ln)
-            elem_ptr = b.gep(data_ptr, [idx64], inbounds=True)
+            elem_ptr = b.gep(data_ptr, [idx64])
             rhs = _compile_expr(ctx, state, st.expr, overflow_mode=overflow_mode)
             rv = _coerce_value(ctx, state, rhs.value, rhs.ty, elem_ty, st)
             if st.op == "=":
@@ -2182,9 +2391,9 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
                 elif st.op == "*=":
                     out = b.mul(lv, rv)
                 elif st.op == "/=":
-                    out = b.sdiv(lv, rv) if signed else b.udiv(lv, rv)
+                    out = _lower_checked_divrem(ctx, state, lv, rv, signed=signed, is_div=True)
                 elif st.op == "%=":
-                    out = b.srem(lv, rv) if signed else b.urem(lv, rv)
+                    out = _lower_checked_divrem(ctx, state, lv, rv, signed=signed, is_div=False)
                 elif st.op == "&=":
                     out = b.and_(lv, rv)
                 elif st.op == "|=":
@@ -2385,6 +2594,13 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
     if isinstance(st, ComptimeStmt):
         return
 
+    if isinstance(st, UnsafeStmt):
+        for sub in st.body:
+            _compile_stmt(ctx, state, sub, overflow_mode)
+            if _is_terminated(state):
+                break
+        return
+
     raise CodegenError(_diag(st, f"internal: unexpected statement node {type(st).__name__}"))
 
 
@@ -2550,7 +2766,8 @@ def _emit_hosted_main_wrapper(ctx: _ModuleCtx, user_main_key: str | None) -> Non
         b.ret(ir.Constant(ir.IntType(32), 0))
         return
     if _is_float_type(ret_ty):
-        outv = b.fptosi(out, ir.IntType(32))
+        sat = _declare_fptoi_sat_intrinsic(ctx, bits=32, signed=True, from_ty=out.type)
+        outv = b.call(sat, [out])
     elif isinstance(out.type, ir.IntType):
         if out.type.width > 32:
             outv = b.trunc(out, ir.IntType(32))
