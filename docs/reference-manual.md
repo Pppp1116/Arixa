@@ -1,12 +1,12 @@
 # Astra Reference Manual
 
 ## CLI
-- `astra build <in> -o <out> [--target py|x86_64|native] [--emit-ir out.json] [--strict] [--freestanding] [--profile debug|release] [--overflow trap|wrap|debug]`
+- `astra build <in> -o <out> [--target py|llvm|native] [--emit-ir out.ll] [--strict] [--freestanding] [--profile debug|release] [--overflow trap|wrap|debug] [--triple <llvm-triple>]`
 - `astra check <in> [--freestanding] [--overflow trap|wrap|debug]`
-- `astra run <in>`
+- `astra run <in> [args...]`
 - `astra test [--kind unit|integration|e2e]`
-- `astra selfhost`
-- `--target native` requires `nasm` and a linker driver (`cc`/`gcc`/`clang`, fallback `ld`), and emits an x86-64 executable.
+- `astra selfhost` (currently unavailable: placeholder only, no real self-hosting pipeline)
+- `--target native` requires `clang` in `PATH` and links against the portable runtime (`runtime/llvm_runtime.c`).
 
 ## Tooling
 - `astpm init/add/lock`
@@ -56,7 +56,8 @@
 - numeric overflow control:
   - `build --profile debug|release` (default `debug`)
   - `build/check --overflow trap|wrap|debug`
-  - `debug` overflow mode resolves to `trap` in debug profile, `wrap` in release profile
+  - for `build`, `debug` resolves to `trap` in debug profile and `wrap` in release profile
+  - for `check`, `debug` resolves to `trap`
 
 ## x86-64 backend contract
 - ABI classes are explicit in backend lowering:

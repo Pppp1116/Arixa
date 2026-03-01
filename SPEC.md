@@ -185,9 +185,10 @@ Numeric semantics:
 - Width-aware integer builtins are available: `countOnes`, `leadingZeros`, `trailingZeros`.
 - Type-level integer queries are available: `bitSizeOf(T)`, `maxVal(T)`, `minVal(T)`.
 - Overflow mode is controlled by build/check configuration:
+  - `check`: default effective overflow `trap` (`--overflow debug` also resolves to `trap`)
   - `build --profile debug` => effective default `trap`
   - `build --profile release` => effective default `wrap`
-  - `--overflow trap|wrap|debug` overrides profile defaults (`debug` resolves by profile)
+  - `--overflow trap|wrap|debug` overrides defaults (`debug` resolves by profile for `build`)
 
 ## 7. Backend-Defined Behavior Boundaries (`py` vs `llvm/native`)
 

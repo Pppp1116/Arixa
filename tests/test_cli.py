@@ -115,3 +115,13 @@ def test_cli_build_accepts_triple_for_llvm(tmp_path: Path):
     )
     assert rc == 0
     assert "target triple = \"wasm32-unknown-unknown\"" in out.read_text()
+
+
+def test_cli_selfhost_is_honestly_labeled_unavailable():
+    proc = subprocess.run(
+        [sys.executable, "-m", "astra.cli", "selfhost"],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode != 0
+    assert "selfhost-unavailable" in proc.stderr

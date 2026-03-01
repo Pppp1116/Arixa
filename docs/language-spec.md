@@ -69,7 +69,7 @@ Conventions:
   - `check`: default `trap`
   - `build --profile debug`: default effective overflow `trap`
   - `build --profile release`: default effective overflow `wrap`
-  - `--overflow trap|wrap|debug` overrides defaults (`debug` resolves by profile)
+  - `--overflow trap|wrap|debug` overrides defaults (`debug` resolves by profile for `build`, and to `trap` for `check`)
 
 ## Memory model
 - Ownership-first model for user data.

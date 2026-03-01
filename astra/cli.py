@@ -51,11 +51,12 @@ def cmd_test(a):
 
 
 def cmd_selfhost(a):
-    c1 = "build/selfhost_compiler.py"
-    c2 = "build/selfhost_compiler_round2.py"
-    build("selfhost/compiler.astra", c1, "py")
-    subprocess.check_call([sys.executable, c1, "selfhost/compiler.astra", c2])
-    print("selfhost-ok" if Path(c2).exists() else "selfhost-fail")
+    print(
+        "selfhost-unavailable: selfhost/compiler.astra is a placeholder file copier, "
+        "not a real self-hosted compiler",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 
 
 def main(argv=None):

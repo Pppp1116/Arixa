@@ -4,3 +4,5 @@ __pycache__/
 build/
 .astra-cache.json
 .pytest_cache/
+_asm_check.s
+_asm_check.o

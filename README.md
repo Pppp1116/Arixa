@@ -12,7 +12,7 @@ python build/hello.py
 ```
 
 ## Commands
-- `astra`: build/run/check/test/selfhost
+- `astra`: build/run/check/test (`selfhost` is currently an unavailable placeholder command)
 - `astpm`: package manager
 - `astfmt`: formatter
 - `astlint`: linter
