@@ -116,13 +116,12 @@ def test_x86_64_supports_structured_defer_for_calls():
     assert "call cleanup" in asm
 
 
-def test_x86_64_rejects_defer_non_call_expression():
+def test_x86_64_supports_defer_non_call_expression():
     prog = parse("fn main() -> Int { defer 1; return 0; }")
-    try:
-        to_x86_64(prog)
-        assert False
-    except CodegenError as e:
-        assert "defer currently requires a call expression" in str(e)
+    analyze(prog)
+    asm = to_x86_64(prog)
+    assert_valid_x86_64_assembly(asm)
+    assert "defer_loop" in asm
 
 
 def test_x86_64_supports_conditionals_and_loops():
@@ -174,6 +173,194 @@ fn main() -> Int {
     asm = to_x86_64(prog)
     assert_valid_x86_64_assembly(asm)
     assert "call r11" in asm
+
+
+def test_x86_64_supports_match_statement_codegen():
+    src = """
+fn main() -> Int {
+  let x = 2;
+  match x {
+    1 => { return 10; }
+    2 => { return 22; }
+  }
+  return 0;
+}
+"""
+    prog = parse(src)
+    analyze(prog)
+    asm = to_x86_64(prog)
+    assert_valid_x86_64_assembly(asm)
+    assert "match_next" in asm
+    assert "match_end" in asm
+
+
+def test_x86_64_supports_pointer_deref_assignment():
+    src = """
+fn main() -> Int {
+  let mut x = 5;
+  let p = &mut x;
+  *p += 7;
+  return *p;
+}
+"""
+    prog = parse(src)
+    analyze(prog)
+    asm = to_x86_64(prog)
+    assert_valid_x86_64_assembly(asm)
+    assert "mov qword [r11], rax" in asm
+
+
+def test_x86_64_supports_none_coalesce_with_pointer_options():
+    src = """
+fn fallback() -> Int { return 9; }
+fn choose(p: Option<fn() -> Int>) -> Int {
+  let f = p ?? fallback;
+  return f();
+}
+fn main() -> Int {
+  let v: Option<fn() -> Int> = none;
+  return choose(v);
+}
+"""
+    prog = parse(src)
+    analyze(prog)
+    asm = to_x86_64(prog)
+    assert_valid_x86_64_assembly(asm)
+    assert "coalesce_right" in asm
+    assert "call r11" in asm
+
+
+def test_x86_64_supports_await_expression_lowering():
+    src = "fn main() -> Int { let x = await 5; return x; }"
+    prog = parse(src)
+    analyze(prog)
+    asm = to_x86_64(prog)
+    assert_valid_x86_64_assembly(asm)
+    assert "mov qword [rbp-8], 5" in asm
+
+
+def test_x86_64_supports_async_function_decls():
+    src = """
+async fn worker(x Int) -> Int {
+  return await x + 1;
+}
+fn main() -> Int {
+  return worker(4);
+}
+"""
+    prog = parse(src)
+    analyze(prog)
+    asm = to_x86_64(prog)
+    assert_valid_x86_64_assembly(asm)
+    assert "worker:" in asm
+    assert "call worker" in asm
+
+
+def test_x86_64_supports_struct_constructor_and_field_assignment():
+    src = """
+struct Pair { a Int, b Int }
+fn main() -> Int {
+  let mut p = Pair(2, 3);
+  p.a += 5;
+  return p.a + p.b;
+}
+"""
+    prog = parse(src)
+    analyze(prog)
+    asm = to_x86_64(prog)
+    assert_valid_x86_64_assembly(asm)
+    assert "lea r11, [rax+0]" in asm
+    assert "lea r11, [rax+8]" in asm
+
+
+def test_x86_64_supports_defer_inside_loops():
+    src = """
+fn main() -> Int {
+  let mut i = 0;
+  while i < 3 {
+    defer print(i);
+    i += 1;
+  }
+  return 0;
+}
+"""
+    prog = parse(src)
+    analyze(prog)
+    asm = to_x86_64(prog)
+    assert_valid_x86_64_assembly(asm)
+    assert "add qword" in asm
+    assert "defer_loop" in asm
+
+
+def test_x86_64_supports_get_and_coalesce_for_option_scalars():
+    src = """
+fn pick(xs: &[Int]) -> Int {
+  return xs.get(0) ?? 9;
+}
+fn main() -> Int { return 0; }
+"""
+    prog = parse(src)
+    analyze(prog)
+    asm = to_x86_64(prog)
+    assert_valid_x86_64_assembly(asm)
+    assert "get_none" in asm
+    assert "coalesce_right" in asm
+
+
+def test_x86_64_supports_non_runtime_builtin_lowering():
+    src = """
+fn worker(x Int) -> Int { return x; }
+fn main() -> Int {
+  let t = spawn(worker, 1);
+  drop join(t);
+  drop read_file("x");
+  drop args();
+  drop arg(0);
+  drop list_get(list_new(), 0);
+  drop map_get(map_new(), 1);
+  drop tcp_recv(0, 1);
+  drop to_json(1);
+  drop from_json("{}");
+  drop sha256("x");
+  drop hmac_sha256("k", "x");
+  drop env_get("HOME");
+  drop cwd();
+  drop file_exists("x");
+  drop file_remove("x");
+  drop tcp_connect("127.0.0.1:1");
+  drop tcp_send(0, "x");
+  drop tcp_close(0);
+  drop now_unix();
+  drop monotonic_ms();
+  drop len(1);
+  drop proc_run("true");
+  drop write_file("a", "b");
+  drop sleep_ms(1);
+  return 0;
+}
+"""
+    prog = parse(src)
+    analyze(prog)
+    asm = to_x86_64(prog)
+    assert_valid_x86_64_assembly(asm)
+
+
+def test_x86_64_supports_float_mod_and_compound_mod_assign():
+    src = """
+fn main() -> Int {
+  let mut x = 7.5;
+  x %= 2.0;
+  if x > 1.4 && x < 1.6 {
+    return 1;
+  }
+  return 0;
+}
+"""
+    prog = parse(src)
+    analyze(prog)
+    asm = to_x86_64(prog)
+    assert_valid_x86_64_assembly(asm)
+    assert "call astra_fmod" in asm
 
 
 def test_join_of_unknown_tid_allowed_semantically():

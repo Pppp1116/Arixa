@@ -23,17 +23,25 @@ def _build_native_x86_64(asm: str, out_path: str, src_file: Path):
     ld = shutil.which("ld")
     if nasm is None or ld is None:
         raise RuntimeError(f"CODEGEN {src_file}:1:1: native target requires `nasm` and `ld` in PATH")
+    runtime_asm = Path(__file__).resolve().parent.parent / "runtime" / "x86_64_linux_runtime.s"
+    if not runtime_asm.exists():
+        raise RuntimeError(f"CODEGEN {src_file}:1:1: missing runtime object source at {runtime_asm}")
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="astra-native-") as td:
         asm_path = Path(td) / "module.s"
         obj_path = Path(td) / "module.o"
+        rt_obj_path = Path(td) / "runtime.o"
         asm_path.write_text(asm)
         cp = subprocess.run([nasm, "-felf64", str(asm_path), "-o", str(obj_path)], capture_output=True, text=True)
         if cp.returncode != 0:
             detail = (cp.stderr or cp.stdout or "").strip()
             raise RuntimeError(f"CODEGEN {src_file}:1:1: nasm failed{': ' + detail if detail else ''}")
-        cp = subprocess.run([ld, str(obj_path), "-o", str(out)], capture_output=True, text=True)
+        cp = subprocess.run([nasm, "-felf64", str(runtime_asm), "-o", str(rt_obj_path)], capture_output=True, text=True)
+        if cp.returncode != 0:
+            detail = (cp.stderr or cp.stdout or "").strip()
+            raise RuntimeError(f"CODEGEN {src_file}:1:1: runtime assemble failed{': ' + detail if detail else ''}")
+        cp = subprocess.run([ld, str(obj_path), str(rt_obj_path), "-o", str(out)], capture_output=True, text=True)
         if cp.returncode != 0:
             detail = (cp.stderr or cp.stdout or "").strip()
             raise RuntimeError(f"CODEGEN {src_file}:1:1: ld failed{': ' + detail if detail else ''}")

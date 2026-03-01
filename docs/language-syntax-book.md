@@ -217,15 +217,15 @@ Current x86-64 backend contract (System V ABI oriented):
   - `astra_free(usize ptr, usize size, usize align) -> Void`
   - `astra_panic(usize ptr, usize len) -> Never`
 - Deferred calls:
-  - `defer <call>;` is lowered to function-exit execution in reverse order (LIFO).
-  - x86 currently requires `defer` expressions to be calls; `defer` inside loops is still rejected.
+  - `defer <expr>;` is lowered to function-exit execution in reverse order (LIFO).
+  - Defer sites are counted, so loop-contained defer expressions execute once per hit.
 - Function values:
   - First-class function pointers are supported (`fn(T...) -> R` values).
   - Calls through function pointers lower to indirect machine calls.
-- Explicitly unsupported (with compile-time diagnostics):
-  - `async` on x86-64 (model still TBD).
-  - Aggregate ABI classification/returns (planned: explicit `sret` path for non-scalars).
-  - `defer` on runtime builtins and non-call defer expressions.
+- Additional native-lowered constructs:
+  - `async` declarations and `await` expressions lower to direct native control flow.
+  - Aggregate and dynamic values lower as opaque pointer-sized handles at the ABI boundary.
+  - `match`, struct field access/assignment, and array/slice indexing/get are lowered directly.
 
 ## 7. EBNF snapshot
 

@@ -51,5 +51,6 @@
   - call sites align stack to 16 bytes before `call`
 - Runtime ABI boundary for lowered builtins:
   - `astra_print_i64`, `astra_print_str`, `astra_alloc`, `astra_free`, `astra_panic`
-- Structured `defer` lowering is supported for call expressions (LIFO at function exit).
-- Async remains unsupported on x86 until a concrete async runtime model is selected.
+- Structured `defer` lowering supports full expressions (LIFO at function exit), including loop-hit counting.
+- Async/await declarations lower on x86 as direct native control flow.
+- Non-scalar values lower as opaque pointer-sized ABI handles in native mode.

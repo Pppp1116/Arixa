@@ -1,5 +1,13 @@
 # Releases
 
+## v0.2.1
+- Expanded x86-64/native backend coverage:
+  - Added linked Linux x86-64 runtime object for native builds (`astra_print_*`, `astra_alloc/free`, `astra_panic`).
+  - Added native lowering for `match`, `await`, broader `defer` forms (including loops), and pointer-deref assignments.
+  - Added aggregate pointer-handle lowering for struct/dynamic values across calls/returns.
+  - Added struct constructor/field lowering and array/slice index + `.get()` lowering paths.
+- Added end-to-end native regression tests for runtime symbols and expanded x86 codegen coverage.
+
 ## v0.2.0
 - Major language/toolchain completion pass.
 - Added `extern`, `async`, and `await` syntax with semantic/codegen support on Python backend.

@@ -411,6 +411,7 @@ class _FnCtx:
     defer_site_map: dict[int, "_DeferSite"] = field(default_factory=dict)
     runtime_symbols: set[str] = field(default_factory=set)
     module_ctx: "_ModuleCtx" | None = None
+    structs: dict[str, StructDecl] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -440,12 +441,8 @@ class _CallValue:
 @dataclass
 class _DeferSite:
     site_id: int
-    active_slot: int
-    symbol: str | None
-    callee_slot: int | None
-    param_abis: list[_AbiType]
-    ret_abi: _AbiType
-    arg_slots: list[int]
+    count_slot: int
+    expr: Any
 
 
 @dataclass
@@ -479,7 +476,48 @@ _RUNTIME_ABI: dict[str, _FnSig] = {
     "astra_alloc": _FnSig("astra_alloc", ["usize", "usize"], "usize", extern=True),
     "astra_free": _FnSig("astra_free", ["usize", "usize", "usize"], "Void", extern=True),
     "astra_panic": _FnSig("astra_panic", ["usize", "usize"], "Never", extern=True),
+    "astra_fmod": _FnSig("astra_fmod", ["Float", "Float"], "Float", extern=True),
 }
+
+_BUILTIN_SIGS_X86: dict[str, _FnSig] = {
+    "len": _FnSig("len", ["Any"], "Int"),
+    "read_file": _FnSig("read_file", ["String"], "String"),
+    "write_file": _FnSig("write_file", ["String", "String"], "Int"),
+    "args": _FnSig("args", [], "Any"),
+    "arg": _FnSig("arg", ["Int"], "String"),
+    "spawn": _FnSig("spawn", [], "Int"),
+    "join": _FnSig("join", ["Int"], "Any"),
+    "await_result": _FnSig("await_result", ["Any"], "Any"),
+    "list_new": _FnSig("list_new", [], "Any"),
+    "list_push": _FnSig("list_push", ["Any", "Any"], "Int"),
+    "list_get": _FnSig("list_get", ["Any", "Int"], "Any"),
+    "list_set": _FnSig("list_set", ["Any", "Int", "Any"], "Int"),
+    "list_len": _FnSig("list_len", ["Any"], "Int"),
+    "map_new": _FnSig("map_new", [], "Any"),
+    "map_has": _FnSig("map_has", ["Any", "Any"], "Bool"),
+    "map_get": _FnSig("map_get", ["Any", "Any"], "Any"),
+    "map_set": _FnSig("map_set", ["Any", "Any", "Any"], "Int"),
+    "file_exists": _FnSig("file_exists", ["String"], "Bool"),
+    "file_remove": _FnSig("file_remove", ["String"], "Int"),
+    "tcp_connect": _FnSig("tcp_connect", ["String"], "Int"),
+    "tcp_send": _FnSig("tcp_send", ["Int", "String"], "Int"),
+    "tcp_recv": _FnSig("tcp_recv", ["Int", "Int"], "String"),
+    "tcp_close": _FnSig("tcp_close", ["Int"], "Int"),
+    "to_json": _FnSig("to_json", ["Any"], "String"),
+    "from_json": _FnSig("from_json", ["String"], "Any"),
+    "sha256": _FnSig("sha256", ["String"], "String"),
+    "hmac_sha256": _FnSig("hmac_sha256", ["String", "String"], "String"),
+    "proc_exit": _FnSig("proc_exit", ["Int"], "Never"),
+    "env_get": _FnSig("env_get", ["String"], "String"),
+    "cwd": _FnSig("cwd", [], "String"),
+    "proc_run": _FnSig("proc_run", ["String"], "Int"),
+    "now_unix": _FnSig("now_unix", [], "Int"),
+    "monotonic_ms": _FnSig("monotonic_ms", [], "Int"),
+    "sleep_ms": _FnSig("sleep_ms", ["Int"], "Int"),
+}
+
+for _n, _sig in list(_BUILTIN_SIGS_X86.items()):
+    _BUILTIN_SIGS_X86[f"__{_n}"] = _sig
 
 
 def _split_top_level(text: str, sep: str) -> list[str]:
@@ -517,6 +555,47 @@ def _split_top_level(text: str, sep: str) -> list[str]:
         i += 1
     out.append("".join(cur).strip())
     return out
+
+
+def _is_option_type(typ: str) -> bool:
+    t = typ.strip()
+    return t.endswith("?") or (t.startswith("Option<") and t.endswith(">"))
+
+
+def _option_inner_type(typ: str) -> str:
+    t = typ.strip()
+    if t.endswith("?"):
+        return t[:-1].strip()
+    if t.startswith("Option<") and t.endswith(">"):
+        return t[7:-1].strip()
+    return typ
+
+
+def _is_vec_type(typ: str) -> bool:
+    t = typ.strip()
+    return t.startswith("Vec<") and t.endswith(">")
+
+
+def _vec_inner_type(typ: str) -> str:
+    return typ.strip()[4:-1].strip()
+
+
+def _is_slice_type(typ: str) -> bool:
+    t = typ.strip()
+    return t.startswith("[") and t.endswith("]")
+
+
+def _slice_inner_type(typ: str) -> str:
+    return typ.strip()[1:-1].strip()
+
+
+def _strip_ref_type(typ: str) -> str:
+    t = typ.strip()
+    if t.startswith("&mut "):
+        return t[5:].strip()
+    if t.startswith("&"):
+        return t[1:].strip()
+    return t
 
 
 def _parse_fn_type(typ: str) -> tuple[list[str], str] | None:
@@ -559,6 +638,9 @@ def _canonical_type(typ: str) -> str:
 
 def _lower_abi_type(typ: str, node: Any, *, allow_memory: bool = True) -> _AbiType:
     c = _canonical_type(typ)
+    if _is_option_type(c):
+        # Option<T> lowers as nullable pointer to boxed T payload.
+        return _AbiType(c, "ptr", "int")
     if c in _INT_TYPES:
         repr_name = "u8" if c == "Bool" else "i64"
         return _AbiType(c, repr_name, "int")
@@ -570,9 +652,8 @@ def _lower_abi_type(typ: str, node: Any, *, allow_memory: bool = True) -> _AbiTy
         return _AbiType(c, "fnptr", "int")
     if c in {"Void", "Never"}:
         return _AbiType(c, c.lower(), "void", size=0)
-    if allow_memory:
-        return _AbiType(c, "memory", "memory")
-    raise CodegenError(_diag(node, f"type {typ} is unsupported on x86_64 backend"))
+    # Aggregate and dynamic values lower as opaque pointers.
+    return _AbiType(c, "ptr", "int")
 
 
 def _collect_fn_sigs(prog: Program) -> dict[str, _FnSig]:
@@ -619,6 +700,10 @@ def to_x86_64(prog: Program, freestanding: bool = False) -> str:
             main_entry = item.symbol or item.name
             break
     fn_sigs = _collect_fn_sigs(prog)
+    structs: dict[str, StructDecl] = {}
+    for item in prog.items:
+        if isinstance(item, StructDecl):
+            structs[item.name] = item
     module_ctx = _ModuleCtx()
 
     lines: list[str] = []
@@ -638,9 +723,7 @@ def to_x86_64(prog: Program, freestanding: bool = False) -> str:
             continue
         if not isinstance(item, FnDecl):
             continue
-        if item.async_fn:
-            raise CodegenError(_diag(item, "async functions are not supported on x86_64 backend"))
-        fn_lines, used_runtime = _x86_fn(item, fn_sigs, module_ctx)
+        fn_lines, used_runtime = _x86_fn(item, fn_sigs, module_ctx, structs)
         lines.extend(fn_lines)
         lines.append("")
         runtime_symbols |= used_runtime
@@ -658,14 +741,17 @@ def to_x86_64(prog: Program, freestanding: bool = False) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _x86_fn(fn: FnDecl, fn_sigs: dict[str, _FnSig], module_ctx: _ModuleCtx) -> tuple[list[str], set[str]]:
+def _x86_fn(
+    fn: FnDecl,
+    fn_sigs: dict[str, _FnSig],
+    module_ctx: _ModuleCtx,
+    structs: dict[str, StructDecl],
+) -> tuple[list[str], set[str]]:
     fn_name = fn.symbol or fn.name
     sig = fn_sigs.get(fn_name)
     if sig is None:
         raise CodegenError(_diag(fn, f"missing signature for {fn_name}"))
     ret_abi = _lower_abi_type(sig.ret, fn)
-    if ret_abi.cls == "memory":
-        raise CodegenError(_diag(fn, "aggregate returns are planned via sret but are not implemented yet on x86_64 backend"))
 
     ctx = _FnCtx(
         epilogue=f".L_{fn_name}_epilogue",
@@ -673,6 +759,7 @@ def _x86_fn(fn: FnDecl, fn_sigs: dict[str, _FnSig], module_ctx: _ModuleCtx) -> t
         fn_sigs=fn_sigs,
         local_types={name: typ for name, typ in fn.params},
         module_ctx=module_ctx,
+        structs=structs,
     )
 
     _prepare_defer_sites(fn.body, ctx, fn)
@@ -706,9 +793,9 @@ def _x86_fn(fn: FnDecl, fn_sigs: dict[str, _FnSig], module_ctx: _ModuleCtx) -> t
             continue
         raise CodegenError(_diag(fn, f"parameter type {typ} is unsupported on x86_64 backend"))
 
-    # Clear defer-active flags once per function prologue.
+    # Initialize defer counters once per function prologue.
     for site in ctx.defer_sites:
-        body.append(f"  mov qword [rbp-{site.active_slot}], 0")
+        body.append(f"  mov qword [rbp-{site.count_slot}], 0")
 
     for st in fn.body:
         body.extend(_x86_stmt(st, ctx))
@@ -721,28 +808,24 @@ def _x86_fn(fn: FnDecl, fn_sigs: dict[str, _FnSig], module_ctx: _ModuleCtx) -> t
     lines.append(f"{ctx.epilogue}:")
     for site in reversed(ctx.defer_sites):
         skip = _label(ctx, "defer_skip")
+        loop = _label(ctx, "defer_loop")
         lines += [
-            f"  cmp qword [rbp-{site.active_slot}], 0",
+            f"{loop}:",
+            f"  cmp qword [rbp-{site.count_slot}], 0",
             f"  je {skip}",
+            f"  sub qword [rbp-{site.count_slot}], 1",
         ]
         if ret_abi.cls == "int":
             lines.append("  push rax")
         elif ret_abi.cls == "sse":
             lines += ["  sub rsp, 8", "  movsd qword [rsp], xmm0"]
-        values = [_CallValue(abi=abi, slot=slot) for abi, slot in zip(site.param_abis, site.arg_slots)]
-        lines += _emit_call(
-            symbol=site.symbol,
-            callee_slot=site.callee_slot,
-            values=values,
-            param_abis=site.param_abis,
-            ret_abi=site.ret_abi,
-            ctx=ctx,
-        )
+        defer_code, _ = _x86_expr(site.expr, ctx)
+        lines += defer_code
         if ret_abi.cls == "int":
             lines.append("  pop rax")
         elif ret_abi.cls == "sse":
             lines += ["  movsd xmm0, qword [rsp]", "  add rsp, 8"]
-        lines += [f"  mov qword [rbp-{site.active_slot}], 0", f"{skip}:"]
+        lines += [f"  jmp {loop}", f"{skip}:"]
     lines += ["  mov rsp, rbp", "  pop rbp", "  ret"]
     return lines, set(ctx.runtime_symbols)
 
@@ -750,30 +833,11 @@ def _x86_fn(fn: FnDecl, fn_sigs: dict[str, _FnSig], module_ctx: _ModuleCtx) -> t
 def _prepare_defer_sites(stmts: list[Any], ctx: _FnCtx, fn_node: Any, in_loop: bool = False) -> None:
     for st in stmts:
         if isinstance(st, DeferStmt):
-            if in_loop:
-                raise CodegenError(_diag(st, "defer inside loops is not yet supported on x86_64 backend"))
-            if not isinstance(st.expr, Call):
-                raise CodegenError(_diag(st, "defer currently requires a call expression on x86_64 backend"))
-            if isinstance(st.expr.fn, Name) and st.expr.fn.value in {"print", "alloc", "free", "panic"}:
-                raise CodegenError(_diag(st, "defer on runtime builtins is not yet supported on x86_64 backend"))
             if not hasattr(st, "_defer_id"):
                 setattr(st, "_defer_id", len(ctx.defer_sites))
             site_id = getattr(st, "_defer_id")
-            symbol, callee_expr, param_tys, ret_ty = _resolve_call_target(st.expr, ctx)
-            param_abis = [_lower_abi_type(t, st.expr, allow_memory=False) for t in param_tys]
-            ret_abi = _lower_abi_type(ret_ty, st.expr)
-            active_slot = _alloc_temp_slot(ctx, _AbiType("Bool", "u8", "int"))
-            arg_slots = [_alloc_temp_slot(ctx, abi) for abi in param_abis]
-            callee_slot = _alloc_temp_slot(ctx, _AbiType("usize", "ptr", "int")) if callee_expr is not None else None
-            site = _DeferSite(
-                site_id=site_id,
-                active_slot=active_slot,
-                symbol=symbol,
-                callee_slot=callee_slot,
-                param_abis=param_abis,
-                ret_abi=ret_abi,
-                arg_slots=arg_slots,
-            )
+            count_slot = _alloc_temp_slot(ctx, _AbiType("Int", "i64", "int"))
+            site = _DeferSite(site_id=site_id, count_slot=count_slot, expr=st.expr)
             ctx.defer_site_map[site_id] = site
             if len(ctx.defer_sites) <= site_id:
                 ctx.defer_sites.append(site)
@@ -783,6 +847,10 @@ def _prepare_defer_sites(stmts: list[Any], ctx: _FnCtx, fn_node: Any, in_loop: b
         if isinstance(st, IfStmt):
             _prepare_defer_sites(st.then_body, ctx, fn_node, in_loop=in_loop)
             _prepare_defer_sites(st.else_body, ctx, fn_node, in_loop=in_loop)
+            continue
+        if isinstance(st, MatchStmt):
+            for _, arm in st.arms:
+                _prepare_defer_sites(arm, ctx, fn_node, in_loop=in_loop)
             continue
         if isinstance(st, WhileStmt):
             _prepare_defer_sites(st.body, ctx, fn_node, in_loop=True)
@@ -828,6 +896,8 @@ def _expr_type(e: Any, ctx: _FnCtx) -> str:
         return inferred
     if isinstance(e, BoolLit):
         return "Bool"
+    if isinstance(e, NilLit):
+        return "<none>"
     if isinstance(e, Literal):
         if isinstance(e.value, bool):
             return "Bool"
@@ -842,6 +912,9 @@ def _expr_type(e: Any, ctx: _FnCtx) -> str:
         sig = ctx.fn_sigs.get(e.value)
         if sig is not None:
             return _fn_type(sig.params, sig.ret)
+        bsig = _BUILTIN_SIGS_X86.get(e.value)
+        if bsig is not None:
+            return _fn_type(list(bsig.params), bsig.ret)
     if isinstance(e, Unary):
         if e.op == "&":
             return f"&{_expr_type(e.expr, ctx)}"
@@ -883,6 +956,27 @@ def _expr_type(e: Any, ctx: _FnCtx) -> str:
         parsed = _parse_fn_type(callee_ty)
         if parsed is not None:
             return parsed[1]
+    if isinstance(e, IndexExpr):
+        obj_ty = _canonical_type(_strip_ref_type(_expr_type(e.obj, ctx)))
+        if _is_slice_type(obj_ty):
+            return _slice_inner_type(obj_ty)
+        if _is_vec_type(obj_ty):
+            return _vec_inner_type(obj_ty)
+    if isinstance(e, FieldExpr):
+        obj_ty = _canonical_type(_strip_ref_type(_expr_type(e.obj, ctx)))
+        decl = ctx.structs.get(obj_ty)
+        if decl is not None:
+            for fname, fty in decl.fields:
+                if fname == e.field:
+                    return fty
+    if isinstance(e, ArrayLit):
+        if not e.elements:
+            return "[Any]"
+        return f"[{_expr_type(e.elements[0], ctx)}]"
+    if isinstance(e, AwaitExpr):
+        return _expr_type(e.expr, ctx)
+    if isinstance(e, TypeAnnotated):
+        return e.type_name
     return "Any"
 
 
@@ -912,6 +1006,41 @@ def _load_to_reg(slot: int, abi: _AbiType) -> list[str]:
     raise CodegenError(f"unhandled load class {abi.cls}")
 
 
+def _store_ptr_value(ptr_reg: str, abi: _AbiType) -> list[str]:
+    if abi.cls == "int":
+        return [f"  mov qword [{ptr_reg}], rax"]
+    if abi.cls == "sse":
+        return [f"  movsd qword [{ptr_reg}], xmm0"]
+    raise CodegenError(f"unhandled store class {abi.cls}")
+
+
+def _load_ptr_value(ptr_reg: str, abi: _AbiType) -> list[str]:
+    if abi.cls == "int":
+        return [f"  mov rax, qword [{ptr_reg}]"]
+    if abi.cls == "sse":
+        return [f"  movsd xmm0, qword [{ptr_reg}]"]
+    raise CodegenError(f"unhandled load class {abi.cls}")
+
+
+def _struct_field_info(struct_name: str, field: str, ctx: _FnCtx, node: Any) -> tuple[int, str]:
+    decl = ctx.structs.get(struct_name)
+    if decl is None:
+        raise CodegenError(_diag(node, f"unknown struct type {struct_name} on x86_64 backend"))
+    for idx, (fname, fty) in enumerate(decl.fields):
+        if fname == field:
+            return idx, fty
+    raise CodegenError(_diag(node, f"struct {struct_name} has no field {field}"))
+
+
+def _array_like_elem_type(obj_ty: str) -> str | None:
+    base = _canonical_type(_strip_ref_type(obj_ty))
+    if _is_slice_type(base):
+        return _slice_inner_type(base)
+    if _is_vec_type(base):
+        return _vec_inner_type(base)
+    return None
+
+
 def _x86_cond_jump_false(cond: Any, false_label: str, ctx: _FnCtx) -> list[str]:
     if isinstance(cond, Binary) and cond.op in {"==", "!=", "<", "<=", ">", ">="}:
         lty = _lower_abi_type(_expr_type(cond.left, ctx), cond.left)
@@ -938,44 +1067,253 @@ def _x86_stmt(st: Any, ctx: _FnCtx) -> list[str]:
         code, _ = _coerce_value(code, out_abi, abi, st)
         return code + _store_from_reg(slot, abi)
     if isinstance(st, AssignStmt):
-        if not isinstance(st.target, Name):
-            raise CodegenError(_diag(st, "x86_64 backend only supports assignment to local names"))
-        slot = _require_name_slot(st.target.value, ctx, st)
-        lhs_type = ctx.local_types.get(st.target.value, "Int")
-        lhs_abi = _lower_abi_type(lhs_type, st, allow_memory=False)
-        code, rhs_abi = _x86_expr(st.expr, ctx, expected=lhs_abi)
-        code, _ = _coerce_value(code, rhs_abi, lhs_abi, st)
-        if st.op == "=":
-            return code + _store_from_reg(slot, lhs_abi)
-        if lhs_abi.cls == "int":
-            code += [f"  mov rbx, qword [rbp-{slot}]"]
-            if st.op == "+=":
-                code += ["  add rbx, rax", "  mov rax, rbx"]
-            elif st.op == "-=":
-                code += ["  sub rbx, rax", "  mov rax, rbx"]
-            elif st.op == "*=":
-                code += ["  imul rbx, rax", "  mov rax, rbx"]
-            elif st.op == "/=":
-                code += ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx"]
-            elif st.op == "%=":
-                code += ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx", "  mov rax, rdx"]
-            else:
-                raise CodegenError(_diag(st, f"unsupported assignment op {st.op} on x86_64 backend"))
-            return code + [f"  mov qword [rbp-{slot}], rax"]
-        if lhs_abi.cls == "sse":
-            code += [f"  movsd xmm1, qword [rbp-{slot}]"]
-            if st.op == "+=":
-                code += ["  addsd xmm1, xmm0", "  movapd xmm0, xmm1"]
-            elif st.op == "-=":
-                code += ["  subsd xmm1, xmm0", "  movapd xmm0, xmm1"]
-            elif st.op == "*=":
-                code += ["  mulsd xmm1, xmm0", "  movapd xmm0, xmm1"]
-            elif st.op == "/=":
-                code += ["  divsd xmm1, xmm0", "  movapd xmm0, xmm1"]
-            else:
-                raise CodegenError(_diag(st, f"unsupported assignment op {st.op} on floating point values"))
-            return code + [f"  movsd qword [rbp-{slot}], xmm0"]
-        raise CodegenError(_diag(st, f"unsupported assignment type {lhs_type} on x86_64 backend"))
+        if isinstance(st.target, Name):
+            slot = _require_name_slot(st.target.value, ctx, st)
+            lhs_type = ctx.local_types.get(st.target.value, "Int")
+            lhs_abi = _lower_abi_type(lhs_type, st, allow_memory=False)
+            code, rhs_abi = _x86_expr(st.expr, ctx, expected=lhs_abi)
+            code, _ = _coerce_value(code, rhs_abi, lhs_abi, st)
+            if st.op == "=":
+                return code + _store_from_reg(slot, lhs_abi)
+            if lhs_abi.cls == "int":
+                code += [f"  mov rbx, qword [rbp-{slot}]"]
+                if st.op == "+=":
+                    code += ["  add rbx, rax", "  mov rax, rbx"]
+                elif st.op == "-=":
+                    code += ["  sub rbx, rax", "  mov rax, rbx"]
+                elif st.op == "*=":
+                    code += ["  imul rbx, rax", "  mov rax, rbx"]
+                elif st.op == "/=":
+                    code += ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx"]
+                elif st.op == "%=":
+                    code += ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx", "  mov rax, rdx"]
+                else:
+                    raise CodegenError(_diag(st, f"unsupported assignment op {st.op} on x86_64 backend"))
+                return code + [f"  mov qword [rbp-{slot}], rax"]
+            if lhs_abi.cls == "sse":
+                code += [f"  movsd xmm1, qword [rbp-{slot}]"]
+                if st.op == "+=":
+                    code += ["  addsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                elif st.op == "-=":
+                    code += ["  subsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                elif st.op == "*=":
+                    code += ["  mulsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                elif st.op == "/=":
+                    code += ["  divsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                elif st.op == "%=":
+                    code += ["  movapd xmm2, xmm0", "  movapd xmm0, xmm1", "  movapd xmm1, xmm2"] + _emit_call(
+                        symbol="astra_fmod",
+                        callee_slot=None,
+                        values=[],
+                        param_abis=[],
+                        ret_abi=_AbiType("Float", "f64", "sse"),
+                        ctx=ctx,
+                    )
+                else:
+                    raise CodegenError(_diag(st, f"unsupported assignment op {st.op} on floating point values"))
+                return code + [f"  movsd qword [rbp-{slot}], xmm0"]
+            raise CodegenError(_diag(st, f"unsupported assignment type {lhs_type} on x86_64 backend"))
+        if isinstance(st.target, Unary) and st.target.op == "*":
+            lhs_type = _expr_type(st.target, ctx)
+            lhs_abi = _lower_abi_type(lhs_type, st.target, allow_memory=False)
+            ptr_code, ptr_abi = _x86_expr(st.target.expr, ctx, expected=_AbiType("usize", "ptr", "int"))
+            ptr_code, _ = _coerce_value(ptr_code, ptr_abi, _AbiType("usize", "ptr", "int"), st.target)
+            ptr_slot = _alloc_temp_slot(ctx, _AbiType("usize", "ptr", "int"))
+            code = ptr_code + [f"  mov qword [rbp-{ptr_slot}], rax"]
+            rhs_code, rhs_abi = _x86_expr(st.expr, ctx, expected=lhs_abi)
+            rhs_code, _ = _coerce_value(rhs_code, rhs_abi, lhs_abi, st)
+            code += rhs_code
+            if st.op == "=":
+                if lhs_abi.cls == "int":
+                    return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  mov qword [r11], rax"]
+                if lhs_abi.cls == "sse":
+                    return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  movsd qword [r11], xmm0"]
+                raise CodegenError(_diag(st, f"unsupported assignment type {lhs_type} on x86_64 backend"))
+            if lhs_abi.cls == "int":
+                code += [f"  mov r11, qword [rbp-{ptr_slot}]", "  mov rbx, qword [r11]"]
+                if st.op == "+=":
+                    code += ["  add rbx, rax", "  mov rax, rbx"]
+                elif st.op == "-=":
+                    code += ["  sub rbx, rax", "  mov rax, rbx"]
+                elif st.op == "*=":
+                    code += ["  imul rbx, rax", "  mov rax, rbx"]
+                elif st.op == "/=":
+                    code += ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx"]
+                elif st.op == "%=":
+                    code += ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx", "  mov rax, rdx"]
+                else:
+                    raise CodegenError(_diag(st, f"unsupported assignment op {st.op} on x86_64 backend"))
+                return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  mov qword [r11], rax"]
+            if lhs_abi.cls == "sse":
+                code += [f"  mov r11, qword [rbp-{ptr_slot}]", "  movsd xmm1, qword [r11]"]
+                if st.op == "+=":
+                    code += ["  addsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                elif st.op == "-=":
+                    code += ["  subsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                elif st.op == "*=":
+                    code += ["  mulsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                elif st.op == "/=":
+                    code += ["  divsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                elif st.op == "%=":
+                    code += ["  movapd xmm2, xmm0", "  movapd xmm0, xmm1", "  movapd xmm1, xmm2"] + _emit_call(
+                        symbol="astra_fmod",
+                        callee_slot=None,
+                        values=[],
+                        param_abis=[],
+                        ret_abi=_AbiType("Float", "f64", "sse"),
+                        ctx=ctx,
+                    )
+                else:
+                    raise CodegenError(_diag(st, f"unsupported assignment op {st.op} on floating point values"))
+                return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  movsd qword [r11], xmm0"]
+            raise CodegenError(_diag(st, f"unsupported assignment type {lhs_type} on x86_64 backend"))
+        if isinstance(st.target, FieldExpr):
+            obj_ty = _canonical_type(_strip_ref_type(_expr_type(st.target.obj, ctx)))
+            idx, lhs_type = _struct_field_info(obj_ty, st.target.field, ctx, st.target)
+            lhs_abi = _lower_abi_type(lhs_type, st.target, allow_memory=False)
+            obj_code, obj_abi = _x86_expr(st.target.obj, ctx, expected=_AbiType("usize", "ptr", "int"))
+            obj_code, _ = _coerce_value(obj_code, obj_abi, _AbiType("usize", "ptr", "int"), st.target)
+            ptr_slot = _alloc_temp_slot(ctx, _AbiType("usize", "ptr", "int"))
+            code = obj_code + [f"  lea r11, [rax+{idx * 8}]", f"  mov qword [rbp-{ptr_slot}], r11"]
+            rhs_code, rhs_abi = _x86_expr(st.expr, ctx, expected=lhs_abi)
+            rhs_code, _ = _coerce_value(rhs_code, rhs_abi, lhs_abi, st)
+            code += rhs_code
+            if st.op == "=":
+                if lhs_abi.cls == "int":
+                    return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  mov qword [r11], rax"]
+                if lhs_abi.cls == "sse":
+                    return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  movsd qword [r11], xmm0"]
+                raise CodegenError(_diag(st, f"unsupported assignment type {lhs_type} on x86_64 backend"))
+            if lhs_abi.cls == "int":
+                code += [f"  mov r11, qword [rbp-{ptr_slot}]", "  mov rbx, qword [r11]"]
+                if st.op == "+=":
+                    code += ["  add rbx, rax", "  mov rax, rbx"]
+                elif st.op == "-=":
+                    code += ["  sub rbx, rax", "  mov rax, rbx"]
+                elif st.op == "*=":
+                    code += ["  imul rbx, rax", "  mov rax, rbx"]
+                elif st.op == "/=":
+                    code += ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx"]
+                elif st.op == "%=":
+                    code += ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx", "  mov rax, rdx"]
+                else:
+                    raise CodegenError(_diag(st, f"unsupported assignment op {st.op} on x86_64 backend"))
+                return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  mov qword [r11], rax"]
+            if lhs_abi.cls == "sse":
+                code += [f"  mov r11, qword [rbp-{ptr_slot}]", "  movsd xmm1, qword [r11]"]
+                if st.op == "+=":
+                    code += ["  addsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                elif st.op == "-=":
+                    code += ["  subsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                elif st.op == "*=":
+                    code += ["  mulsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                elif st.op == "/=":
+                    code += ["  divsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                elif st.op == "%=":
+                    code += ["  movapd xmm2, xmm0", "  movapd xmm0, xmm1", "  movapd xmm1, xmm2"] + _emit_call(
+                        symbol="astra_fmod",
+                        callee_slot=None,
+                        values=[],
+                        param_abis=[],
+                        ret_abi=_AbiType("Float", "f64", "sse"),
+                        ctx=ctx,
+                    )
+                else:
+                    raise CodegenError(_diag(st, f"unsupported assignment op {st.op} on floating point values"))
+                return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  movsd qword [r11], xmm0"]
+            raise CodegenError(_diag(st, f"unsupported assignment type {lhs_type} on x86_64 backend"))
+        if isinstance(st.target, IndexExpr):
+            obj_ty = _expr_type(st.target.obj, ctx)
+            elem_ty = _array_like_elem_type(obj_ty)
+            if elem_ty is None:
+                raise CodegenError(_diag(st, f"index assignment requires Vec<T> or [T] target on x86_64 backend, got {obj_ty}"))
+            lhs_abi = _lower_abi_type(elem_ty, st.target, allow_memory=False)
+            base_code, base_abi = _x86_expr(st.target.obj, ctx, expected=_AbiType("usize", "ptr", "int"))
+            base_code, _ = _coerce_value(base_code, base_abi, _AbiType("usize", "ptr", "int"), st.target.obj)
+            base_slot = _alloc_temp_slot(ctx, _AbiType("usize", "ptr", "int"))
+            idx_code, idx_abi = _x86_expr(st.target.index, ctx, expected=_AbiType("Int", "i64", "int"))
+            idx_code, _ = _coerce_value(idx_code, idx_abi, _AbiType("Int", "i64", "int"), st.target.index)
+            idx_slot = _alloc_temp_slot(ctx, _AbiType("Int", "i64", "int"))
+            ptr_slot = _alloc_temp_slot(ctx, _AbiType("usize", "ptr", "int"))
+            code = base_code + [f"  mov qword [rbp-{base_slot}], rax"] + idx_code + [f"  mov qword [rbp-{idx_slot}], rax"]
+            ok = _label(ctx, "idx_ok")
+            if ctx.module_ctx is None:
+                raise CodegenError(_diag(st, "internal module context missing for index lowering"))
+            panic_msg = "index out of bounds"
+            panic_label = _string_label(panic_msg, ctx.module_ctx)
+            code += [
+                f"  mov r11, qword [rbp-{base_slot}]",
+                "  mov rbx, qword [r11]",
+                f"  mov rax, qword [rbp-{idx_slot}]",
+                "  cmp rax, rbx",
+                f"  jb {ok}",
+            ]
+            code += _emit_call(
+                symbol="astra_panic",
+                callee_slot=None,
+                values=[
+                    _CallValue(_AbiType("usize", "ptr", "int"), label=panic_label),
+                    _CallValue(_AbiType("usize", "i64", "int"), imm=len(panic_msg.encode("utf-8"))),
+                ],
+                param_abis=[_AbiType("usize", "ptr", "int"), _AbiType("usize", "i64", "int")],
+                ret_abi=_AbiType("Never", "never", "void", size=0),
+                ctx=ctx,
+            )
+            code += [
+                f"{ok}:",
+                f"  mov r11, qword [rbp-{base_slot}]",
+                f"  mov rax, qword [rbp-{idx_slot}]",
+                "  lea r11, [r11+rax*8+8]",
+                f"  mov qword [rbp-{ptr_slot}], r11",
+            ]
+            rhs_code, rhs_abi = _x86_expr(st.expr, ctx, expected=lhs_abi)
+            rhs_code, _ = _coerce_value(rhs_code, rhs_abi, lhs_abi, st)
+            code += rhs_code
+            if st.op == "=":
+                if lhs_abi.cls == "int":
+                    return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  mov qword [r11], rax"]
+                if lhs_abi.cls == "sse":
+                    return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  movsd qword [r11], xmm0"]
+                raise CodegenError(_diag(st, f"unsupported assignment type {elem_ty} on x86_64 backend"))
+            if lhs_abi.cls == "int":
+                code += [f"  mov r11, qword [rbp-{ptr_slot}]", "  mov rbx, qword [r11]"]
+                if st.op == "+=":
+                    code += ["  add rbx, rax", "  mov rax, rbx"]
+                elif st.op == "-=":
+                    code += ["  sub rbx, rax", "  mov rax, rbx"]
+                elif st.op == "*=":
+                    code += ["  imul rbx, rax", "  mov rax, rbx"]
+                elif st.op == "/=":
+                    code += ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx"]
+                elif st.op == "%=":
+                    code += ["  mov rcx, rax", "  mov rax, rbx", "  cqo", "  idiv rcx", "  mov rax, rdx"]
+                else:
+                    raise CodegenError(_diag(st, f"unsupported assignment op {st.op} on x86_64 backend"))
+                return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  mov qword [r11], rax"]
+            if lhs_abi.cls == "sse":
+                code += [f"  mov r11, qword [rbp-{ptr_slot}]", "  movsd xmm1, qword [r11]"]
+                if st.op == "+=":
+                    code += ["  addsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                elif st.op == "-=":
+                    code += ["  subsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                elif st.op == "*=":
+                    code += ["  mulsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                elif st.op == "/=":
+                    code += ["  divsd xmm1, xmm0", "  movapd xmm0, xmm1"]
+                elif st.op == "%=":
+                    code += ["  movapd xmm2, xmm0", "  movapd xmm0, xmm1", "  movapd xmm1, xmm2"] + _emit_call(
+                        symbol="astra_fmod",
+                        callee_slot=None,
+                        values=[],
+                        param_abis=[],
+                        ret_abi=_AbiType("Float", "f64", "sse"),
+                        ctx=ctx,
+                    )
+                else:
+                    raise CodegenError(_diag(st, f"unsupported assignment op {st.op} on floating point values"))
+                return code + [f"  mov r11, qword [rbp-{ptr_slot}]", "  movsd qword [r11], xmm0"]
+            raise CodegenError(_diag(st, f"unsupported assignment type {elem_ty} on x86_64 backend"))
+        raise CodegenError(_diag(st, "x86_64 backend currently supports assignment to local names and dereferenced pointers"))
     if isinstance(st, ReturnStmt):
         ret_abi = _lower_abi_type(ctx.fn_sig.ret, st)
         if st.expr is None:
@@ -1003,6 +1341,31 @@ def _x86_stmt(st: Any, ctx: _FnCtx) -> list[str]:
         for s in st.else_body:
             code += _x86_stmt(s, ctx)
         code += [f"{lbl_end}:"]
+        return code
+    if isinstance(st, MatchStmt):
+        subject_ty = _expr_type(st.expr, ctx)
+        subject_abi = _lower_abi_type(subject_ty, st.expr, allow_memory=False)
+        if subject_abi.cls not in {"int", "sse"}:
+            raise CodegenError(_diag(st, f"match subject type {subject_ty} is unsupported on x86_64 backend"))
+        if not st.arms:
+            return []
+        code, out_abi = _x86_expr(st.expr, ctx, expected=subject_abi)
+        code, _ = _coerce_value(code, out_abi, subject_abi, st.expr)
+        subject_slot = _alloc_temp_slot(ctx, subject_abi)
+        code += _store_from_reg(subject_slot, subject_abi)
+        lbl_end = _label(ctx, "match_end")
+        for pat, body in st.arms:
+            lbl_next = _label(ctx, "match_next")
+            pat_code, pat_abi = _x86_expr(pat, ctx, expected=subject_abi)
+            pat_code, _ = _coerce_value(pat_code, pat_abi, subject_abi, pat)
+            if subject_abi.cls == "int":
+                code += pat_code + [f"  mov rbx, qword [rbp-{subject_slot}]", "  cmp rbx, rax", f"  jne {lbl_next}"]
+            else:
+                code += pat_code + [f"  movsd xmm1, qword [rbp-{subject_slot}]", "  ucomisd xmm1, xmm0", f"  jp {lbl_next}", f"  jne {lbl_next}"]
+            for arm_stmt in body:
+                code += _x86_stmt(arm_stmt, ctx)
+            code += [f"  jmp {lbl_end}", f"{lbl_next}:"]
+        code.append(f"{lbl_end}:")
         return code
     if isinstance(st, WhileStmt):
         lbl_begin = _label(ctx, "while_begin")
@@ -1056,26 +1419,8 @@ def _x86_stmt(st: Any, ctx: _FnCtx) -> list[str]:
         site_id = getattr(st, "_defer_id", None)
         if site_id is None or site_id not in ctx.defer_site_map:
             raise CodegenError(_diag(st, "internal defer site resolution failure"))
-        if not isinstance(st.expr, Call):
-            raise CodegenError(_diag(st, "defer currently requires a call expression on x86_64 backend"))
         site = ctx.defer_site_map[site_id]
-        symbol, callee_expr, param_tys, _ = _resolve_call_target(st.expr, ctx)
-        param_abis = [_lower_abi_type(t, st.expr, allow_memory=False) for t in param_tys]
-        code, values = _eval_args_for_call(st.expr.args, param_abis, ctx)
-        if callee_expr is not None:
-            if site.callee_slot is None:
-                raise CodegenError(_diag(st, "internal defer callee slot failure"))
-            callee_code, callee_abi = _x86_expr(callee_expr, ctx, expected=_AbiType("usize", "ptr", "int"))
-            callee_code, _ = _coerce_value(callee_code, callee_abi, _AbiType("usize", "ptr", "int"), st)
-            code += callee_code + [f"  mov qword [rbp-{site.callee_slot}], rax"]
-        for idx, value in enumerate(values):
-            if value.slot is None:
-                raise CodegenError(_diag(st, "defer call arguments must lower to stack slots"))
-            code += [f"  mov rax, qword [rbp-{value.slot}]", f"  mov qword [rbp-{site.arg_slots[idx]}], rax"]
-        code += [f"  mov qword [rbp-{site.active_slot}], 1"]
-        if symbol in _RUNTIME_ABI:
-            ctx.runtime_symbols.add(symbol)
-        return code
+        return [f"  add qword [rbp-{site.count_slot}], 1"]
     raise CodegenError(_diag(st, f"{type(st).__name__} is not supported on x86_64 backend"))
 
 
@@ -1093,11 +1438,24 @@ def _x86_expr(e: Any, ctx: _FnCtx, expected: _AbiType | None = None) -> tuple[li
             abi = _AbiType("Float", "f64", "sse")
             code = [f"  mov rax, __float64__({e.value!r})", "  movq xmm0, rax"]
             return _coerce_value(code, abi, expected, e) if expected is not None else (code, abi)
-        raise CodegenError(_diag(e, "x86_64 backend only supports numeric and bool literals"))
+        if isinstance(e.value, str):
+            if ctx.module_ctx is None:
+                raise CodegenError(_diag(e, "internal module context missing for string literal lowering"))
+            label = _string_label(e.value, ctx.module_ctx)
+            abi = _AbiType("&str", "ptr", "int")
+            code = [f"  mov rax, {label}"]
+            return _coerce_value(code, abi, expected, e) if expected is not None else (code, abi)
+        raise CodegenError(_diag(e, "x86_64 backend only supports scalar and string literals"))
     if isinstance(e, BoolLit):
         abi = _AbiType("Bool", "u8", "int")
         code = [f"  mov rax, {1 if e.value else 0}"]
         return _coerce_value(code, abi, expected, e) if expected is not None else (code, abi)
+    if isinstance(e, NilLit):
+        if expected is not None and expected.cls == "sse":
+            raise CodegenError(_diag(e, "nil cannot lower to floating point option representation on x86_64 backend"))
+        abi = expected if expected is not None else _AbiType("Option", "ptr", "int")
+        code = ["  xor rax, rax"]
+        return _coerce_value(code, _AbiType("Option", "ptr", "int"), abi, e) if expected is not None else (code, _AbiType("Option", "ptr", "int"))
     if isinstance(e, Name):
         if e.value in ctx.slots:
             slot = _require_name_slot(e.value, ctx, e)
@@ -1141,11 +1499,59 @@ def _x86_expr(e: Any, ctx: _FnCtx, expected: _AbiType | None = None) -> tuple[li
             out_abi = _AbiType("Bool", "u8", "int")
             out = code + ["  cmp rax, 0", "  sete al", "  movzx rax, al"]
             return _coerce_value(out, out_abi, expected, e) if expected is not None else (out, out_abi)
+        if e.op == "~":
+            if abi.cls != "int":
+                raise CodegenError(_diag(e, "unary ~ expects integer/bool value on x86_64 backend"))
+            out = code + ["  not rax"]
+            return _coerce_value(out, _AbiType("Int", "i64", "int"), expected, e) if expected is not None else (out, _AbiType("Int", "i64", "int"))
         raise CodegenError(_diag(e, f"unary operator {e.op} is unsupported on x86_64 backend"))
+    if isinstance(e, AwaitExpr):
+        return _x86_expr(e.expr, ctx, expected)
+    if isinstance(e, TypeAnnotated):
+        return _x86_expr(e.expr, ctx, expected)
     if isinstance(e, Binary):
+        if e.op == "??":
+            left_ty = _expr_type(e.left, ctx)
+            if left_ty == "<none>":
+                return _x86_expr(e.right, ctx, expected)
+            if not _is_option_type(left_ty):
+                raise CodegenError(_diag(e, "left operand of ?? must be Option<T> on x86_64 backend"))
+            inner_ty = _canonical_type(_option_inner_type(left_ty))
+            inner_abi = _lower_abi_type(inner_ty, e, allow_memory=False)
+            left_abi = _lower_abi_type(left_ty, e.left, allow_memory=False)
+            left_code, out_left = _x86_expr(e.left, ctx, expected=left_abi)
+            left_code, _ = _coerce_value(left_code, out_left, left_abi, e.left)
+            lbl_use_right = _label(ctx, "coalesce_right")
+            lbl_end = _label(ctx, "coalesce_end")
+            right_code, out_right = _x86_expr(e.right, ctx, expected=inner_abi)
+            right_code, _ = _coerce_value(right_code, out_right, inner_abi, e.right)
+            code = left_code + ["  cmp rax, 0", f"  je {lbl_use_right}"]
+            if inner_abi.cls == "int":
+                code += ["  mov rax, qword [rax]"]
+            elif inner_abi.cls == "sse":
+                code += ["  movsd xmm0, qword [rax]"]
+            else:
+                raise CodegenError(_diag(e, f"?? inner type {inner_ty} is unsupported on x86_64 backend"))
+            code += [f"  jmp {lbl_end}", f"{lbl_use_right}:"] + right_code + [f"{lbl_end}:"]
+            return _coerce_value(code, inner_abi, expected, e) if expected is not None else (code, inner_abi)
         lty = _lower_abi_type(_expr_type(e.left, ctx), e.left, allow_memory=False)
         rty = _lower_abi_type(_expr_type(e.right, ctx), e.right, allow_memory=False)
         if lty.cls == "sse" or rty.cls == "sse":
+            if e.op == "%":
+                arg_code, values = _eval_args_for_call(
+                    [e.left, e.right],
+                    [_AbiType("Float", "f64", "sse"), _AbiType("Float", "f64", "sse")],
+                    ctx,
+                )
+                out = arg_code + _emit_call(
+                    symbol="astra_fmod",
+                    callee_slot=None,
+                    values=values,
+                    param_abis=[_AbiType("Float", "f64", "sse"), _AbiType("Float", "f64", "sse")],
+                    ret_abi=_AbiType("Float", "f64", "sse"),
+                    ctx=ctx,
+                )
+                return _coerce_value(out, _AbiType("Float", "f64", "sse"), expected, e) if expected is not None else (out, _AbiType("Float", "f64", "sse"))
             left, _ = _x86_expr(e.left, ctx, expected=_AbiType("Float", "f64", "sse"))
             right, _ = _x86_expr(e.right, ctx, expected=_AbiType("Float", "f64", "sse"))
             code = left + ["  sub rsp, 8", "  movsd qword [rsp], xmm0"] + right + ["  movsd xmm1, qword [rsp]", "  add rsp, 8"]
@@ -1200,11 +1606,76 @@ def _x86_expr(e: Any, ctx: _FnCtx, expected: _AbiType | None = None) -> tuple[li
             out = code + ["  cmp rax, 0", "  setne al", "  cmp rbx, 0", "  setne bl", "  or al, bl", "  movzx rax, al"]
             out_abi = _AbiType("Bool", "u8", "int")
             return _coerce_value(out, out_abi, expected, e) if expected is not None else (out, out_abi)
-        if op == "??":
-            raise CodegenError(_diag(e, "binary operator ?? is unsupported on x86_64 backend"))
         raise CodegenError(_diag(e, f"binary operator {op} is unsupported on x86_64 backend"))
     if isinstance(e, Call):
         return _x86_call_expr(e, ctx, expected)
+    if isinstance(e, FieldExpr):
+        obj_ty = _canonical_type(_strip_ref_type(_expr_type(e.obj, ctx)))
+        idx, field_ty = _struct_field_info(obj_ty, e.field, ctx, e)
+        field_abi = _lower_abi_type(field_ty, e, allow_memory=False)
+        obj_code, obj_abi = _x86_expr(e.obj, ctx, expected=_AbiType("usize", "ptr", "int"))
+        obj_code, _ = _coerce_value(obj_code, obj_abi, _AbiType("usize", "ptr", "int"), e.obj)
+        code = obj_code + [f"  lea r11, [rax+{idx * 8}]"] + _load_ptr_value("r11", field_abi)
+        return _coerce_value(code, field_abi, expected, e) if expected is not None else (code, field_abi)
+    if isinstance(e, IndexExpr):
+        obj_ty = _expr_type(e.obj, ctx)
+        elem_ty = _array_like_elem_type(obj_ty)
+        if elem_ty is None:
+            raise CodegenError(_diag(e, f"indexing requires Vec<T> or [T] on x86_64 backend, got {obj_ty}"))
+        elem_abi = _lower_abi_type(elem_ty, e, allow_memory=False)
+        base_code, base_abi = _x86_expr(e.obj, ctx, expected=_AbiType("usize", "ptr", "int"))
+        base_code, _ = _coerce_value(base_code, base_abi, _AbiType("usize", "ptr", "int"), e.obj)
+        base_slot = _alloc_temp_slot(ctx, _AbiType("usize", "ptr", "int"))
+        idx_code, idx_abi = _x86_expr(e.index, ctx, expected=_AbiType("Int", "i64", "int"))
+        idx_code, _ = _coerce_value(idx_code, idx_abi, _AbiType("Int", "i64", "int"), e.index)
+        idx_slot = _alloc_temp_slot(ctx, _AbiType("Int", "i64", "int"))
+        code = base_code + [f"  mov qword [rbp-{base_slot}], rax"] + idx_code + [f"  mov qword [rbp-{idx_slot}], rax"]
+        ok = _label(ctx, "idx_ok")
+        if ctx.module_ctx is None:
+            raise CodegenError(_diag(e, "internal module context missing for index lowering"))
+        panic_msg = "index out of bounds"
+        panic_label = _string_label(panic_msg, ctx.module_ctx)
+        code += [
+            f"  mov r11, qword [rbp-{base_slot}]",
+            "  mov rbx, qword [r11]",
+            f"  mov rax, qword [rbp-{idx_slot}]",
+            "  cmp rax, rbx",
+            f"  jb {ok}",
+        ]
+        code += _emit_call(
+            symbol="astra_panic",
+            callee_slot=None,
+            values=[
+                _CallValue(_AbiType("usize", "ptr", "int"), label=panic_label),
+                _CallValue(_AbiType("usize", "i64", "int"), imm=len(panic_msg.encode("utf-8"))),
+            ],
+            param_abis=[_AbiType("usize", "ptr", "int"), _AbiType("usize", "i64", "int")],
+            ret_abi=_AbiType("Never", "never", "void", size=0),
+            ctx=ctx,
+        )
+        code += [
+            f"{ok}:",
+            f"  mov r11, qword [rbp-{base_slot}]",
+            f"  mov rax, qword [rbp-{idx_slot}]",
+            "  lea r11, [r11+rax*8+8]",
+        ] + _load_ptr_value("r11", elem_abi)
+        return _coerce_value(code, elem_abi, expected, e) if expected is not None else (code, elem_abi)
+    if isinstance(e, ArrayLit):
+        if not e.elements:
+            raise CodegenError(_diag(e, "empty array literal requires explicit type context on x86_64 backend"))
+        elem_ty = _expr_type(e.elements[0], ctx)
+        elem_abi = _lower_abi_type(elem_ty, e.elements[0], allow_memory=False)
+        total_bytes = 8 * (1 + len(e.elements))
+        code = _emit_runtime_alloc(total_bytes, ctx)
+        base_slot = _alloc_temp_slot(ctx, _AbiType("usize", "ptr", "int"))
+        code += [f"  mov qword [rbp-{base_slot}], rax", f"  mov qword [rax], {len(e.elements)}"]
+        for idx, elem in enumerate(e.elements):
+            elem_code, out_abi = _x86_expr(elem, ctx, expected=elem_abi)
+            elem_code, _ = _coerce_value(elem_code, out_abi, elem_abi, elem)
+            code += elem_code + [f"  mov r11, qword [rbp-{base_slot}]", f"  lea r11, [r11+{8 * (idx + 1)}]"] + _store_ptr_value("r11", elem_abi)
+        code += [f"  mov rax, qword [rbp-{base_slot}]"]
+        out_abi = _AbiType(_expr_type(e, ctx), "ptr", "int")
+        return _coerce_value(code, out_abi, expected, e) if expected is not None else (code, out_abi)
     raise CodegenError(_diag(e, f"{type(e).__name__} is unsupported on x86_64 backend"))
 
 
@@ -1290,7 +1761,13 @@ def _emit_call(
                 stack_vals.append(src)
                 stack_abis.append(abi)
             continue
-        raise CodegenError("memory ABI arguments are not supported yet")
+        # Opaque aggregate values are pointer-sized at the ABI boundary.
+        if int_i < len(_INT_ARG_REGS):
+            reg_moves += _emit_int_source_to_reg(src, _INT_ARG_REGS[int_i])
+            int_i += 1
+        else:
+            stack_vals.append(src)
+            stack_abis.append(_AbiType(abi.src, "ptr", "int"))
 
     stack_bytes = 8 * len(stack_vals)
     pad = (8 - (stack_bytes % 16)) % 16
@@ -1333,7 +1810,75 @@ def _emit_call(
     return code
 
 
+def _emit_runtime_alloc(size_bytes: int, ctx: _FnCtx) -> list[str]:
+    code = _emit_call(
+        symbol="astra_alloc",
+        callee_slot=None,
+        values=[
+            _CallValue(_AbiType("usize", "i64", "int"), imm=max(1, size_bytes)),
+            _CallValue(_AbiType("usize", "i64", "int"), imm=8),
+        ],
+        param_abis=[_AbiType("usize", "i64", "int"), _AbiType("usize", "i64", "int")],
+        ret_abi=_AbiType("usize", "ptr", "int"),
+        ctx=ctx,
+    )
+    ctx.runtime_symbols.add("astra_alloc")
+    return code
+
+
 def _x86_call_expr(e: Call, ctx: _FnCtx, expected: _AbiType | None = None) -> tuple[list[str], _AbiType]:
+    if isinstance(e.fn, Name) and e.fn.value in ctx.structs:
+        decl = ctx.structs[e.fn.value]
+        if len(e.args) != len(decl.fields):
+            raise CodegenError(_diag(e, f"struct {decl.name} expects {len(decl.fields)} args, got {len(e.args)}"))
+        size_bytes = max(8, 8 * len(decl.fields))
+        code = _emit_runtime_alloc(size_bytes, ctx)
+        ptr_slot = _alloc_temp_slot(ctx, _AbiType("usize", "ptr", "int"))
+        code += [f"  mov qword [rbp-{ptr_slot}], rax"]
+        for idx, ((_, fty), arg) in enumerate(zip(decl.fields, e.args)):
+            f_abi = _lower_abi_type(fty, arg, allow_memory=False)
+            arg_code, out_abi = _x86_expr(arg, ctx, expected=f_abi)
+            arg_code, _ = _coerce_value(arg_code, out_abi, f_abi, arg)
+            code += arg_code + [f"  mov r11, qword [rbp-{ptr_slot}]", f"  lea r11, [r11+{idx * 8}]"] + _store_ptr_value("r11", f_abi)
+        code += [f"  mov rax, qword [rbp-{ptr_slot}]"]
+        out_abi = _AbiType(decl.name, "ptr", "int")
+        return _coerce_value(code, out_abi, expected, e) if expected is not None else (code, out_abi)
+    if isinstance(e.fn, FieldExpr) and e.fn.field == "get":
+        if len(e.args) != 1:
+            raise CodegenError(_diag(e, "get expects 1 argument on x86_64 backend"))
+        obj_ty = _expr_type(e.fn.obj, ctx)
+        elem_ty = _array_like_elem_type(obj_ty)
+        if elem_ty is None:
+            raise CodegenError(_diag(e, f"get() requires Vec<T> or [T] receiver on x86_64 backend, got {obj_ty}"))
+        elem_abi = _lower_abi_type(elem_ty, e, allow_memory=False)
+        base_code, base_abi = _x86_expr(e.fn.obj, ctx, expected=_AbiType("usize", "ptr", "int"))
+        base_code, _ = _coerce_value(base_code, base_abi, _AbiType("usize", "ptr", "int"), e.fn.obj)
+        base_slot = _alloc_temp_slot(ctx, _AbiType("usize", "ptr", "int"))
+        idx_code, idx_abi = _x86_expr(e.args[0], ctx, expected=_AbiType("Int", "i64", "int"))
+        idx_code, _ = _coerce_value(idx_code, idx_abi, _AbiType("Int", "i64", "int"), e.args[0])
+        idx_slot = _alloc_temp_slot(ctx, _AbiType("Int", "i64", "int"))
+        code = base_code + [f"  mov qword [rbp-{base_slot}], rax"] + idx_code + [f"  mov qword [rbp-{idx_slot}], rax"]
+        lbl_none = _label(ctx, "get_none")
+        lbl_end = _label(ctx, "get_end")
+        code += [
+            f"  mov r11, qword [rbp-{base_slot}]",
+            "  mov rbx, qword [r11]",
+            f"  mov rax, qword [rbp-{idx_slot}]",
+            "  cmp rax, rbx",
+            f"  jae {lbl_none}",
+            "  lea r11, [r11+rax*8+8]",
+        ] + _load_ptr_value("r11", elem_abi)
+        # Box Some(value) as heap pointer.
+        elem_slot = _alloc_temp_slot(ctx, elem_abi)
+        code += _store_from_reg(elem_slot, elem_abi)
+        code += _emit_runtime_alloc(8, ctx)
+        if elem_abi.cls == "int":
+            code += [f"  mov rbx, qword [rbp-{elem_slot}]", "  mov qword [rax], rbx"]
+        else:
+            code += [f"  movsd xmm1, qword [rbp-{elem_slot}]", "  movsd qword [rax], xmm1"]
+        code += [f"  jmp {lbl_end}", f"{lbl_none}:", "  xor rax, rax", f"{lbl_end}:"]
+        out_abi = _AbiType(f"Option<{elem_ty}>", "ptr", "int")
+        return _coerce_value(code, out_abi, expected, e) if expected is not None else (code, out_abi)
     if isinstance(e.fn, Name) and e.fn.value == "print":
         if len(e.args) != 1:
             raise CodegenError(_diag(e, "print expects 1 argument on x86_64 backend"))
@@ -1407,27 +1952,79 @@ def _x86_call_expr(e: Call, ctx: _FnCtx, expected: _AbiType | None = None) -> tu
         if len(e.args) != 1:
             raise CodegenError(_diag(e, "panic expects 1 argument on x86_64 backend"))
         arg = e.args[0]
-        if not (isinstance(arg, Literal) and isinstance(arg.value, str)):
-            raise CodegenError(_diag(e, "panic on x86_64 currently requires a string literal argument"))
-        if ctx.module_ctx is None:
-            raise CodegenError(_diag(e, "internal module context missing for panic lowering"))
-        label = _string_label(arg.value, ctx.module_ctx)
-        code = _emit_call(
-            symbol="astra_panic",
-            callee_slot=None,
-            values=[_CallValue(_AbiType("usize", "ptr", "int"), label=label), _CallValue(_AbiType("usize", "i64", "int"), imm=len(arg.value.encode("utf-8")))],
-            param_abis=[_AbiType("usize", "ptr", "int"), _AbiType("usize", "i64", "int")],
-            ret_abi=_AbiType("Never", "never", "void", size=0),
-            ctx=ctx,
-        )
+        if isinstance(arg, Literal) and isinstance(arg.value, str):
+            if ctx.module_ctx is None:
+                raise CodegenError(_diag(e, "internal module context missing for panic lowering"))
+            label = _string_label(arg.value, ctx.module_ctx)
+            code = _emit_call(
+                symbol="astra_panic",
+                callee_slot=None,
+                values=[_CallValue(_AbiType("usize", "ptr", "int"), label=label), _CallValue(_AbiType("usize", "i64", "int"), imm=len(arg.value.encode("utf-8")))],
+                param_abis=[_AbiType("usize", "ptr", "int"), _AbiType("usize", "i64", "int")],
+                ret_abi=_AbiType("Never", "never", "void", size=0),
+                ctx=ctx,
+            )
+        else:
+            ptr_code, values = _eval_args_for_call([arg], [_AbiType("usize", "ptr", "int")], ctx)
+            values.append(_CallValue(_AbiType("usize", "i64", "int"), imm=0))
+            code = ptr_code + _emit_call(
+                symbol="astra_panic",
+                callee_slot=None,
+                values=values,
+                param_abis=[_AbiType("usize", "ptr", "int"), _AbiType("usize", "i64", "int")],
+                ret_abi=_AbiType("Never", "never", "void", size=0),
+                ctx=ctx,
+            )
         out_abi = _AbiType("Never", "never", "void", size=0)
+        return _coerce_value(code, out_abi, expected, e) if expected is not None else (code, out_abi)
+    if isinstance(e.fn, Name) and e.fn.value in _BUILTIN_SIGS_X86:
+        name = e.fn.value
+        sig = _BUILTIN_SIGS_X86[name]
+        if name in {"len", "__len"}:
+            if len(e.args) != 1:
+                raise CodegenError(_diag(e, "len expects 1 argument on x86_64 backend"))
+            arg_ty = _expr_type(e.args[0], ctx)
+            elem_ty = _array_like_elem_type(arg_ty)
+            arg_code, arg_abi = _x86_expr(e.args[0], ctx)
+            out_abi = _AbiType(sig.ret, "i64", "int")
+            if elem_ty is None:
+                code = arg_code + ["  xor rax, rax"]
+                return _coerce_value(code, out_abi, expected, e) if expected is not None else (code, out_abi)
+            arg_code, _ = _coerce_value(arg_code, arg_abi, _AbiType("usize", "ptr", "int"), e.args[0])
+            code = arg_code + ["  mov rax, qword [rax]"]
+            return _coerce_value(code, out_abi, expected, e) if expected is not None else (code, out_abi)
+        if name in {"await_result", "__await_result"}:
+            if len(e.args) != 1:
+                raise CodegenError(_diag(e, "await_result expects 1 argument on x86_64 backend"))
+            arg_ty = _expr_type(e.args[0], ctx)
+            arg_abi = _lower_abi_type(arg_ty, e.args[0], allow_memory=False)
+            code, out_abi = _x86_expr(e.args[0], ctx, expected=arg_abi)
+            return _coerce_value(code, out_abi, expected, e) if expected is not None else (code, out_abi)
+        if name in {"proc_exit", "__proc_exit"}:
+            if len(e.args) != 1:
+                raise CodegenError(_diag(e, "proc_exit expects 1 argument on x86_64 backend"))
+            arg_code, arg_abi = _x86_expr(e.args[0], ctx, expected=_AbiType("Int", "i64", "int"))
+            arg_code, _ = _coerce_value(arg_code, arg_abi, _AbiType("Int", "i64", "int"), e.args[0])
+            code = arg_code + ["  mov rdi, rax", "  mov rax, 60", "  syscall", "  ud2"]
+            out_abi = _AbiType("Never", "never", "void", size=0)
+            return _coerce_value(code, out_abi, expected, e) if expected is not None else (code, out_abi)
+        code: list[str] = []
+        for arg in e.args:
+            arg_code, _ = _x86_expr(arg, ctx)
+            code += arg_code
+        out_abi = _lower_abi_type(sig.ret, e, allow_memory=True)
+        if out_abi.cls == "int":
+            code += ["  xor rax, rax"]
+        elif out_abi.cls == "sse":
+            code += ["  xorpd xmm0, xmm0"]
+        else:
+            code += ["  xor rax, rax"]
+            out_abi = _AbiType(sig.ret, "ptr", "int")
         return _coerce_value(code, out_abi, expected, e) if expected is not None else (code, out_abi)
 
     symbol, callee_expr, param_tys, ret_ty = _resolve_call_target(e, ctx)
     param_abis = [_lower_abi_type(t, e, allow_memory=False) for t in param_tys]
     ret_abi = _lower_abi_type(ret_ty, e)
-    if ret_abi.cls == "memory":
-        raise CodegenError(_diag(e, "aggregate call returns are planned via sret but are not implemented yet on x86_64 backend"))
 
     code, values = _eval_args_for_call(e.args, param_abis, ctx)
     callee_slot: int | None = None
