@@ -1,0 +1,32 @@
+fn main() -> Int {
+  // list
+  let xs = __list_new();
+  __list_push(xs, 10);
+  __list_push(xs, 20);
+  __list_push(xs, 12);
+
+  // sum
+  let mut i = 0;
+  let mut sum = 0;
+  while i < 3 {
+    sum += (__list_get(xs, i) as Int);
+    i += 1;
+  }
+
+  // map
+  let m = __map_new();
+  __map_set(m, "sum", sum);
+  __map_set(m, "count", 3);
+
+  // JSON encode map, decode back
+  let js = __to_json(m);
+  let back = __from_json(js);
+
+  // print as JSON (Any)
+  print(__to_json(back));
+
+  // verify
+  let got = __map_get(back, "sum") as Int;
+  if got != sum { return 1; }
+  return 0;
+}
