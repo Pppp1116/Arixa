@@ -6,6 +6,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        continue-on-error: true
 
       - uses: actions/setup-python@v5
         with: { python-version: '3.11' }
@@ -20,7 +21,7 @@ jobs:
 
       - run: clang --version
 
-      - run: pytest -q tests/test_build.py -k native --junitxml=pytest-results.xml
+      - run: pytest -q --junitxml=pytest-results.xml
 
       - uses: actions/upload-artifact@v4
         if: always()

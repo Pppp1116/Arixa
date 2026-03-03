@@ -60,7 +60,7 @@ Successfully implemented comprehensive parallel compilation infrastructure for t
 | IR Optimization | `ir_opts` | `ir_optimize_parallel` | ~2-3x |
 
 ### Sample Profile Output
-```
+```text
 Compile-time profile (seconds):
   build_symbol_table      0.0000
   codegen_py              0.0001
@@ -73,7 +73,7 @@ Compile-time profile (seconds):
   total                   0.0040
   parallel_work           0.0017 (42.5% of total)
   sequential_work         0.0023
-```
+```text
 
 ## Architecture Decisions
 

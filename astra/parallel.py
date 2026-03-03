@@ -38,7 +38,14 @@ class ParallelExecutor:
     """
     
     def __init__(self, max_workers: Optional[int] = None):
-        self.max_workers = max_workers or int(os.environ.get("ASTRA_THREADS", os.cpu_count() or 1))
+        if max_workers is not None:
+            self.max_workers = max_workers
+        else:
+            try:
+                threads_str = os.environ.get("ASTRA_THREADS", str(os.cpu_count() or 1))
+                self.max_workers = int(threads_str)
+            except (ValueError, TypeError):
+                self.max_workers = os.cpu_count() or 1
         self._pool: Optional[ThreadPoolExecutor] = None
         self._futures: Dict[str, Future] = {}
         self._results: Dict[str, Any] = {}
@@ -99,11 +106,17 @@ class ParallelExecutor:
     
     def wait_all(self) -> Dict[str, Any]:
         """Wait for all submitted work to complete"""
-        remaining_futures = list(self._futures.values())
+        with self._lock:
+            future_to_key = {fut: key for key, fut in self._futures.items()}
+        
+        remaining_futures = list(future_to_key.keys())
         
         for future in as_completed(remaining_futures):
             try:
-                future.result()  # Wait for completion
+                result = future.result()
+                key = future_to_key[future]
+                with self._lock:
+                    self._results[key] = result
             except Exception:
                 pass  # Errors will be propagated when individual items are waited for
         
@@ -147,7 +160,7 @@ def parse_files_parallel(file_paths: List[Path]) -> Dict[Path, Any]:
         work_items = []
         for file_path in file_paths:
             work = WorkItem(
-                id=f"parse_{file_path.name}",
+                id=f"parse_{file_path.resolve().as_posix()}",
                 fn=lambda fp=file_path: parse_file_parallel(fp)
             )
             work_items.append(work)
@@ -200,7 +213,11 @@ class DeterministicMerge:
 
 def get_thread_count() -> int:
     """Get the configured thread count for compilation"""
-    return int(os.environ.get("ASTRA_THREADS", os.cpu_count() or 1))
+    try:
+        threads_str = os.environ.get("ASTRA_THREADS", str(os.cpu_count() or 1))
+        return int(threads_str)
+    except (ValueError, TypeError):
+        return os.cpu_count() or 1
 
 
 def is_parallel_enabled() -> bool:

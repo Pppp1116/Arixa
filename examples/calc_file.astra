@@ -1,7 +1,7 @@
 
 fn main() -> Int {
   // Read input file; fallback if empty/missing
-  let text = read_file("input.txt");
+  let mut text = read_file("input.txt");
   if len(text) == 0 {
     text = "6 7\n";
   }

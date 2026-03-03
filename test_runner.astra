@@ -11,7 +11,7 @@ fn assert_equals(expected: Int, actual: Int, message: String) {
 }
 
 fn assert_equals_float(expected: Float, actual: Float, message: String) {
-  let diff = expected - actual;
+  let mut diff = expected - actual;
   if diff < 0.0 { diff = -diff; }
   if diff > 0.001 {
     print("FAIL: " + message + " - expected: " + __to_json(expected) + ", got: " + __to_json(actual));

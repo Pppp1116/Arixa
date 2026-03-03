@@ -10,13 +10,17 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any, Tuple
+import contextvars
 from pathlib import Path
 
 from astra.ast import FnDecl, ExternFnDecl, Program
 from astra.symbols import GlobalSymbolTable, SymbolInfo
 from astra.parallel import ParallelExecutor, WorkItem, DeterministicMerge
 from astra.profiler import profiler
-from astra.semantic import SemanticError, _analyze_fn
+from astra.semantic import SemanticError, _analyze_fn, ThreadLocalDiagnostics
+
+# Thread-local freestanding context
+_freestanding_context: contextvars.ContextVar[bool] = contextvars.ContextVar('freestanding', default=False)
 
 
 @dataclass
@@ -28,6 +32,7 @@ class SemanticWorkItem:
     structs: Dict[str, Any]
     enums: Dict[str, Any]
     global_scope: Dict[str, str]
+    freestanding: bool
 
 
 class ThreadLocalDiagnostics:
@@ -50,6 +55,9 @@ def analyze_function_parallel(work_item: SemanticWorkItem) -> ThreadLocalDiagnos
     """
     diagnostics = ThreadLocalDiagnostics()
     
+    # Set freestanding context for this thread
+    token = _freestanding_context.set(work_item.freestanding)
+    
     try:
         _analyze_fn(
             work_item.fn_decl,
@@ -63,6 +71,9 @@ def analyze_function_parallel(work_item: SemanticWorkItem) -> ThreadLocalDiagnos
         diagnostics.add_error(str(e))
     except Exception as e:
         diagnostics.add_error(f"INTERNAL {work_item.file_path}:{work_item.fn_decl.line}:{work_item.fn_decl.col}: {e}")
+    finally:
+        # Reset context
+        _freestanding_context.reset(token)
     
     return diagnostics
 
@@ -70,7 +81,8 @@ def analyze_function_parallel(work_item: SemanticWorkItem) -> ThreadLocalDiagnos
 def prepare_parallel_work_items(
     program: Program, 
     symbol_table: GlobalSymbolTable,
-    file_path: str
+    file_path: str,
+    freestanding: bool = False
 ) -> List[SemanticWorkItem]:
     """
     Prepare work items for parallel semantic analysis.
@@ -108,7 +120,8 @@ def prepare_parallel_work_items(
                 fn_groups=fn_groups,
                 structs=structs,
                 enums=enums,
-                global_scope=symbol_table.global_scope
+                global_scope=symbol_table.global_scope,
+                freestanding=freestanding
             )
             work_items.append(work_item)
     
@@ -127,69 +140,61 @@ def analyze_program_parallel(
     Uses the frozen symbol table for safe parallel access.
     Raises SemanticError if any issues are found.
     """
-    from astra.semantic import _FREESTANDING_MODE_STACK
+    # Prepare work items
+    work_items = prepare_parallel_work_items(program, symbol_table, file_path, freestanding)
     
-    _FREESTANDING_MODE_STACK.append(freestanding)
+    if not work_items:
+        return  # No functions to analyze
     
-    try:
-        # Prepare work items
-        work_items = prepare_parallel_work_items(program, symbol_table, file_path)
-        
-        if not work_items:
-            return  # No functions to analyze
-        
-        # Analyze functions in parallel
-        diagnostics_lists = []
-        
-        if len(work_items) == 1:
-            # Sequential analysis for single function
-            with profiler.section("semantic_sequential"):
-                diagnostics = analyze_function_parallel(work_items[0])
-                diagnostics_lists.append([diagnostics])
-        else:
-            # Parallel analysis for multiple functions
-            with profiler.section("semantic_parallel"):
-                with ParallelExecutor() as executor:
-                    # Submit all work
-                    futures = []
-                    for i, work_item in enumerate(work_items):
-                        work = WorkItem(
-                            id=f"analyze_fn_{i}",
-                            fn=lambda wi=work_item: analyze_function_parallel(wi)
-                        )
-                        future = executor.submit_work(work)
-                        futures.append((work.id, future))
-                    
-                    # Collect results
-                    for work_id, future in futures:
-                        try:
-                            diagnostics = executor.wait_for(work_id)
-                            diagnostics_lists.append([diagnostics])
-                        except Exception as e:
-                            # Create error diagnostics
-                            error_diag = ThreadLocalDiagnostics()
-                            error_diag.add_error(f"INTERNAL: Failed to analyze function: {e}")
-                            diagnostics_lists.append([error_diag])
-        
-        # Merge diagnostics deterministically
-        all_errors = []
-        all_warnings = []
-        
-        for diag_list in diagnostics_lists:
-            for diagnostics in diag_list:
-                all_errors.extend(diagnostics.errors)
-                all_warnings.extend(diagnostics.warnings)
-        
-        # Sort deterministically for reproducible output
-        all_errors.sort()
-        all_warnings.sort()
-        
-        # Raise errors if any found
-        if all_errors:
-            raise SemanticError("\n".join(all_errors))
-            
-    finally:
-        _FREESTANDING_MODE_STACK.pop()
+    # Analyze functions in parallel
+    diagnostics_lists = []
+    
+    if len(work_items) == 1:
+        # Sequential analysis for single function
+        with profiler.section("semantic_sequential"):
+            diagnostics = analyze_function_parallel(work_items[0])
+            diagnostics_lists.append([diagnostics])
+    else:
+        # Parallel analysis for multiple functions
+        with profiler.section("semantic_parallel"):
+            with ParallelExecutor() as executor:
+                # Submit all work
+                futures = []
+                for i, work_item in enumerate(work_items):
+                    work = WorkItem(
+                        id=f"analyze_fn_{i}",
+                        fn=lambda wi=work_item: analyze_function_parallel(wi)
+                    )
+                    future = executor.submit_work(work)
+                    futures.append((work.id, future))
+                
+                # Collect results
+                for work_id, future in futures:
+                    try:
+                        diagnostics = executor.wait_for(work_id)
+                        diagnostics_lists.append([diagnostics])
+                    except Exception as e:
+                        # Create error diagnostics
+                        error_diag = ThreadLocalDiagnostics()
+                        error_diag.add_error(f"INTERNAL: Failed to analyze function: {e}")
+                        diagnostics_lists.append([error_diag])
+    
+    # Merge diagnostics deterministically
+    all_errors = []
+    all_warnings = []
+    
+    for diag_list in diagnostics_lists:
+        for diagnostics in diag_list:
+            all_errors.extend(diagnostics.errors)
+            all_warnings.extend(diagnostics.warnings)
+    
+    # Sort deterministically for reproducible output
+    all_errors.sort()
+    all_warnings.sort()
+    
+    # Raise errors if any found
+    if all_errors:
+        raise SemanticError("\n".join(all_errors))
 
 
 def analyze_programs_parallel(
@@ -218,7 +223,7 @@ def analyze_programs_parallel(
         futures = []
         for file_path, program in programs.items():
             work = WorkItem(
-                id=f"analyze_program_{file_path.name}",
+                id=f"analyze_program_{file_path.resolve().as_posix()}",
                 fn=lambda fp=file_path, prog=program: analyze_single_program_for_parallel(
                     prog, symbol_table, str(fp), freestanding
                 )

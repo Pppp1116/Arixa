@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Set, Tuple
+from typing import Dict, List, Optional, Any, Set, Tuple, Mapping
+from types import MappingProxyType
 from pathlib import Path
 from collections import defaultdict
 
@@ -75,6 +76,7 @@ class MutableSymbolTable:
         self.type_aliases: Dict[str, SymbolInfo] = {}
         self.extern_functions: Dict[str, List[SymbolInfo]] = defaultdict(list)
         self.global_scope: Dict[str, str] = {}
+        self.duplicate_declarations: List[Tuple[str, SymbolInfo, SymbolInfo]] = []
         self._lock = threading.Lock()
     
     def add_function(self, fn_decl: FnDecl, file_path: str) -> None:
@@ -108,7 +110,12 @@ class MutableSymbolTable:
             file_path=file_path,
             span_info=(struct_decl.line, struct_decl.col, struct_decl.pos)
         )
-        self.structs[struct_decl.name] = info
+        if struct_decl.name in self.structs:
+            # Record duplicate
+            existing = self.structs[struct_decl.name]
+            self.duplicate_declarations.append(("struct", existing, info))
+        else:
+            self.structs[struct_decl.name] = info
     
     def add_enum(self, enum_decl: EnumDecl, file_path: str) -> None:
         """Add an enum declaration"""
@@ -119,7 +126,12 @@ class MutableSymbolTable:
             file_path=file_path,
             span_info=(enum_decl.line, enum_decl.col, enum_decl.pos)
         )
-        self.enums[enum_decl.name] = info
+        if enum_decl.name in self.enums:
+            # Record duplicate
+            existing = self.enums[enum_decl.name]
+            self.duplicate_declarations.append(("enum", existing, info))
+        else:
+            self.enums[enum_decl.name] = info
     
     def add_type_alias(self, alias_decl: TypeAliasDecl, file_path: str) -> None:
         """Add a type alias declaration"""
@@ -130,7 +142,12 @@ class MutableSymbolTable:
             file_path=file_path,
             span_info=(alias_decl.line, alias_decl.col, alias_decl.pos)
         )
-        self.type_aliases[alias_decl.name] = info
+        if alias_decl.name in self.type_aliases:
+            # Record duplicate
+            existing = self.type_aliases[alias_decl.name]
+            self.duplicate_declarations.append(("type_alias", existing, info))
+        else:
+            self.type_aliases[alias_decl.name] = info
     
     def add_import_alias(self, alias: str, import_info: str) -> None:
         """Add import alias to global scope"""
@@ -138,13 +155,21 @@ class MutableSymbolTable:
     
     def freeze(self) -> GlobalSymbolTable:
         """Convert to immutable global symbol table"""
+        # Convert lists to tuples and dicts to mapping proxies for immutability
+        immutable_functions = {
+            name: tuple(infos) for name, infos in self.functions.items()
+        }
+        immutable_extern_functions = {
+            name: tuple(infos) for name, infos in self.extern_functions.items()
+        }
+        
         return GlobalSymbolTable(
-            functions=dict(self.functions),
-            structs=dict(self.structs),
-            enums=dict(self.enums),
-            type_aliases=dict(self.type_aliases),
-            extern_functions=dict(self.extern_functions),
-            global_scope=dict(self.global_scope)
+            functions=immutable_functions,
+            structs=MappingProxyType(dict(self.structs)),
+            enums=MappingProxyType(dict(self.enums)),
+            type_aliases=MappingProxyType(dict(self.type_aliases)),
+            extern_functions=immutable_extern_functions,
+            global_scope=MappingProxyType(dict(self.global_scope))
         )
 
 

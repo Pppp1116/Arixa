@@ -35,6 +35,9 @@ class ThreadLocalIROptimizer:
     def optimize_function(self, work_item: IROptimizationWorkItem) -> FnDecl:
         """Optimize a single function with thread-local state"""
         try:
+            # Store context for potential use during optimization
+            self.local_context = work_item.context
+            
             # Create a temporary program with just this function
             temp_program = Program(items=[work_item.fn_decl])
             
@@ -176,10 +179,10 @@ def generate_ir_parallel(
             fn = functions[0]
             try:
                 ir = ir_generator(fn, generation_context)
-                ir_results[fn.name] = ir
+                ir_results[f"{fn.name}:0"] = ir
             except Exception as e:
                 # Create error placeholder
-                ir_results[fn.name] = f"ERROR: {e}"
+                ir_results[f"{fn.name}:0"] = f"ERROR: {e}"
     else:
         # Parallel IR generation for multiple functions
         with profiler.section("ir_gen_parallel"):
@@ -192,16 +195,16 @@ def generate_ir_parallel(
                         fn=lambda f=fn: _generate_ir_worker(f, ir_generator, generation_context)
                     )
                     future = executor.submit_work(work)
-                    futures.append((work.id, future, fn.name))
+                    futures.append((work.id, future, f"{fn.name}:{i}"))
                 
                 # Collect results
-                for work_id, future, fn_name in futures:
+                for work_id, future, unique_key in futures:
                     try:
                         ir = executor.wait_for(work_id)
-                        ir_results[fn_name] = ir
+                        ir_results[unique_key] = ir
                     except Exception as e:
                         # Create error placeholder
-                        ir_results[fn_name] = f"ERROR: {e}"
+                        ir_results[unique_key] = f"ERROR: {e}"
     
     return ir_results
 

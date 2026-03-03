@@ -58,6 +58,10 @@ class Profiler:
             self._enabled = enabled
             self._totals.clear()
             self._records.clear()
+            self._phase_stats.clear()
+            # Reset thread-local accumulators
+            self._thread_locals.clear()
+            self._stack_local = threading.local()
 
     def disable(self) -> None:
         with self._lock:

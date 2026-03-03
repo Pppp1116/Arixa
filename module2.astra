@@ -11,6 +11,9 @@ pub fn compute() -> Int {
 }
 
 pub fn factorial(n: Int) -> Int {
+    if n < 0 {
+        panic("factorial: negative input");
+    }
     if n <= 1 {
         return 1;
     }

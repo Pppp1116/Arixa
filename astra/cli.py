@@ -28,7 +28,10 @@ def cmd_build(a):
     )
     if a.profile_compile and a.profile_json:
         print(profiler.to_json())
-    print(state)
+    elif a.profile_compile:
+        print(profiler.to_text())
+    else:
+        print(state)
 
 
 def cmd_check(a):
@@ -150,6 +153,11 @@ def cmd_bench(a):
     # Run 3 times and report median per-phase and total. Always enable profiling.
     runs = []
     for _ in range(3):
+        # Clear cache for cold run
+        from astra.build import CACHE
+        if CACHE.exists():
+            CACHE.unlink()
+        
         profiler.enable(False)
         state = build(
             a.input,
@@ -179,8 +187,11 @@ def cmd_bench(a):
     phases = {}
     for r in runs:
         for k, v in r.get("phases", {}).items():
-            phases.setdefault(k, []).append(v)
-    phase_medians = {k: median(vs) for k, vs in phases.items()}
+            if isinstance(v, dict) and "total_time_s" in v:
+                phases.setdefault(k, []).append(v["total_time_s"])
+            elif isinstance(v, (int, float)):
+                phases.setdefault(k, []).append(v)
+    phase_medians = {k: median(vs) for k, vs in phases.items() if vs}
     total_median = median([r.get("total", 0.0) for r in runs])
     out = {
         "phase_median_s": dict(sorted(phase_medians.items())),
