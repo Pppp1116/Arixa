@@ -20,18 +20,21 @@ def cmd_build(a):
         emit_ir=a.emit_ir,
         strict=a.strict,
         freestanding=a.freestanding,
-        profile=a.profile,
+        profile=a.profile or "release",
         overflow=a.overflow,
         triple=a.triple,
         profile_compile=a.profile_compile,
         threads=a.threads,
     )
+    
+    # Always print state for tool compatibility
+    print(state)
+    
+    # Print profiling output separately to stderr to avoid breaking tools
     if a.profile_compile and a.profile_json:
-        print(profiler.to_json())
+        print(profiler.to_json(), file=sys.stderr)
     elif a.profile_compile:
-        print(profiler.to_text())
-    else:
-        print(state)
+        print(profiler.to_text(), file=sys.stderr)
 
 
 def cmd_check(a):

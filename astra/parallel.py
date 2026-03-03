@@ -41,14 +41,12 @@ class ParallelExecutor:
         if max_workers is not None:
             self.max_workers = max_workers
         else:
-            try:
-                threads_str = os.environ.get("ASTRA_THREADS", str(os.cpu_count() or 1))
-                self.max_workers = int(threads_str)
-            except (ValueError, TypeError):
-                self.max_workers = os.cpu_count() or 1
+            # Use the same logic as get_thread_count() for consistency
+            self.max_workers = get_thread_count()
         self._pool: Optional[ThreadPoolExecutor] = None
         self._futures: Dict[str, Future] = {}
         self._results: Dict[str, Any] = {}
+        self._errors: Dict[str, Exception] = {}
         self._lock = threading.Lock()
         
     def __enter__(self):
@@ -87,6 +85,9 @@ class ParallelExecutor:
             if work_id in self._results:
                 return self._results[work_id]
             
+            if work_id in self._errors:
+                raise self._errors[work_id]
+            
             if work_id not in self._futures:
                 raise ValueError(f"Work item {work_id} not found")
             
@@ -97,32 +98,65 @@ class ParallelExecutor:
             with self._lock:
                 self._results[work_id] = result
                 del self._futures[work_id]
+                # Clear any previous error
+                if work_id in self._errors:
+                    del self._errors[work_id]
             return result
         except Exception as e:
             with self._lock:
+                self._errors[work_id] = e
                 if work_id in self._futures:
                     del self._futures[work_id]
             raise e
     
     def wait_all(self) -> Dict[str, Any]:
         """Wait for all submitted work to complete"""
+        while True:
+            with self._lock:
+                # Build current mapping of futures to keys
+                future_to_key = {fut: key for key, fut in self._futures.items()}
+                
+                if not future_to_key:
+                    # No more futures to wait for
+                    break
+                
+                # Copy the list to avoid modification during iteration
+                current_futures = list(future_to_key.keys())
+            
+            # Process the current batch of futures
+            for future in as_completed(current_futures):
+                try:
+                    result = future.result()
+                    key = future_to_key[future]
+                    with self._lock:
+                        self._results[key] = result
+                        # Remove from futures dict
+                        if key in self._futures and self._futures[key] == future:
+                            del self._futures[key]
+                        # Clear any previous error
+                        if key in self._errors:
+                            del self._errors[key]
+                except Exception as e:
+                    key = future_to_key[future]
+                    with self._lock:
+                        self._errors[key] = e
+                        # Remove from futures dict
+                        if key in self._futures and self._futures[key] == future:
+                            del self._futures[key]
+        
         with self._lock:
-            future_to_key = {fut: key for key, fut in self._futures.items()}
-        
-        remaining_futures = list(future_to_key.keys())
-        
-        for future in as_completed(remaining_futures):
-            try:
-                result = future.result()
-                key = future_to_key[future]
-                with self._lock:
-                    self._results[key] = result
-            except Exception:
-                pass  # Errors will be propagated when individual items are waited for
-        
-        with self._lock:
+            # Return combined results, but raise if there are errors
+            if self._errors:
+                # Create a combined exception with all errors
+                error_summary = f"Multiple errors occurred: {list(self._errors.keys())}"
+                # Raise the first error as representative, but preserve all
+                first_error = next(iter(self._errors.values()))
+                # Add context about other errors
+                if len(self._errors) > 1:
+                    first_error.args = (f"{first_error}. Additional errors: {len(self._errors)-1} more",)
+                raise first_error
+            
             results = dict(self._results)
-            self._futures.clear()
             return results
 
 
@@ -159,14 +193,10 @@ def parse_files_parallel(file_paths: List[Path]) -> Dict[Path, Any]:
         # Submit all parsing work
         work_items = []
         for file_path in file_paths:
-            # Use relative path or filename for stable, portable IDs
-            try:
-                # Try to get relative path from current working directory
-                rel_path = file_path.relative_to(Path.cwd())
-                work_id = f"parse_{rel_path.as_posix()}"
-            except ValueError:
-                # Fallback to just the filename if not relative to cwd
-                work_id = f"parse_{file_path.name}"
+            # Use absolute path for unique, stable IDs
+            # This ensures no collisions even with same filename in different directories
+            abs_path = file_path.resolve()
+            work_id = f"parse_{abs_path.as_posix()}"
             
             work = WorkItem(
                 id=work_id,

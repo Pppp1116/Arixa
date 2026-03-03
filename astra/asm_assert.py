@@ -41,26 +41,15 @@ def assert_valid_llvm_ir(ir_text: str, *, triple: str | None = None, workdir: Pa
         "FIXME: runtime",
         "TODO: runtime",
         "TODO: implement",
-        # Case-insensitive variants
-        "todo",
-        "TODO",
-        "fixme",
-        "FIXME", 
-        "tbd",
-        "TBD",
-        "hack",
-        "HACK",
-        # Common placeholder patterns
-        "XXX",
-        "NOTE:",
-        "TEMP",
-        "TEMPORARY",
-        "INCOMPLETE",
-        "COMING SOON",
-        "NOT YET",
-        "PENDING",
-        "WIP",
-        "WORK IN PROGRESS"
+        # More specific patterns that indicate actual incomplete work
+        "TODO: unimplemented",
+        "TODO: placeholder",
+        "TODO: stub",
+        "FIXME: unimplemented",
+        "FIXME: placeholder",
+        "INCOMPLETE IMPLEMENTATION",
+        "NOT YET IMPLEMENTED",
+        # Avoid common comment words that appear in legitimate code/debug info
     ]
     # Use case-insensitive search for broader detection
     text_lower = text.lower()

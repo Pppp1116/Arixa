@@ -157,6 +157,7 @@ def generate_ir_parallel(
     Generate IR for functions in parallel.
     
     Returns a mapping from function names to their IR.
+    Uses plain function names as keys to maintain compatibility with consumers.
     """
     if generation_context is None:
         generation_context = {}
@@ -179,10 +180,10 @@ def generate_ir_parallel(
             fn = functions[0]
             try:
                 ir = ir_generator(fn, generation_context)
-                ir_results[f"{fn.name}:0"] = ir
+                ir_results[fn.name] = ir
             except Exception as e:
                 # Create error placeholder
-                ir_results[f"{fn.name}:0"] = f"ERROR: {e}"
+                ir_results[fn.name] = f"ERROR: {e}"
     else:
         # Parallel IR generation for multiple functions
         with profiler.section("ir_gen_parallel"):
@@ -195,16 +196,16 @@ def generate_ir_parallel(
                         fn=lambda f=fn: _generate_ir_worker(f, ir_generator, generation_context)
                     )
                     future = executor.submit_work(work)
-                    futures.append((work.id, future, f"{fn.name}:{i}"))
+                    futures.append((work.id, future, fn.name))
                 
                 # Collect results
-                for work_id, future, unique_key in futures:
+                for work_id, future, fn_name in futures:
                     try:
                         ir = executor.wait_for(work_id)
-                        ir_results[unique_key] = ir
+                        ir_results[fn_name] = ir
                     except Exception as e:
                         # Create error placeholder
-                        ir_results[unique_key] = f"ERROR: {e}"
+                        ir_results[fn_name] = f"ERROR: {e}"
     
     return ir_results
 

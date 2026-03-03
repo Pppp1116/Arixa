@@ -1,0 +1,91 @@
+/// std.sync – synchronization primitives (hosted only).
+///
+/// Provides mutex, atomic operations, and other concurrency utilities.
+/// This module is hosted-only as it requires OS threading support.
+
+use std.time;
+
+/// Simple mutex for mutual exclusion
+pub struct Mutex<T> {
+    // Internal implementation handled by runtime
+}
+
+/// Create a new mutex
+pub fn mutex_new<T>() -> Mutex<T> {
+    return __mutex_create();
+}
+
+/// Lock a mutex (blocks until available)
+pub fn mutex_lock<T>(m: Mutex<T>) -> MutexGuard<T> {
+    return __mutex_lock(m);
+}
+
+/// Try to lock a mutex (returns none if not available)
+pub fn mutex_try_lock<T>(m: Mutex<T>) -> MutexGuard<T>? {
+    return __mutex_try_lock(m);
+}
+
+/// Mutex guard that automatically unlocks when dropped
+pub struct MutexGuard<T> {
+    mutex: Mutex<T>,
+}
+
+/// Atomic operations for Int
+pub struct AtomicInt {
+    // Internal implementation handled by runtime
+}
+
+/// Create new atomic integer
+pub fn atomic_int_new(value: Int) -> AtomicInt {
+    return __atomic_int_new(value);
+}
+
+/// Atomic load
+pub fn atomic_int_load(a: AtomicInt) -> Int {
+    return __atomic_int_load(a);
+}
+
+/// Atomic store
+pub fn atomic_int_store(a: AtomicInt, value: Int) -> Void {
+    __atomic_int_store(a, value);
+}
+
+/// Atomic compare and swap
+pub fn atomic_int_compare_exchange(a: AtomicInt, expected: Int, new: Int) -> Int {
+    return __atomic_int_compare_exchange(a, expected, new);
+}
+
+/// Atomic fetch and add
+pub fn atomic_int_fetch_add(a: AtomicInt, value: Int) -> Int {
+    return __atomic_int_fetch_add(a, value);
+}
+
+/// Atomic fetch and subtract
+pub fn atomic_int_fetch_sub(a: AtomicInt, value: Int) -> Int {
+    return __atomic_int_fetch_sub(a, value);
+}
+
+/// Simple condition variable
+pub struct CondVar {
+    // Internal implementation handled by runtime
+}
+
+/// Create new condition variable
+pub fn condvar_new() -> CondVar {
+    return __condvar_create();
+}
+
+/// Wait on condition variable
+pub fn condvar_wait(cv: CondVar, mutex: Mutex<Any>) -> Void {
+    __condvar_wait(cv, mutex);
+}
+
+/// Signal condition variable
+pub fn condvar_signal(cv: CondVar) -> Void {
+    __condvar_signal(cv);
+}
+
+/// Broadcast to all waiting threads
+pub fn condvar_broadcast(cv: CondVar) -> Void {
+    __condvar_broadcast(cv);
+}

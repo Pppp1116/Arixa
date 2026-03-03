@@ -638,6 +638,11 @@ class Parser:
                 field_tok = self.eat("IDENT")
                 expr = FieldExpr(expr, field_tok.text, field_tok.pos, field_tok.line, field_tok.col)
                 continue
+            if self.opt("::"):
+                # Handle qualified access (module::symbol)
+                field_tok = self.eat("IDENT")
+                expr = FieldExpr(expr, field_tok.text, field_tok.pos, field_tok.line, field_tok.col)
+                continue
             if self.opt("["):
                 idx = self.parse_expr()
                 rb = self.eat("]")

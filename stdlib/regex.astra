@@ -1,0 +1,81 @@
+/// std.regex – regular expression utilities (freestanding-safe).
+///
+/// Provides basic regular expression matching and compilation.
+/// These utilities are pure and valid in both hosted and freestanding modes.
+
+use core;
+
+/// Represents a compiled regular expression
+pub struct Regex {
+    pattern: String,
+    flags: Int,
+}
+
+/// Regex compilation flags
+pub const REGEX_CASE_INSENSITIVE: Int = 1;
+pub const REGEX_MULTILINE: Int = 2;
+pub const REGEX_DOTALL: Int = 4;
+
+/// Match result for a single regex match
+pub struct RegexMatch {
+    text: String,
+    start: Int,
+    end: Int,
+}
+
+/// Match result containing all matches
+pub struct RegexMatches {
+    matches: Vec<RegexMatch>,
+}
+
+/// Compile a regular expression pattern
+pub fn compile(pattern: String, flags: Int) -> Regex {
+    return Regex(pattern: pattern, flags: flags);
+}
+
+/// Check if string matches regex pattern
+pub fn is_match(regex: Regex, text: String) -> Bool {
+    return __regex_match(regex, text).valid;
+}
+
+/// Find all matches in text
+pub fn find_all(regex: Regex, text: String) -> RegexMatches {
+    return __regex_find_all(regex, text);
+}
+
+/// Find first match in text
+pub fn find_first(regex: Regex, text: String) -> RegexMatch? {
+    let matches = find_all(regex, text);
+    if len(matches.matches) > 0 {
+        return Some(matches.matches[0]);
+    }
+    return none;
+}
+
+/// Replace all matches with replacement string
+pub fn replace_all(regex: Regex, text: String, replacement: String) -> String {
+    return __regex_replace_all(regex, text, replacement);
+}
+
+/// Split string by regex matches
+pub fn split(regex: Regex, text: String) -> Vec<String> {
+    return __regex_split(regex, text);
+}
+
+/// Escape special regex characters in a string
+pub fn escape(text: String) -> String {
+    let result = "";
+    let i = 0;
+    while i < len(text) {
+        let char = text[i];
+        if char == '.' || char == '^' || char == '$' || char == '*' || char == '+' || 
+           char == '?' || char == '(' || char == ')' || char == '[' || char == ']' ||
+           char == '{' || char == '}' || char == '|' || char == '\\' {
+            result = result + "\\" + char;
+        } else {
+            result = result + char;
+        }
+        i = i + 1;
+    }
+    return result;
+}

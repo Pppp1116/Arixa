@@ -1653,6 +1653,9 @@ u128 astra_u128_mod_trap(u128 a, u128 b) {
 }
 
 // Async/await implementation
+#define ASTRA_MAX_ASYNC_TASKS 1000000  // 1M tasks max
+#define ASTRA_TASK_ID_WRAP_THRESHOLD UINTPTR_MAX - 1000
+
 typedef struct {
   void *value;
   bool completed;
@@ -1663,6 +1666,7 @@ typedef struct {
 
 static AsyncTask *g_async_tasks = NULL;
 static size_t g_async_cap = 0;
+static size_t g_async_active_count = 0;  // Track active tasks for compaction
 static uintptr_t g_next_task_id = 1;
 static pthread_mutex_t g_async_mutex = PTHREAD_MUTEX_INITIALIZER;
 static bool g_async_initialized = false;
@@ -1671,23 +1675,50 @@ static void astra_async_cleanup_task(AsyncTask *task) {
   if (task != NULL) {
     pthread_cond_destroy(&task->cond);
     task->valid = false;
-    task->value = NULL;
+    if (task->value != NULL) {
+      astra_untrack_ptr(task->value);
+      free(task->value);
+      task->value = NULL;
+    }
     task->completed = false;
     task->waiters = 0;
+    g_async_active_count--;
   }
 }
 
 static bool astra_async_init_once(void) {
-  if (g_async_initialized) {
-    return true;
-  }
   if (pthread_mutex_lock(&g_async_mutex) != 0) {
     return false;
   }
+  bool result = true;
   if (!g_async_initialized) {
     g_async_initialized = true;
   }
   pthread_mutex_unlock(&g_async_mutex);
+  return result;
+}
+
+static bool astra_async_compact(void) {
+  // Compact the registry by removing invalid tasks from the end
+  if (g_async_tasks == NULL || g_async_cap == 0) {
+    return true;
+  }
+  
+  // Find the last valid task
+  size_t last_valid = g_async_cap;
+  while (last_valid > 0 && !g_async_tasks[last_valid - 1].valid) {
+    last_valid--;
+  }
+  
+  // If we can shrink significantly, do it
+  if (last_valid < g_async_cap / 2 && last_valid > 8) {
+    AsyncTask *p = (AsyncTask *)realloc(g_async_tasks, last_valid * sizeof(AsyncTask));
+    if (p != NULL) {
+      g_async_tasks = p;
+      g_async_cap = last_valid;
+    }
+  }
+  
   return true;
 }
 
@@ -1695,22 +1726,45 @@ static bool astra_async_reserve(size_t want) {
   if (!astra_async_init_once()) {
     return false;
   }
+  
+  // Check against maximum limit
+  if (want > ASTRA_MAX_ASYNC_TASKS) {
+    return false;
+  }
+  
   if (pthread_mutex_lock(&g_async_mutex) != 0) {
     return false;
   }
+  
   bool result = false;
   if (g_async_cap >= want) {
     result = true;
     goto cleanup;
   }
+  
+  // Try to compact first
+  astra_async_compact();
+  
+  if (g_async_cap >= want) {
+    result = true;
+    goto cleanup;
+  }
+  
   size_t next = g_async_cap == 0 ? 8 : g_async_cap * 2;
   while (next < want) {
     next *= 2;
   }
+  
+  // Final check against maximum
+  if (next > ASTRA_MAX_ASYNC_TASKS) {
+    goto cleanup;
+  }
+  
   AsyncTask *p = (AsyncTask *)realloc(g_async_tasks, next * sizeof(AsyncTask));
   if (p == NULL) {
     goto cleanup;
   }
+  
   for (size_t i = g_async_cap; i < next; i++) {
     p[i].value = NULL;
     p[i].completed = false;
@@ -1723,9 +1777,11 @@ static bool astra_async_reserve(size_t want) {
       goto cleanup;
     }
   }
+  
   g_async_tasks = p;
   g_async_cap = next;
   result = true;
+  
 cleanup:
   pthread_mutex_unlock(&g_async_mutex);
   return result;
@@ -1736,7 +1792,12 @@ static bool astra_async_validate_task_id(uintptr_t task_id, size_t *idx_out) {
     return false;
   }
   size_t idx = task_id - 1;
-  if (idx >= g_async_cap || !g_async_tasks[idx].valid) {
+  if (pthread_mutex_lock(&g_async_mutex) != 0) {
+    return false;
+  }
+  bool valid = (idx < g_async_cap && g_async_tasks[idx].valid);
+  pthread_mutex_unlock(&g_async_mutex);
+  if (!valid) {
     return false;
   }
   if (idx_out != NULL) {
@@ -1746,18 +1807,35 @@ static bool astra_async_validate_task_id(uintptr_t task_id, size_t *idx_out) {
 }
 
 uintptr_t astra_async_create(void *value) {
+  // Check for task ID wraparound
+  if (g_next_task_id >= ASTRA_TASK_ID_WRAP_THRESHOLD) {
+    return 0;  // Prevent wraparound
+  }
+  
   if (!astra_async_reserve(g_next_task_id + 1)) {
     return 0;
   }
   if (pthread_mutex_lock(&g_async_mutex) != 0) {
     return 0;
   }
+  
+  // Double-check wraparound after acquiring lock
+  if (g_next_task_id >= ASTRA_TASK_ID_WRAP_THRESHOLD) {
+    pthread_mutex_unlock(&g_async_mutex);
+    return 0;
+  }
+  
   uintptr_t task_id = g_next_task_id++;
   AsyncTask *task = &g_async_tasks[task_id - 1];
+  // Track the value to ensure proper cleanup
+  if (value != NULL) {
+    astra_track_ptr(value);
+  }
   task->value = value;
   task->completed = false;
   task->valid = true;
   task->waiters = 0;
+  g_async_active_count++;
   pthread_mutex_unlock(&g_async_mutex);
   return task_id;
 }
@@ -1781,10 +1859,10 @@ void astra_async_complete(uintptr_t task_id) {
 void *astra_await_result(uintptr_t task_id) {
   size_t idx;
   if (!astra_async_validate_task_id(task_id, &idx)) {
-    return astra_any_box_i64(0);
+    return (void*)astra_any_box_i64(0);
   }
   if (pthread_mutex_lock(&g_async_mutex) != 0) {
-    return astra_any_box_i64(0);
+    return (void*)astra_any_box_i64(0);
   }
   AsyncTask *task = &g_async_tasks[idx];
   void *result = NULL;
@@ -1798,10 +1876,12 @@ void *astra_await_result(uintptr_t task_id) {
     }
   }
   
-  if (task->completed) {
+  if (task->completed && task->value != NULL) {
+    // Create a copy of the value to avoid exposing internal pointer
+    // For now, we assume the value is an AstraAny handle that needs to be preserved
     result = task->value;
   } else {
-    result = astra_any_box_i64(0);
+    result = (void*)astra_any_box_i64(0);
   }
   
   pthread_mutex_unlock(&g_async_mutex);

@@ -51,8 +51,21 @@ def analyze_function_parallel(work_item: SemanticWorkItem) -> ThreadLocalDiagnos
     """
     diagnostics = ThreadLocalDiagnostics()
     
-    # Use the same stack-based approach as semantic.py for consistency
-    _FREESTANDING_MODE_STACK.append(work_item.freestanding)
+    # Use thread-local stack to avoid race conditions with global shared stack
+    import threading
+    thread_local = threading.local()
+    
+    # Initialize thread-local stack if not exists
+    if not hasattr(thread_local, 'freestanding_stack'):
+        thread_local.freestanding_stack = []
+    
+    # Use thread-local stack instead of global shared stack
+    thread_local.freestanding_stack.append(work_item.freestanding)
+    
+    # Temporarily replace global stack for this thread (for compatibility)
+    original_stack = _FREESTANDING_MODE_STACK[:]
+    _FREESTANDING_MODE_STACK.clear()
+    _FREESTANDING_MODE_STACK.extend(thread_local.freestanding_stack)
     
     try:
         _analyze_fn(
@@ -68,9 +81,12 @@ def analyze_function_parallel(work_item: SemanticWorkItem) -> ThreadLocalDiagnos
     except Exception as e:
         diagnostics.add_error(f"INTERNAL {work_item.file_path}:{work_item.fn_decl.line}:{work_item.fn_decl.col}: {e}")
     finally:
-        # Always pop from stack to maintain consistency
-        if _FREESTANDING_MODE_STACK:
-            _FREESTANDING_MODE_STACK.pop()
+        # Restore original global stack
+        _FREESTANDING_MODE_STACK.clear()
+        _FREESTANDING_MODE_STACK.extend(original_stack)
+        # Clean up thread-local stack
+        if thread_local.freestanding_stack:
+            thread_local.freestanding_stack.pop()
     
     return diagnostics
 

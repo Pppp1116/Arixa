@@ -1,0 +1,200 @@
+/// std.convert – type conversion utilities (freestanding-safe).
+///
+/// Provides safe conversion functions between different numeric types
+/// and string representations with proper error handling.
+/// These utilities are pure and valid in both hosted and freestanding modes.
+
+use core;
+
+/// Safe conversion from string to integer with error handling
+pub fn parse_int_safe(s: String) -> Result<Int, String> {
+    if len(s) == 0 {
+        return Err("empty string");
+    }
+    
+    let result = 0;
+    let i = 0;
+    let negative = false;
+    
+    // Handle optional sign
+    if s[0] == '-' {
+        negative = true;
+        i = 1;
+    } else if s[0] == '+' {
+        i = 1;
+    }
+    
+    // Parse digits
+    while i < len(s) {
+        let char = s[i];
+        if char >= '0' && char <= '9' {
+            let digit = (char - '0') as Int;
+            result = result * 10 + digit;
+        } else {
+            return Err("invalid character: " + char);
+        }
+        i = i + 1;
+    }
+    
+    if negative {
+        result = -result;
+    }
+    
+    return Ok(result);
+}
+
+/// Safe conversion from string to float with error handling
+pub fn parse_float_safe(s: String) -> Result<Float, String> {
+    if len(s) == 0 {
+        return Err("empty string");
+    }
+    
+    let result = 0.0;
+    let i = 0;
+    let negative = false;
+    let has_decimal = false;
+    let decimal_places = 0;
+    
+    // Handle optional sign
+    if s[0] == '-' {
+        negative = true;
+        i = 1;
+    } else if s[0] == '+' {
+        i = 1;
+    }
+    
+    // Parse digits
+    while i < len(s) {
+        let char = s[i];
+        if char >= '0' && char <= '9' {
+            let digit = (char - '0') as Float;
+            if has_decimal {
+                decimal_places = decimal_places + 1;
+                result = result + digit / (10.0 ^ decimal_places as Float);
+            } else {
+                result = result * 10.0 + digit;
+            }
+        } else if char == '.' {
+            if has_decimal {
+                return Err("multiple decimal points");
+            }
+            has_decimal = true;
+        } else {
+            return Err("invalid character: " + char);
+        }
+        i = i + 1;
+    }
+    
+    if negative {
+        result = -result;
+    }
+    
+    return Ok(result);
+}
+
+/// Convert integer to hexadecimal string
+pub fn int_to_hex(value: Int) -> String {
+    if value == 0 {
+        return "0";
+    }
+    
+    let hex_chars = "0123456789ABCDEF";
+    let result = "";
+    let remaining = value;
+    
+    while remaining > 0 {
+        let digit = remaining % 16;
+        result = hex_chars[digit] + result;
+        remaining = remaining / 16;
+    }
+    
+    return result;
+}
+
+/// Convert integer to binary string
+pub fn int_to_binary(value: Int) -> String {
+    if value == 0 {
+        return "0";
+    }
+    
+    let result = "";
+    let remaining = value;
+    
+    while remaining > 0 {
+        let digit = remaining % 2;
+        result = (if digit == 0 { "0" } else { "1" }) + result;
+        remaining = remaining / 2;
+    }
+    
+    return result;
+}
+
+/// Safe conversion between integer types
+pub fn int_to_int64(value: Int) -> Result<Int, String> {
+    // Check for overflow (simplified)
+    if value > 2147483647 || value < -2147483648 {
+        return Err("overflow in int to int64 conversion");
+    }
+    return Ok(value);
+}
+
+/// Safe conversion from float to integer
+pub fn float_to_int(value: Float) -> Result<Int, String> {
+    if value > 2147483647.0 || value < -2147483648.0 {
+        return Err("overflow in float to int conversion");
+    }
+    return Ok(value as Int);
+}
+
+/// Convert bytes to hex string
+pub fn bytes_to_hex(data: Vec<u8>) -> String {
+    let result = "";
+    let i = 0;
+    while i < len(data) {
+        let byte = data[i];
+        let high = (byte >> 4) & 0x0F;
+        let low = byte & 0x0F;
+        let hex_chars = "0123456789ABCDEF";
+        result = result + hex_chars[high] + hex_chars[low];
+        i = i + 1;
+    }
+    return result;
+}
+
+/// Convert hex string to bytes
+pub fn hex_to_bytes(hex: String) -> Result<Vec<u8>, String> {
+    if len(hex) % 2 != 0 {
+        return Err("hex string must have even length");
+    }
+    
+    let result = vec_new_typed();
+    let i = 0;
+    while i < len(hex) {
+        let high_char = hex[i];
+        let low_char = hex[i + 1];
+        i = i + 2;
+        
+        let high = parse_hex_digit(high_char);
+        let low = parse_hex_digit(low_char);
+        
+        if high == none || low == none {
+            return Err("invalid hex character");
+        }
+        
+        vec_push_typed(result, ((high.unwrap() << 4) | low.unwrap()) as u8);
+    }
+    
+    return Ok(result);
+}
+
+/// Parse single hex digit
+fn parse_hex_digit(c: String) -> Int? {
+    if c >= '0' && c <= '9' {
+        return Some((c - '0') as Int);
+    } else if c >= 'A' && c <= 'F' {
+        return Some((c - 'A' + 10) as Int);
+    } else if c >= 'a' && c <= 'f' {
+        return Some((c - 'a' + 10) as Int);
+    }
+    return none;
+}

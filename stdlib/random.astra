@@ -1,0 +1,120 @@
+/// std.random – random number generation (hosted only).
+///
+/// Provides pseudo-random number generation utilities.
+/// This module is hosted-only as it requires OS entropy source.
+
+use core;
+
+/// Random number generator state
+pub struct Rng {
+    state: Int,
+}
+
+/// Create new random number generator
+pub fn rng_new() -> Rng {
+    return Rng(state: __get_entropy());
+}
+
+/// Create seeded random number generator
+pub fn rng_seed(seed: Int) -> Rng {
+    return Rng(state: seed);
+}
+
+/// Generate random integer in range [min, max]
+pub fn rng_int_range(rng: Rng, min: Int, max: Int) -> Int {
+    let range = max - min + 1;
+    return min + (rng_next(rng) % range);
+}
+
+/// Generate random float in range [0.0, 1.0)
+pub fn rng_float(rng: Rng) -> Float {
+    return (rng_next(rng) as Float) / 2147483648.0;
+}
+
+/// Generate random float in range [min, max]
+pub fn rng_float_range(rng: Rng, min: Float, max: Float) -> Float {
+    return min + rng_float(rng) * (max - min);
+}
+
+/// Shuffle a vector in place
+pub fn shuffle<T>(rng: Rng, arr: Vec<T>) -> Vec<T> {
+    let result = vec_new_typed();
+    let indices = vec_new_typed();
+    let i = 0;
+    
+    // Create index array
+    while i < len(arr) {
+        vec_push_typed(indices, i);
+        i = i + 1;
+    }
+    
+    // Fisher-Yates shuffle
+    let n = len(indices);
+    while n > 1 {
+        let j = rng_int_range(rng, 0, n - 1);
+        let temp = indices[n - 1];
+        indices[n - 1] = indices[j];
+        indices[j] = temp;
+        n = n - 1;
+    }
+    
+    // Build shuffled result
+    i = 0;
+    while i < len(indices) {
+        vec_push_typed(result, arr[indices[i]]);
+        i = i + 1;
+    }
+    
+    return result;
+}
+
+/// Generate random bytes
+pub fn rng_bytes(rng: Rng, count: Int) -> Vec<u8> {
+    let result = vec_new_typed();
+    let i = 0;
+    while i < count {
+        vec_push_typed(result, (rng_next(rng) & 0xFF) as u8);
+        i = i + 1;
+    }
+    return result;
+}
+
+/// Generate random string
+pub fn rng_string(rng: Rng, length: Int, charset: String) -> String {
+    let result = "";
+    let i = 0;
+    while i < length {
+        let char_index = rng_int_range(rng, 0, len(charset) - 1);
+        result = result + charset[char_index];
+        i = i + 1;
+    }
+    return result;
+}
+
+/// Generate random alphanumeric string
+pub fn rng_alphanumeric(rng: Rng, length: Int) -> String {
+    return rng_string(rng, length, "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz");
+}
+
+/// Generate random lowercase string
+pub fn rng_lowercase(rng: Rng, length: Int) -> String {
+    return rng_string(rng, length, "abcdefghijklmnopqrstuvwxyz");
+}
+
+/// Generate random uppercase string
+pub fn rng_uppercase(rng: Rng, length: Int) -> String {
+    return rng_string(rng, length, "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+}
+
+/// Generate random digits string
+pub fn rng_digits(rng: Rng, length: Int) -> String {
+    return rng_string(rng, length, "0123456789");
+}
+
+/// Get next random number (Xorshift algorithm)
+fn rng_next(rng: Rng) -> Int {
+    rng.state = rng.state ^ (rng.state << 13);
+    rng.state = rng.state ^ (rng.state >> 17);
+    rng.state = rng.state ^ (rng.state << 5);
+    return rng.state;
+}

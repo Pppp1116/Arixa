@@ -59,9 +59,12 @@ class Profiler:
             self._totals.clear()
             self._records.clear()
             self._phase_stats.clear()
-            # Reset thread-local accumulators
+            # Reset thread-local accumulators safely
+            # Clear existing thread-local stacks before clearing the dict
+            for thread_profiler in self._thread_locals.values():
+                thread_profiler._stack.clear()
+                thread_profiler._records.clear()
             self._thread_locals.clear()
-            self._stack_local = threading.local()
 
     def disable(self) -> None:
         with self._lock:

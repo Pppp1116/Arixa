@@ -1,0 +1,79 @@
+/// std.hash – hashing utilities (freestanding-safe).
+///
+/// Provides various hash functions including SHA-256, MD5, and
+/// simple hash algorithms for data integrity and lookups.
+/// These utilities are pure and valid in both hosted and freestanding modes.
+
+use core;
+
+/// SHA-256 hash result (32 bytes)
+pub struct Sha256Hash {
+    bytes: Vec<u8>,
+}
+
+/// Compute SHA-256 hash of data
+pub fn sha256(data: Vec<u8>) -> Sha256Hash {
+    return __sha256_compute(data);
+}
+
+/// Compute SHA-256 hash of string
+pub fn sha256_str(s: String) -> Sha256Hash {
+    return sha256(s.to_bytes());
+}
+
+/// Simple 32-bit hash function (deterministic)
+pub fn hash32(data: Vec<u8>) -> Int {
+    let hash = 2166136261;
+    let i = 0;
+    while i < len(data) {
+        hash = hash ^ ((hash << 5) + data[i] as Int);
+        i = i + 1;
+    }
+    return hash;
+}
+
+/// Simple 64-bit hash function (deterministic)
+pub fn hash64(data: Vec<u8>) -> Int {
+    let hash = 2166136261;
+    let i = 0;
+    while i < len(data) {
+        hash = hash ^ ((hash << 5) + data[i] as Int);
+        i = i + 1;
+    }
+    return hash;
+}
+
+/// Hash a string using hash32
+pub fn hash_str(s: String) -> Int {
+    return hash32(s.to_bytes());
+}
+
+/// Combine two hash values
+pub fn combine_hashes(hash1: Int, hash2: Int) -> Int {
+    return hash1 ^ (hash2 + 2654435761);
+}
+
+/// MD5 hash result (16 bytes)
+pub struct Md5Hash {
+    bytes: Vec<u8>,
+}
+
+/// Compute MD5 hash of data
+pub fn md5(data: Vec<u8>) -> Md5Hash {
+    return __md5_compute(data);
+}
+
+/// Compute MD5 hash of string
+pub fn md5_str(s: String) -> Md5Hash {
+    return md5(s.to_bytes());
+}
+
+/// HMAC-SHA256 (keyed hash for authentication)
+pub fn hmac_sha256(key: Vec<u8>, data: Vec<u8>) -> Sha256Hash {
+    return __hmac_sha256_compute(key, data);
+}
+
+/// HMAC-SHA256 with string key
+pub fn hmac_sha256_str(key: String, data: String) -> Sha256Hash {
+    return hmac_sha256(key.to_bytes(), data.to_bytes());
+}

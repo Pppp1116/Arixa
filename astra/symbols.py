@@ -47,17 +47,17 @@ class GlobalSymbolTable:
     If you need mutable access, use MutableSymbolTable during the building phase,
     then call freeze() to get an immutable instance for parallel processing.
     """
-    functions: Dict[str, List[SymbolInfo]] = field(default_factory=dict)
-    structs: Dict[str, SymbolInfo] = field(default_factory=dict)
-    enums: Dict[str, SymbolInfo] = field(default_factory=dict)
-    type_aliases: Dict[str, SymbolInfo] = field(default_factory=dict)
-    extern_functions: Dict[str, List[SymbolInfo]] = field(default_factory=dict)
-    global_scope: Dict[str, str] = field(default_factory=dict)
-    duplicate_declarations: List[Tuple[str, SymbolInfo, SymbolInfo]] = field(default_factory=list)
+    functions: Dict[str, Tuple[SymbolInfo, ...]] = field(default_factory=dict)
+    structs: Mapping[str, SymbolInfo] = field(default_factory=dict)
+    enums: Mapping[str, SymbolInfo] = field(default_factory=dict)
+    type_aliases: Mapping[str, SymbolInfo] = field(default_factory=dict)
+    extern_functions: Dict[str, Tuple[SymbolInfo, ...]] = field(default_factory=dict)
+    global_scope: Mapping[str, str] = field(default_factory=dict)
+    duplicate_declarations: Tuple[Tuple[str, SymbolInfo, SymbolInfo], ...] = field(default_factory=tuple)
     
-    def get_function_overloads(self, name: str) -> List[SymbolInfo]:
+    def get_function_overloads(self, name: str) -> Tuple[SymbolInfo, ...]:
         """Get all overloads for a function name"""
-        return self.functions.get(name, [])
+        return self.functions.get(name, tuple())
     
     def get_struct(self, name: str) -> Optional[SymbolInfo]:
         """Get struct declaration"""
@@ -71,15 +71,15 @@ class GlobalSymbolTable:
         """Get type alias declaration"""
         return self.type_aliases.get(name)
     
-    def get_extern_function(self, name: str) -> List[SymbolInfo]:
+    def get_extern_function(self, name: str) -> Tuple[SymbolInfo, ...]:
         """Get extern function overloads"""
-        return self.extern_functions.get(name, [])
+        return self.extern_functions.get(name, tuple())
     
     def is_global_symbol(self, name: str) -> bool:
         """Check if name is in global scope"""
         return name in self.global_scope
     
-    def get_duplicate_declarations(self) -> List[Tuple[str, SymbolInfo, SymbolInfo]]:
+    def get_duplicate_declarations(self) -> Tuple[Tuple[str, SymbolInfo, SymbolInfo], ...]:
         """Get all duplicate declarations that were found during symbol table construction"""
         return self.duplicate_declarations
 

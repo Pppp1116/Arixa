@@ -1,0 +1,103 @@
+/// std.os – operating system utilities (hosted only).
+///
+/// Provides cross-platform utilities for environment variables,
+/// process information, and system operations.
+/// This module is hosted-only as it requires OS access.
+
+use std.io;
+use std.str;
+
+/// Get current working directory
+pub fn cwd() -> String {
+    return __get_cwd();
+}
+
+/// Get environment variable or return default
+pub fn env_var(key: String, default: String) -> String {
+    let value = __get_env(key);
+    if len(value) == 0 {
+        return default;
+    }
+    return value;
+}
+
+/// Get environment variable or return none if not set
+pub fn env_var_or(key: String) -> String? {
+    let value = __get_env(key);
+    if len(value) == 0 {
+        return none;
+    }
+    return value;
+}
+
+/// Set environment variable
+pub fn set_env_var(key: String, value: String) -> Int {
+    return __set_env(key, value);
+}
+
+/// Get command line arguments
+pub fn args() -> Vec<String> {
+    return __get_args();
+}
+
+/// Get program name
+pub fn program_name() -> String {
+    let args_vec = args();
+    if len(args_vec) == 0 {
+        return "";
+    }
+    return basename(args_vec[0]);
+}
+
+/// Exit the current process with a code
+pub fn exit(code: Int) -> Void {
+    __exit_process(code);
+}
+
+/// Get operating system name
+pub fn os_name() -> String {
+    return __get_os_name();
+}
+
+/// Get architecture name
+pub fn arch_name() -> String {
+    return __get_arch_name();
+}
+
+/// Check if running on Windows
+pub fn is_windows() -> Bool {
+    return os_name() == "windows";
+}
+
+/// Check if running on Unix-like system
+pub fn is_unix() -> Bool {
+    return !is_windows();
+}
+
+/// Get temporary directory
+pub fn temp_dir() -> String {
+    if is_windows() {
+        return env_var("TEMP", "C:\\temp");
+    } else {
+        return env_var("TMPDIR", "/tmp");
+    }
+}
+
+/// Get home directory
+pub fn home_dir() -> String {
+    if is_windows() {
+        return env_var("USERPROFILE", "C:\\Users\\Default");
+    } else {
+        return env_var("HOME", "/home/user");
+    }
+}
+
+/// Execute a command and get output
+pub fn command_output(command: String, args: Vec<String>) -> Result<String, Int> {
+    let result = __exec_command(command, args);
+    if result.exit_code == 0 {
+        return Ok(result.stdout);
+    } else {
+        return Err(result.exit_code);
+    }
+}

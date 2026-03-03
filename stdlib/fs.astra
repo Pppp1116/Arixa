@@ -1,0 +1,148 @@
+/// std.fs – filesystem operations (hosted only).
+///
+/// Provides cross-platform filesystem utilities for directory traversal,
+/// path manipulation, and file metadata operations.
+/// This module is hosted-only as it requires OS filesystem access.
+
+use std.io;
+use std.str;
+
+/// Represents filesystem metadata for files and directories
+pub struct FileMetadata {
+    size Int,
+    is_file Bool,
+    is_dir Bool,
+    is_readable Bool,
+    is_writable Bool,
+    modified_time Int,
+}
+
+/// Join path components with platform-specific separators
+pub fn join(parts: Vec<String>) -> String {
+    if len(parts) == 0 {
+        return "";
+    }
+    let result = parts[0];
+    let i = 1;
+    while i < len(parts) {
+        result = result + "/" + parts[i];
+        i = i + 1;
+    }
+    return result;
+}
+
+/// Get the directory name from a path
+pub fn dirname(path: String) -> String {
+    let last_slash = 0;
+    let i = 0;
+    while i < len(path) {
+        if path[i] == '/' {
+            last_slash = i;
+        }
+        i = i + 1;
+    }
+    if last_slash == 0 {
+        return ".";
+    }
+    return path[0:last_slash];
+}
+
+/// Get the filename from a path
+pub fn basename(path: String) -> String {
+    let last_slash = 0;
+    let i = 0;
+    while i < len(path) {
+        if path[i] == '/' {
+            last_slash = i + 1;
+        }
+        i = i + 1;
+    }
+    if last_slash >= len(path) {
+        return path;
+    }
+    return path[last_slash:len(path)];
+}
+
+/// Check if a path is absolute
+pub fn is_absolute(path: String) -> Bool {
+    return len(path) > 0 && path[0] == '/';
+}
+
+/// Get file metadata
+pub fn metadata(path: String) -> FileMetadata {
+    let file_exists = exists(path);
+    let size = if file_exists { __file_size(path) } else { 0 };
+    let is_dir = file_exists && __is_directory(path);
+    
+    return FileMetadata(
+        size: size,
+        is_file: file_exists && !is_dir,
+        is_dir: is_dir,
+        is_readable: true,  // Simplified - could enhance with actual permission checks
+        is_writable: true,  // Simplified - could enhance with actual permission checks
+        modified_time: if file_exists { __file_modified(path) } else { 0 }
+    );
+}
+
+/// List directory contents
+pub fn list_dir(path: String) -> Vec<String> {
+    if !exists(path) {
+        return vec_new_typed();
+    }
+    return __list_directory(path);
+}
+
+/// Create a directory
+pub fn create_dir(path: String) -> Int {
+    return if __is_directory(path) { 0 } else { __create_directory(path) };
+}
+
+/// Create directory with parents
+pub fn create_dir_all(path: String) -> Int {
+    let parts = vec_new_typed();
+    let current = "";
+    let i = 0;
+    while i < len(path) {
+        if path[i] == '/' && i > 0 {
+            parts.push(current);
+            current = "";
+        } else {
+            current = current + path[i];
+        }
+        i = i + 1;
+    }
+    if len(current) > 0 {
+        parts.push(current);
+    }
+    
+    let j = 0;
+    while j < len(parts) {
+        let part = parts[j];
+        if len(part) > 0 {
+            let result = create_dir(join(parts[0:j]));
+            if result != 0 {
+                return result;
+            }
+        }
+        j = j + 1;
+    }
+    return 0;
+}
+
+/// Remove a file or directory
+pub fn remove_all(path: String) -> Int {
+    let meta = metadata(path);
+    if meta.is_dir {
+        let contents = list_dir(path);
+        let i = 0;
+        while i < len(contents) {
+            let full_path = join(vec_from_array([path, contents[i]]));
+            let result = remove_all(full_path);
+            if result != 0 {
+                return result;
+            }
+            i = i + 1;
+        }
+    }
+    return remove(path);
+}
