@@ -33,13 +33,27 @@ class SymbolInfo:
 
 @dataclass(frozen=True)
 class GlobalSymbolTable:
-    """Immutable global symbol table for parallel access"""
+    """
+    Immutable global symbol table for parallel access.
+    
+    IMPORTANT: This class returns read-only collections:
+    - functions and extern_functions return tuples (immutable lists)
+    - structs, enums, type_aliases, and global_scope return MappingProxyType (read-only dict views)
+    
+    Consumers must treat all returned collections as read-only. Any attempts to modify
+    them will raise TypeError. This immutability ensures safe parallel access during
+    semantic analysis.
+    
+    If you need mutable access, use MutableSymbolTable during the building phase,
+    then call freeze() to get an immutable instance for parallel processing.
+    """
     functions: Dict[str, List[SymbolInfo]] = field(default_factory=dict)
     structs: Dict[str, SymbolInfo] = field(default_factory=dict)
     enums: Dict[str, SymbolInfo] = field(default_factory=dict)
     type_aliases: Dict[str, SymbolInfo] = field(default_factory=dict)
     extern_functions: Dict[str, List[SymbolInfo]] = field(default_factory=dict)
     global_scope: Dict[str, str] = field(default_factory=dict)
+    duplicate_declarations: List[Tuple[str, SymbolInfo, SymbolInfo]] = field(default_factory=list)
     
     def get_function_overloads(self, name: str) -> List[SymbolInfo]:
         """Get all overloads for a function name"""
@@ -64,6 +78,10 @@ class GlobalSymbolTable:
     def is_global_symbol(self, name: str) -> bool:
         """Check if name is in global scope"""
         return name in self.global_scope
+    
+    def get_duplicate_declarations(self) -> List[Tuple[str, SymbolInfo, SymbolInfo]]:
+        """Get all duplicate declarations that were found during symbol table construction"""
+        return self.duplicate_declarations
 
 
 class MutableSymbolTable:
@@ -169,7 +187,8 @@ class MutableSymbolTable:
             enums=MappingProxyType(dict(self.enums)),
             type_aliases=MappingProxyType(dict(self.type_aliases)),
             extern_functions=immutable_extern_functions,
-            global_scope=MappingProxyType(dict(self.global_scope))
+            global_scope=MappingProxyType(dict(self.global_scope)),
+            duplicate_declarations=tuple(self.duplicate_declarations)  # Make immutable
         )
 
 
@@ -239,6 +258,14 @@ def validate_symbol_consistency(table: GlobalSymbolTable) -> List[str]:
     Returns a list of error messages.
     """
     errors = []
+    
+    # Check for duplicate declarations that were recorded during construction
+    for dup_type, existing, new in table.get_duplicate_declarations():
+        errors.append(
+            f"Duplicate {dup_type} declaration: {new.name} "
+            f"previously defined in {existing.file_path}:{existing.span_info[0]}, "
+            f"now redefined in {new.file_path}:{new.span_info[0]}"
+        )
     
     # Check for function overload conflicts
     for name, overloads in table.functions.items():

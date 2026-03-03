@@ -40,10 +40,33 @@ def assert_valid_llvm_ir(ir_text: str, *, triple: str | None = None, workdir: Pa
         "STUB",
         "FIXME: runtime",
         "TODO: runtime",
-        "TODO: implement"
+        "TODO: implement",
+        # Case-insensitive variants
+        "todo",
+        "TODO",
+        "fixme",
+        "FIXME", 
+        "tbd",
+        "TBD",
+        "hack",
+        "HACK",
+        # Common placeholder patterns
+        "XXX",
+        "NOTE:",
+        "TEMP",
+        "TEMPORARY",
+        "INCOMPLETE",
+        "COMING SOON",
+        "NOT YET",
+        "PENDING",
+        "WIP",
+        "WORK IN PROGRESS"
     ]
+    # Use case-insensitive search for broader detection
+    text_lower = text.lower()
     for pattern in incomplete_patterns:
-        assert pattern not in text, f"LLVM IR contains incomplete implementation: {pattern}"
+        if pattern.lower() in text_lower:
+            assert False, f"LLVM IR contains incomplete implementation: {pattern}"
     if triple:
         assert triple in text, f"missing module triple {triple!r}"
 

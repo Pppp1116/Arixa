@@ -159,8 +159,17 @@ def parse_files_parallel(file_paths: List[Path]) -> Dict[Path, Any]:
         # Submit all parsing work
         work_items = []
         for file_path in file_paths:
+            # Use relative path or filename for stable, portable IDs
+            try:
+                # Try to get relative path from current working directory
+                rel_path = file_path.relative_to(Path.cwd())
+                work_id = f"parse_{rel_path.as_posix()}"
+            except ValueError:
+                # Fallback to just the filename if not relative to cwd
+                work_id = f"parse_{file_path.name}"
+            
             work = WorkItem(
-                id=f"parse_{file_path.resolve().as_posix()}",
+                id=work_id,
                 fn=lambda fp=file_path: parse_file_parallel(fp)
             )
             work_items.append(work)

@@ -10,17 +10,13 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any, Tuple
-import contextvars
 from pathlib import Path
 
 from astra.ast import FnDecl, ExternFnDecl, Program
 from astra.symbols import GlobalSymbolTable, SymbolInfo
 from astra.parallel import ParallelExecutor, WorkItem, DeterministicMerge
 from astra.profiler import profiler
-from astra.semantic import SemanticError, _analyze_fn
-
-# Thread-local freestanding context
-_freestanding_context: contextvars.ContextVar[bool] = contextvars.ContextVar('freestanding', default=False)
+from astra.semantic import SemanticError, _analyze_fn, _FREESTANDING_MODE_STACK
 
 
 @dataclass
@@ -55,8 +51,8 @@ def analyze_function_parallel(work_item: SemanticWorkItem) -> ThreadLocalDiagnos
     """
     diagnostics = ThreadLocalDiagnostics()
     
-    # Set freestanding context for this thread
-    token = _freestanding_context.set(work_item.freestanding)
+    # Use the same stack-based approach as semantic.py for consistency
+    _FREESTANDING_MODE_STACK.append(work_item.freestanding)
     
     try:
         _analyze_fn(
@@ -72,8 +68,9 @@ def analyze_function_parallel(work_item: SemanticWorkItem) -> ThreadLocalDiagnos
     except Exception as e:
         diagnostics.add_error(f"INTERNAL {work_item.file_path}:{work_item.fn_decl.line}:{work_item.fn_decl.col}: {e}")
     finally:
-        # Reset context
-        _freestanding_context.reset(token)
+        # Always pop from stack to maintain consistency
+        if _FREESTANDING_MODE_STACK:
+            _FREESTANDING_MODE_STACK.pop()
     
     return diagnostics
 
@@ -222,8 +219,17 @@ def analyze_programs_parallel(
         # Submit all programs for analysis
         futures = []
         for file_path, program in programs.items():
+            # Use relative path or filename for stable, portable IDs
+            try:
+                # Try to get relative path from current working directory
+                rel_path = file_path.relative_to(Path.cwd())
+                work_id = f"analyze_program_{rel_path.as_posix()}"
+            except ValueError:
+                # Fallback to just the filename if not relative to cwd
+                work_id = f"analyze_program_{file_path.name}"
+            
             work = WorkItem(
-                id=f"analyze_program_{file_path.resolve().as_posix()}",
+                id=work_id,
                 fn=lambda fp=file_path, prog=program: analyze_single_program_for_parallel(
                     prog, symbol_table, str(fp), freestanding
                 )

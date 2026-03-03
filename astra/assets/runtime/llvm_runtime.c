@@ -7,6 +7,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #if defined(__GNUC__) || defined(__clang__)
 typedef __int128 i128;
@@ -1655,16 +1656,52 @@ u128 astra_u128_mod_trap(u128 a, u128 b) {
 typedef struct {
   void *value;
   bool completed;
+  bool valid;
   uintptr_t waiters;
+  pthread_cond_t cond;
 } AsyncTask;
 
 static AsyncTask *g_async_tasks = NULL;
 static size_t g_async_cap = 0;
 static uintptr_t g_next_task_id = 1;
+static pthread_mutex_t g_async_mutex = PTHREAD_MUTEX_INITIALIZER;
+static bool g_async_initialized = false;
+
+static void astra_async_cleanup_task(AsyncTask *task) {
+  if (task != NULL) {
+    pthread_cond_destroy(&task->cond);
+    task->valid = false;
+    task->value = NULL;
+    task->completed = false;
+    task->waiters = 0;
+  }
+}
+
+static bool astra_async_init_once(void) {
+  if (g_async_initialized) {
+    return true;
+  }
+  if (pthread_mutex_lock(&g_async_mutex) != 0) {
+    return false;
+  }
+  if (!g_async_initialized) {
+    g_async_initialized = true;
+  }
+  pthread_mutex_unlock(&g_async_mutex);
+  return true;
+}
 
 static bool astra_async_reserve(size_t want) {
+  if (!astra_async_init_once()) {
+    return false;
+  }
+  if (pthread_mutex_lock(&g_async_mutex) != 0) {
+    return false;
+  }
+  bool result = false;
   if (g_async_cap >= want) {
-    return true;
+    result = true;
+    goto cleanup;
   }
   size_t next = g_async_cap == 0 ? 8 : g_async_cap * 2;
   while (next < want) {
@@ -1672,15 +1709,39 @@ static bool astra_async_reserve(size_t want) {
   }
   AsyncTask *p = (AsyncTask *)realloc(g_async_tasks, next * sizeof(AsyncTask));
   if (p == NULL) {
-    return false;
+    goto cleanup;
   }
   for (size_t i = g_async_cap; i < next; i++) {
     p[i].value = NULL;
     p[i].completed = false;
+    p[i].valid = false;
     p[i].waiters = 0;
+    if (pthread_cond_init(&p[i].cond, NULL) != 0) {
+      for (size_t j = g_async_cap; j < i; j++) {
+        pthread_cond_destroy(&p[j].cond);
+      }
+      goto cleanup;
+    }
   }
   g_async_tasks = p;
   g_async_cap = next;
+  result = true;
+cleanup:
+  pthread_mutex_unlock(&g_async_mutex);
+  return result;
+}
+
+static bool astra_async_validate_task_id(uintptr_t task_id, size_t *idx_out) {
+  if (task_id == 0 || task_id >= g_next_task_id) {
+    return false;
+  }
+  size_t idx = task_id - 1;
+  if (idx >= g_async_cap || !g_async_tasks[idx].valid) {
+    return false;
+  }
+  if (idx_out != NULL) {
+    *idx_out = idx;
+  }
   return true;
 }
 
@@ -1688,40 +1749,86 @@ uintptr_t astra_async_create(void *value) {
   if (!astra_async_reserve(g_next_task_id + 1)) {
     return 0;
   }
+  if (pthread_mutex_lock(&g_async_mutex) != 0) {
+    return 0;
+  }
   uintptr_t task_id = g_next_task_id++;
   AsyncTask *task = &g_async_tasks[task_id - 1];
   task->value = value;
   task->completed = false;
+  task->valid = true;
   task->waiters = 0;
+  pthread_mutex_unlock(&g_async_mutex);
   return task_id;
 }
 
 void astra_async_complete(uintptr_t task_id) {
-  if (task_id == 0 || task_id > g_next_task_id) {
+  size_t idx;
+  if (!astra_async_validate_task_id(task_id, &idx)) {
     return;
   }
-  size_t idx = task_id - 1;
-  if (idx >= g_async_cap) {
+  if (pthread_mutex_lock(&g_async_mutex) != 0) {
     return;
-  }
-  AsyncTask *task = &g_async_tasks[idx];
-  task->completed = true;
-}
-
-void *astra_await_result(uintptr_t task_id) {
-  if (task_id == 0 || task_id > g_next_task_id) {
-    return astra_any_box_i64(0);
-  }
-  size_t idx = task_id - 1;
-  if (idx >= g_async_cap) {
-    return astra_any_box_i64(0);
   }
   AsyncTask *task = &g_async_tasks[idx];
   if (!task->completed) {
-    // Simple blocking wait - in real implementation would use condition variables
-    while (!task->completed) {
-      // Busy wait (not ideal but functional)
+    task->completed = true;
+    pthread_cond_broadcast(&task->cond);
+  }
+  pthread_mutex_unlock(&g_async_mutex);
+}
+
+void *astra_await_result(uintptr_t task_id) {
+  size_t idx;
+  if (!astra_async_validate_task_id(task_id, &idx)) {
+    return astra_any_box_i64(0);
+  }
+  if (pthread_mutex_lock(&g_async_mutex) != 0) {
+    return astra_any_box_i64(0);
+  }
+  AsyncTask *task = &g_async_tasks[idx];
+  void *result = NULL;
+  
+  while (!task->completed && task->valid) {
+    task->waiters++;
+    int wait_result = pthread_cond_wait(&task->cond, &g_async_mutex);
+    task->waiters--;
+    if (wait_result != 0) {
+      break;
     }
   }
-  return task->value;
+  
+  if (task->completed) {
+    result = task->value;
+  } else {
+    result = astra_any_box_i64(0);
+  }
+  
+  pthread_mutex_unlock(&g_async_mutex);
+  return result;
+}
+
+void astra_async_free(uintptr_t task_id) {
+  size_t idx;
+  if (!astra_async_validate_task_id(task_id, &idx)) {
+    return;
+  }
+  if (pthread_mutex_lock(&g_async_mutex) != 0) {
+    return;
+  }
+  AsyncTask *task = &g_async_tasks[idx];
+  if (task->valid) {
+    while (task->waiters > 0) {
+      task->completed = true;
+      pthread_cond_broadcast(&task->cond);
+      pthread_mutex_unlock(&g_async_mutex);
+      struct timespec ts = {0, 1000000}; // 1ms
+      nanosleep(&ts, NULL);
+      if (pthread_mutex_lock(&g_async_mutex) != 0) {
+        return;
+      }
+    }
+    astra_async_cleanup_task(task);
+  }
+  pthread_mutex_unlock(&g_async_mutex);
 }

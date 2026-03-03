@@ -1651,14 +1651,16 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
     if base == "astra_async_create":
         if len(call.args) != 1:
             raise CodegenError(_diag(call, "astra_async_create expects 1 argument"))
-        fn = ctx.module.get_or_insert_function("astra_async_create", ir.FunctionType(ir.IntType(64), [ir.IntType(8).as_pointer()]))
+        int_type = _llvm_type(ctx, "Int")
+        fn = ctx.module.get_or_insert_function("astra_async_create", ir.FunctionType(int_type, [ir.IntType(8).as_pointer()]))
         result = b.call(fn, [_coerce_value(ctx, state, call.args[0].value, call.args[0].ty, "Any", call.args[0])])
         return _Value(result, "Int")
     
     if base == "astra_async_complete":
         if len(call.args) != 1:
             raise CodegenError(_diag(call, "astra_async_complete expects 1 argument"))
-        fn = ctx.module.get_or_insert_function("astra_async_complete", ir.FunctionType(ir.VoidType(), [ir.IntType(64)]))
+        int_type = _llvm_type(ctx, "Int")
+        fn = ctx.module.get_or_insert_function("astra_async_complete", ir.FunctionType(ir.VoidType(), [int_type]))
         result = b.call(fn, [_coerce_value(ctx, state, call.args[0].value, call.args[0].ty, "Int", call.args[0])])
         return _Value(result, "Void")
 
