@@ -1647,6 +1647,20 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
         if len(call.args) != 1:
             raise CodegenError(_diag(call, "await_result expects 1 argument"))
         return _compile_expr(ctx, state, call.args[0])
+    
+    if base == "astra_async_create":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "astra_async_create expects 1 argument"))
+        fn = ctx.module.get_or_insert_function("astra_async_create", ir.FunctionType(ir.IntType(64), [ir.IntType(8).as_pointer()]))
+        result = b.call(fn, [_coerce_value(ctx, state, call.args[0].value, call.args[0].ty, "Any", call.args[0])])
+        return _Value(result, "Int")
+    
+    if base == "astra_async_complete":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "astra_async_complete expects 1 argument"))
+        fn = ctx.module.get_or_insert_function("astra_async_complete", ir.FunctionType(ir.VoidType(), [ir.IntType(64)]))
+        result = b.call(fn, [_coerce_value(ctx, state, call.args[0].value, call.args[0].ty, "Int", call.args[0])])
+        return _Value(result, "Void")
 
     raise CodegenError(_diag(call, f"internal: unexpected builtin dispatch {base}"))
 
@@ -1842,6 +1856,9 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
             "__vec_get",
             "__vec_set",
             "__vec_push",
+            "__await_result",
+            "__astra_async_create",
+            "__astra_async_complete",
             "panic",
             "__panic",
         }:

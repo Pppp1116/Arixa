@@ -1650,3 +1650,78 @@ u128 astra_u128_mod_trap(u128 a, u128 b) {
   }
   return a % b;
 }
+
+// Async/await implementation
+typedef struct {
+  void *value;
+  bool completed;
+  uintptr_t waiters;
+} AsyncTask;
+
+static AsyncTask *g_async_tasks = NULL;
+static size_t g_async_cap = 0;
+static uintptr_t g_next_task_id = 1;
+
+static bool astra_async_reserve(size_t want) {
+  if (g_async_cap >= want) {
+    return true;
+  }
+  size_t next = g_async_cap == 0 ? 8 : g_async_cap * 2;
+  while (next < want) {
+    next *= 2;
+  }
+  AsyncTask *p = (AsyncTask *)realloc(g_async_tasks, next * sizeof(AsyncTask));
+  if (p == NULL) {
+    return false;
+  }
+  for (size_t i = g_async_cap; i < next; i++) {
+    p[i].value = NULL;
+    p[i].completed = false;
+    p[i].waiters = 0;
+  }
+  g_async_tasks = p;
+  g_async_cap = next;
+  return true;
+}
+
+uintptr_t astra_async_create(void *value) {
+  if (!astra_async_reserve(g_next_task_id + 1)) {
+    return 0;
+  }
+  uintptr_t task_id = g_next_task_id++;
+  AsyncTask *task = &g_async_tasks[task_id - 1];
+  task->value = value;
+  task->completed = false;
+  task->waiters = 0;
+  return task_id;
+}
+
+void astra_async_complete(uintptr_t task_id) {
+  if (task_id == 0 || task_id > g_next_task_id) {
+    return;
+  }
+  size_t idx = task_id - 1;
+  if (idx >= g_async_cap) {
+    return;
+  }
+  AsyncTask *task = &g_async_tasks[idx];
+  task->completed = true;
+}
+
+void *astra_await_result(uintptr_t task_id) {
+  if (task_id == 0 || task_id > g_next_task_id) {
+    return astra_any_box_i64(0);
+  }
+  size_t idx = task_id - 1;
+  if (idx >= g_async_cap) {
+    return astra_any_box_i64(0);
+  }
+  AsyncTask *task = &g_async_tasks[idx];
+  if (!task->completed) {
+    // Simple blocking wait - in real implementation would use condition variables
+    while (!task->completed) {
+      // Busy wait (not ideal but functional)
+    }
+  }
+  return task->value;
+}

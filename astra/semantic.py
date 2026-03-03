@@ -165,6 +165,8 @@ BUILTIN_SIGS: dict[str, BuiltinSig] = {
     "alloc": BuiltinSig(["Int"], "Int"),
     "free": BuiltinSig(["Int"], "Void"),
     "await_result": BuiltinSig(["Any"], "Any"),
+    "astra_async_create": BuiltinSig(["Any"], "Int"),
+    "astra_async_complete": BuiltinSig(["Int"], "Void"),
     "list_new": BuiltinSig([], "Any"),
     "list_push": BuiltinSig(["Any", "Any"], "Int"),
     "list_get": BuiltinSig(["Any", "Int"], "Any"),
@@ -211,9 +213,11 @@ BUILTIN_SIGS: dict[str, BuiltinSig] = {
 for _name, _sig in list(BUILTIN_SIGS.items()):
     if _name.startswith("__"):
         continue
-    if _name in {"print", "len", "read_file", "write_file", "args", "arg", "spawn", "join", "alloc", "free", "await_result"}:
+    if _name in {"print", "len", "read_file", "write_file", "args", "arg", "spawn", "join", "alloc", "free", "await_result", "astra_async_create", "astra_async_complete"}:
         continue
     BUILTIN_SIGS[f"__{_name}"] = _sig
+    if _sig.ret != "Void":
+        BUILTIN_SIGS[f"__async_{_name}"] = BuiltinSig(_sig.args, "Int")
 
 
 _FREESTANDING_FORBIDDEN_BUILTINS: set[str] = {

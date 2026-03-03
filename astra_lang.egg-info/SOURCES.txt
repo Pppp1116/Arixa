@@ -21,11 +21,15 @@ astra/llvm_codegen.py
 astra/lsp.py
 astra/module_resolver.py
 astra/optimizer.py
+astra/parallel.py
+astra/parallel_ir.py
+astra/parallel_semantic.py
 astra/parser.py
 astra/pkg.py
 astra/profiler.py
 astra/runtime.py
 astra/semantic.py
+astra/symbols.py
 astra/assets/runtime/llvm_runtime.c
 astra/stdlib/collections.astra
 astra/stdlib/core.astra

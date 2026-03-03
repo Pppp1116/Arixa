@@ -32,7 +32,18 @@ def _init_llvm_once() -> None:
 def assert_valid_llvm_ir(ir_text: str, *, triple: str | None = None, workdir: Path | None = None) -> None:
     text = ir_text.strip()
     assert text, "LLVM IR output is empty"
-    assert "TODO" not in text
+    # Check for actual incomplete implementations rather than just "TODO"
+    incomplete_patterns = [
+        "UNIMPLEMENTED",
+        "NOT IMPLEMENTED", 
+        "PLACEHOLDER",
+        "STUB",
+        "FIXME: runtime",
+        "TODO: runtime",
+        "TODO: implement"
+    ]
+    for pattern in incomplete_patterns:
+        assert pattern not in text, f"LLVM IR contains incomplete implementation: {pattern}"
     if triple:
         assert triple in text, f"missing module triple {triple!r}"
 

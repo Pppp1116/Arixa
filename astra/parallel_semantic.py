@@ -17,7 +17,7 @@ from astra.ast import FnDecl, ExternFnDecl, Program
 from astra.symbols import GlobalSymbolTable, SymbolInfo
 from astra.parallel import ParallelExecutor, WorkItem, DeterministicMerge
 from astra.profiler import profiler
-from astra.semantic import SemanticError, _analyze_fn, ThreadLocalDiagnostics
+from astra.semantic import SemanticError, _analyze_fn
 
 # Thread-local freestanding context
 _freestanding_context: contextvars.ContextVar[bool] = contextvars.ContextVar('freestanding', default=False)
