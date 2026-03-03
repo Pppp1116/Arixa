@@ -1,0 +1,16 @@
+
+// Module 5 for benchmark project
+
+pub fn compute5() -> Int {
+    let mut result = 5;
+    let mut j = 0;
+    while j < 10 {
+        result = result + j;
+        j = j + 1;
+    }
+    return result;
+}
+
+fn helper5(x: Int) -> Int {
+    return x * 2;
+}

@@ -1,0 +1,16 @@
+
+// Module 4 for benchmark project
+
+pub fn compute4() -> Int {
+    let mut result = 4;
+    let mut j = 0;
+    while j < 10 {
+        result = result + j;
+        j = j + 1;
+    }
+    return result;
+}
+
+fn helper4(x: Int) -> Int {
+    return x * 2;
+}

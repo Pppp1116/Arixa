@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -64,6 +65,11 @@ from astra.module_resolver import (
 from astra.optimizer import optimize_program
 from astra.parser import parse
 from astra.semantic import analyze
+from astra.profiler import profiler
+from astra.parallel import parse_files_parallel, is_parallel_enabled
+from astra.symbols import build_global_symbol_table, validate_symbol_consistency
+from astra.parallel_semantic import analyze_program_parallel
+from astra.parallel_ir import optimize_program_parallel
 
 CACHE = Path('.astra-cache.json')
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -118,6 +124,7 @@ def _toolchain_stamp() -> str:
 
 
 def _collect_input_files(src_file: Path) -> list[Path]:
+    """Collect all input files (sequential for now)"""
     visited: set[Path] = set()
     stack: list[Path] = [src_file.resolve()]
     while stack:
@@ -381,10 +388,14 @@ def _build_native_llvm(ir_text: str, out_path: str, src_file: Path, *, profile: 
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     opt_flag = "-O3" if profile == "release" else "-O0"
+    print(f"Using clang with optimization: {opt_flag}")
+    
     with tempfile.TemporaryDirectory(prefix="astra-native-") as td:
         ll_path = Path(td) / "module.ll"
         ll_path.write_text(ir_text)
+        
         if freestanding:
+            print("Building freestanding executable...")
             cmd = [
                 clang,
                 opt_flag,
@@ -396,19 +407,27 @@ def _build_native_llvm(ir_text: str, out_path: str, src_file: Path, *, profile: 
                 str(out),
             ]
         else:
+            print("Building hosted executable with runtime...")
             runtime_c = runtime_source_path()
             if runtime_c is None:
                 raise RuntimeError(
                     f"CODEGEN {src_file}:1:1: missing runtime source; set ASTRA_RUNTIME_C_PATH or install bundled runtime"
                 )
             cmd = [clang, opt_flag, str(ll_path), str(runtime_c), "-lm", "-o", str(out)]
+        
         if triple:
             cmd.insert(1, f"--target={triple}")
+            print(f"Using target triple: {triple}")
+        
+        print(f"Running clang: {' '.join(cmd)}")
         cp = subprocess.run(cmd, capture_output=True, text=True)
         if cp.returncode != 0:
             detail = (cp.stderr or cp.stdout or "").strip()
             raise RuntimeError(f"CODEGEN {src_file}:1:1: clang link failed{': ' + detail if detail else ''}")
+        
+        print(f"Clang compilation successful")
     out.chmod(out.stat().st_mode | 0o111)
+    print(f"Made executable: {out}")
 
 
 def _require_runtime_free_freestanding(ir_text: str, src_file: Path) -> None:
@@ -435,6 +454,48 @@ def _require_runtime_free_freestanding(ir_text: str, src_file: Path) -> None:
             f"CODEGEN {src_file}:1:1: freestanding build cannot depend on external host symbols: {', '.join(externs)}"
         )
 
+def _parse_files_parallel(file_paths: list[Path]) -> dict[Path, Any]:
+    """Parse multiple files in parallel and return ASTs"""
+    if not file_paths:
+        return {}
+    
+    print(f"Parsing {len(file_paths)} files in parallel...")
+    with profiler.section("parallel_parse"):
+        parse_results = parse_files_parallel(file_paths)
+    
+    # Check for parsing errors
+    errors = []
+    asts = {}
+    for file_path, result in parse_results.items():
+        if isinstance(result, Exception):
+            errors.append(f"PARSE {file_path}:1:1: {result}")
+        else:
+            asts[file_path] = result
+    
+    if errors:
+        raise RuntimeError("\n".join(errors))
+    
+    return asts
+
+
+def _merge_programs(asts: dict[Path, Any]) -> Any:
+    """Merge multiple AST programs into a single program"""
+    from astra.ast import Program
+    
+    all_items = []
+    for file_path, ast in asts.items():
+        if hasattr(ast, 'items'):
+            all_items.extend(ast.items)
+        else:
+            # Handle case where parse returned just items
+            if isinstance(ast, list):
+                all_items.extend(ast)
+            else:
+                all_items.append(ast)
+    
+    return Program(items=all_items)
+
+
 def build(
     src_path: str,
     out_path: str,
@@ -445,8 +506,20 @@ def build(
     profile: str = "debug",
     overflow: str = "debug",
     triple: str | None = None,
+    *,
+    profile_compile: bool = False,
+    threads: int | None = None,
 ):
     src_file = Path(src_path)
+    print(f"Building {src_file} -> {out_path} (target: {target})")
+    
+    # Configure profiler and threads environment
+    profiler.enable(profile_compile)
+    if threads is not None and threads > 0:
+        os.environ["ASTRA_THREADS"] = str(threads)
+    else:
+        os.environ.pop("ASTRA_THREADS", None)
+    
     if profile not in {"debug", "release"}:
         raise RuntimeError(f"BUILD {src_file}:1:1: unsupported profile {profile}")
     overflow_mode = _resolve_overflow_mode(profile, overflow, check=False)
@@ -457,48 +530,115 @@ def build(
     )
     cache = json.loads(CACHE.read_text()) if CACHE.exists() else {}
     if cache.get(cache_key) == digest and Path(out_path).exists():
+        print(f"Using cached build for {src_file}")
         return 'cached'
-    src = src_file.read_text()
-    prog = parse(src, filename=str(src_file))
+    
+    print(f"Parsing {src_file}...")
+    
+    # Collect all input files
+    input_files = _collect_input_files(src_file)
+    print(f"Found {len(input_files)} input files")
+    
+    # Parse files (parallel if enabled and multiple files)
+    if len(input_files) > 1 and is_parallel_enabled():
+        asts = _parse_files_parallel(input_files)
+        prog = _merge_programs(asts)
+        
+        # Build global symbol table for parallel semantic analysis
+        symbol_table = build_global_symbol_table(asts)
+        
+        # Validate symbol table consistency
+        symbol_errors = validate_symbol_consistency(symbol_table)
+        if symbol_errors:
+            raise RuntimeError("\n".join(f"SYMBOL {err}" for err in symbol_errors))
+    else:
+        # Sequential parsing for single file or when parallel disabled
+        src = src_file.read_text()
+        with profiler.section("lex/parse+ast"):
+            prog = parse(src, filename=str(src_file))
+        
+        # Create symbol table for single file
+        symbol_table = build_global_symbol_table({src_file: prog})
+    
     if freestanding and target == "native":
         has_start = any(isinstance(item, FnDecl) and item.name == "_start" for item in prog.items)
         if not has_start:
             raise RuntimeError(f"BUILD {src_file}:1:1: freestanding native target requires fn _start()")
-    run_comptime(prog, filename=str(src_file), overflow_mode=overflow_mode)
-    analyze(prog, filename=str(src_file), freestanding=freestanding)
-    optimize_program(prog)
+    
+    print("Running comptime evaluation...")
+    with profiler.section("comptime"):
+        run_comptime(prog, filename=str(src_file), overflow_mode=overflow_mode)
+    
+    print("Running semantic analysis...")
+    with profiler.section("semantic"):
+        if len(input_files) > 1 and is_parallel_enabled():
+            # Parallel semantic analysis using frozen symbol table
+            analyze_program_parallel(prog, symbol_table, str(src_file), freestanding)
+        else:
+            # Sequential semantic analysis
+            analyze(prog, filename=str(src_file), freestanding=freestanding)
+    
+    print("Running optimization...")
+    with profiler.section("ir_opts"):
+        if len(input_files) > 1 and is_parallel_enabled():
+            # Parallel IR optimization
+            prog = optimize_program_parallel(prog)
+        else:
+            # Sequential optimization
+            optimize_program(prog)
+    
     if strict:
         _strict_validate_program(prog, src_file)
+    
     llvm_ir: str | None = None
     if target in {"llvm", "native"} or emit_ir:
-        llvm_ir = to_llvm_ir(
-            prog,
-            freestanding=freestanding,
-            overflow_mode=overflow_mode,
-            triple=triple,
-            profile=profile,
-        )
+        print("Generating LLVM IR...")
+        with profiler.section("codegen_ir"):
+            llvm_ir = to_llvm_ir(
+                prog,
+                freestanding=freestanding,
+                overflow_mode=overflow_mode,
+                triple=triple,
+                profile=profile,
+            )
+    
     if freestanding and llvm_ir is not None:
         _require_runtime_free_freestanding(llvm_ir, src_file)
+    
     if emit_ir:
         assert llvm_ir is not None
         p = Path(emit_ir)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(llvm_ir)
+        print(f"Wrote LLVM IR to {emit_ir}")
+    
     if target == "py":
-        out = to_python(prog, freestanding=freestanding, overflow_mode=overflow_mode)
-        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(out_path).write_text(out)
+        print("Generating Python code...")
+        with profiler.section("codegen_py"):
+            out = to_python(prog, freestanding=freestanding, overflow_mode=overflow_mode)
+            Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(out_path).write_text(out)
+        print(f"Wrote Python output to {out_path}")
     elif target == "llvm":
         assert llvm_ir is not None
         out = llvm_ir
-        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(out_path).write_text(out)
+        with profiler.section("link_emit"):
+            Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(out_path).write_text(out)
+        print(f"Wrote LLVM IR to {out_path}")
     elif target == "native":
         assert llvm_ir is not None
-        _build_native_llvm(llvm_ir, out_path, src_file, profile=profile, triple=triple, freestanding=freestanding)
+        print("Compiling to native executable...")
+        with profiler.section("link_native"):
+            _build_native_llvm(llvm_ir, out_path, src_file, profile=profile, triple=triple, freestanding=freestanding)
+        print(f"Wrote native executable to {out_path}")
     else:
         raise RuntimeError(f"BUILD {src_file}:1:1: unsupported target {target}")
+    
     cache[cache_key] = digest
     CACHE.write_text(json.dumps(dict(sorted(cache.items())), indent=2))
+    # If profiling, print a summary at the end deterministically
+    if profiler.enabled:
+        print(profiler.to_text())
+    print(f"Build completed successfully: {src_file}")
     return 'built'

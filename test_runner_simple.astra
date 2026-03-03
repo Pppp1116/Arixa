@@ -1,0 +1,167 @@
+// Simple Native Test Runner for CI
+// Tests core ASTRA functionality with fast native execution
+
+fn test_basic_arithmetic() -> Int {
+    let x = 1 + 2 * 3;
+    let y = 10 - 6;
+    let z = 3 * 5;
+    let w = 8 / 4;
+    
+    if x == 7 && y == 4 && z == 15 && w == 2 {
+        print("PASS: basic arithmetic");
+        return 0;
+    } else {
+        print("FAIL: basic arithmetic");
+        return 1;
+    }
+}
+
+fn test_bitwise_operations() -> Int {
+    let a = 2 | 4;
+    let b = 2 & 4;
+    let c = 2 ^ 4;
+    let d = 2 << 2;
+    let e = 8 >> 2;
+    
+    if a == 6 && b == 0 && c == 6 && d == 8 && e == 2 {
+        print("PASS: bitwise operations");
+        return 0;
+    } else {
+        print("FAIL: bitwise operations");
+        return 1;
+    }
+}
+
+fn test_control_flow() -> Int {
+    let mut x = 0;
+    if true {
+        x = 1;
+    } else {
+        x = 2;
+    }
+    
+    let mut acc = 0;
+    for let mut i = 0; i < 3; i += 1 {
+        acc += i;
+    }
+    
+    let mut j = 0;
+    while j < 5 {
+        j += 1;
+    }
+    
+    if x == 1 && acc == 3 && j == 5 {
+        print("PASS: control flow");
+        return 0;
+    } else {
+        print("FAIL: control flow");
+        return 1;
+    }
+}
+
+fn test_structs() -> Int {
+    struct Point { x Int, y Int }
+    let p = Point(10, 20);
+    let sum = p.x + p.y;
+    
+    if sum == 30 {
+        print("PASS: structs");
+        return 0;
+    } else {
+        print("FAIL: structs");
+        return 1;
+    }
+}
+
+fn test_arrays() -> Int {
+    let arr = [1, 2, 3, 4, 5];
+    let sum = arr[0] + arr[1] + arr[2] + arr[3] + arr[4];
+    let length = len(arr);
+    
+    if sum == 15 && length == 5 {
+        print("PASS: arrays");
+        return 0;
+    } else {
+        print("FAIL: arrays");
+        return 1;
+    }
+}
+
+fn test_match() -> Int {
+    let x = 2;
+    let result = match x {
+        1 => { 10 }
+        2 => { 20 }
+        3 => { 30 }
+        _ => { 0 }
+    };
+    
+    if result == 20 {
+        print("PASS: match statement");
+        return 0;
+    } else {
+        print("FAIL: match statement");
+        return 1;
+    }
+}
+
+fn test_casts() -> Int {
+    let i: Int = 42;
+    let u: u8 = i as u8;
+    let back: Int = u as Int;
+    
+    if back == 42 {
+        print("PASS: casts");
+        return 0;
+    } else {
+        print("FAIL: casts");
+        return 1;
+    }
+}
+
+fn test_performance() -> Int {
+    // Simple performance test - reduced iterations for CI
+    let mut i = 0;
+    let mut x = 0.0;
+    while i < 100000 {
+        x = x * 1.0000001 + 0.5;
+        if x > 1000000.0 { x = x / 2.0; }
+        i += 1;
+    }
+    
+    // Just verify it completes without crashing
+    if i == 100000 {
+        print("PASS: performance test");
+        return 0;
+    } else {
+        print("FAIL: performance test");
+        return 1;
+    }
+}
+
+fn run_all_tests() -> Int {
+    print("=== Starting Native Test Runner ===");
+    
+    let mut failures = 0;
+    
+    failures += test_basic_arithmetic();
+    failures += test_bitwise_operations();
+    failures += test_control_flow();
+    failures += test_structs();
+    failures += test_arrays();
+    failures += test_match();
+    failures += test_casts();
+    failures += test_performance();
+    
+    if failures == 0 {
+        print("=== All Tests Passed ===");
+        return 0;
+    } else {
+        print("=== Some Tests Failed: " + __to_json(failures) + " failures ===");
+        return 1;
+    }
+}
+
+fn main() -> Int {
+    return run_all_tests();
+}

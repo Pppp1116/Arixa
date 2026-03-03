@@ -1,0 +1,16 @@
+
+// Module 7 for benchmark project
+
+pub fn compute7() -> Int {
+    let mut result = 7;
+    let mut j = 0;
+    while j < 10 {
+        result = result + j;
+        j = j + 1;
+    }
+    return result;
+}
+
+fn helper7(x: Int) -> Int {
+    return x * 2;
+}

@@ -1,0 +1,9 @@
+// Main test file for parallel compilation
+import "module1.astra"
+import "module2.astra"
+
+fn main() -> Int {
+    let a = sum_to_100();
+    let b = factorial(5);
+    return a + b;
+}
