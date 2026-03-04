@@ -59,7 +59,7 @@ class Parser:
         self.errors: list[str] = []
         for tok in self.toks:
             if tok.kind == "ERROR":
-                self.errors.append(_diag("LE", self.filename, tok.line, tok.col, tok.text))
+                self.errors.append(_diag("LEX", self.filename, tok.line, tok.col, tok.text))
 
     def cur(self) -> Token:
         return self.toks[self.i]

@@ -23,6 +23,7 @@ def test_value_profile_template_written(tmp_path: Path, monkeypatch):
                         ],
                     )
                 ],
+                symbol='main__impl0',
             )
         ]
     )
@@ -31,7 +32,7 @@ def test_value_profile_template_written(tmp_path: Path, monkeypatch):
     assert f.exists()
     parsed = json.loads(f.read_text())
     assert parsed == payload
-    assert 'main:x' in payload['switch_cases']
+    assert 'main__impl0:x' in payload['switch_cases']
 
 
 def test_value_profile_specializes_dominant_match_case():
@@ -53,10 +54,11 @@ def test_value_profile_specializes_dominant_match_case():
                         col=5,
                     )
                 ],
+                symbol='main__impl0',
             )
         ]
     )
-    profile = {'switch_cases': {'main:x': {'0': 10, '1': 950}}, 'indirect_calls': {}, 'array_lengths': {}, 'common_integers': {}}
+    profile = {'switch_cases': {'main__impl0:x': {'0': 10, '1': 950}}, 'indirect_calls': {}, 'array_lengths': {}, 'common_integers': {}}
     apply_value_specialization(prog, profile)
     stmt = prog.items[0].body[0]
     assert stmt.__class__.__name__ == 'IfStmt'
@@ -102,3 +104,29 @@ fn main() -> Int { return f(7); }
     icmp_lines = [line for line in ir.splitlines() if 'icmp eq i64' in line]
     assert icmp_lines
     assert ', 1' in icmp_lines[0]
+
+
+def test_value_profile_uses_symbol_to_avoid_fn_name_collisions():
+    prog = Program(
+        items=[
+            FnDecl(
+                name='f',
+                symbol='f__impl0',
+                generics=[],
+                params=[('x', 'Int')],
+                ret='Int',
+                body=[MatchStmt(expr=Name('x'), arms=[(Literal(0), [ReturnStmt(Literal(0))])])],
+            ),
+            FnDecl(
+                name='f',
+                symbol='f__impl1',
+                generics=[],
+                params=[('x', 'Int')],
+                ret='Int',
+                body=[MatchStmt(expr=Name('x'), arms=[(Literal(1), [ReturnStmt(Literal(1))])])],
+            ),
+        ]
+    )
+    payload = write_value_profile_template(prog)
+    assert 'f__impl0:x' in payload['switch_cases']
+    assert 'f__impl1:x' in payload['switch_cases']

@@ -10,14 +10,16 @@ PROFILE_PATH = Path(".build") / "astra-profile.json"
 
 def write_profile_template(functions: list[str], llvm_ir: str | None) -> dict[str, dict[str, int]]:
     edges: dict[str, int] = {}
+    all_functions: set[str] = set(functions)
     if llvm_ir:
         for fn_name, blocks in _extract_functions(llvm_ir):
+            all_functions.add(fn_name)
             succ = _build_successors(blocks)
             for src, dsts in succ.items():
                 for dst in dsts:
                     edges[f"{fn_name}:{src}->{dst}"] = 0
     payload = {
-        "functions": {name: 0 for name in sorted(set(functions))},
+        "functions": {name: 0 for name in sorted(all_functions)},
         "edges": dict(sorted(edges.items())),
         "indirect_calls": {},
     }

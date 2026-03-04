@@ -2932,7 +2932,7 @@ def _declare_cpu_probe(ctx: _ModuleCtx, name: str) -> ir.Function:
     f = ctx.fn_map.get(name)
     if isinstance(f, ir.Function):
         return f
-    f = ir.Function(ctx.module, ir.FunctionType(ir.IntType(1), []), name=name)
+    f = ir.Function(ctx.module, ir.FunctionType(ir.IntType(32), []), name=name)
     ctx.fn_map[name] = f
     return f
 
@@ -2958,7 +2958,8 @@ def _compile_multiversion_dispatcher(ctx: _ModuleCtx, item: FnDecl) -> None:
                 b.ret(out)
             return
         probe = _declare_cpu_probe(ctx, f"astra_cpu_has_{variant}")
-        cond = b.call(probe, [])
+        probe_val = b.call(probe, [])
+        cond = b.icmp_unsigned("!=", probe_val, ir.Constant(ir.IntType(32), 0))
         then_bb = fn_ir.append_basic_block(f"mv_{variant}")
         else_bb = fn_ir.append_basic_block(f"mv_next_{idx}")
         b.cbranch(cond, then_bb, else_bb)

@@ -60,3 +60,22 @@ fn main() -> Int { return hash(4); }
     ir = to_llvm_ir(prog, cpu_dispatch=True, cpu_target="avx2")
     assert "@hash_avx2" in ir
     assert "@hash_avx512" not in ir
+
+
+def test_cpu_probe_declarations_use_i32_and_cmp_to_zero():
+    prog = parse(
+        """
+@multiversion
+fn hash(x: Int) -> Int {
+  let acc = 0;
+  for let i = 0; i < x; i += 1 {
+    acc += i;
+  }
+  return acc;
+}
+fn main() -> Int { return hash(4); }
+"""
+    )
+    ir = to_llvm_ir(prog, cpu_dispatch=True, cpu_target="native")
+    assert "declare i32 @astra_cpu_has_avx2()" in ir
+    assert "icmp ne i32" in ir

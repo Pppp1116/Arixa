@@ -21,7 +21,7 @@ def write_value_profile_template(prog: Program) -> dict[str, dict[str, Any]]:
     for item in prog.items:
         if not isinstance(item, FnDecl):
             continue
-        fn = item.name
+        fn = item.symbol or item.name
         _collect_stmt_profiles(item.body, fn, payload)
     VALUE_PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
     VALUE_PROFILE_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True))
@@ -43,7 +43,7 @@ def load_value_profile() -> dict[str, dict[str, Any]]:
 def apply_value_specialization(prog: Program, profile: dict[str, dict[str, Any]]) -> None:
     for item in prog.items:
         if isinstance(item, FnDecl):
-            item.body = _rewrite_stmts(item.body, item.name, profile)
+            item.body = _rewrite_stmts(item.body, item.symbol or item.name, profile)
 
 
 def _collect_stmt_profiles(stmts: list[Any], fn_name: str, out: dict[str, dict[str, Any]]) -> None:

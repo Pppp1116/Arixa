@@ -1777,7 +1777,7 @@ u128 astra_u128_mod_trap(u128 a, u128 b) {
 }
 
 
-int astra_cpu_has_sse4(void) {
+int32_t astra_cpu_has_sse4(void) {
 #if defined(__x86_64__) || defined(__i386__)
   return __builtin_cpu_supports("sse4.2") ? 1 : 0;
 #else
@@ -1785,7 +1785,7 @@ int astra_cpu_has_sse4(void) {
 #endif
 }
 
-int astra_cpu_has_avx2(void) {
+int32_t astra_cpu_has_avx2(void) {
 #if defined(__x86_64__) || defined(__i386__)
   return __builtin_cpu_supports("avx2") ? 1 : 0;
 #else
@@ -1793,7 +1793,7 @@ int astra_cpu_has_avx2(void) {
 #endif
 }
 
-int astra_cpu_has_avx512(void) {
+int32_t astra_cpu_has_avx512(void) {
 #if defined(__x86_64__) || defined(__i386__)
   return __builtin_cpu_supports("avx512f") ? 1 : 0;
 #else

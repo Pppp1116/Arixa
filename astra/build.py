@@ -691,7 +691,11 @@ def build(
             )
 
         if profile_layout:
-            function_names = [item.name for item in prog.items if isinstance(item, FnDecl)]
+            function_names = [
+                "__astra_user_main" if (not freestanding and item.name == "main") else (item.symbol or item.name)
+                for item in prog.items
+                if isinstance(item, FnDecl)
+            ]
             write_profile_template(function_names, llvm_ir)
             print("Wrote layout profile template to .build/astra-profile.json")
 
