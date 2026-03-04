@@ -641,6 +641,18 @@ def test_slice_get_returns_option_type():
     analyze(parse(src))
 
 
+def test_struct_callable_field_named_get_is_not_treated_as_slice_sugar():
+    src = """
+struct Wrap { get fn(Int) -> Int }
+fn add1(x Int) -> Int { return x + 1; }
+fn main() -> Int {
+  let w = Wrap(add1);
+  return w.get(41);
+}
+"""
+    analyze(parse(src))
+
+
 def test_owned_internal_use_after_free_reports_exact_location():
     filename = "tmp/owned_use_after_free.astra"
     src = (

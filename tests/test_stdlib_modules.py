@@ -28,6 +28,8 @@ def test_hosted_stdlib_modules_are_rejected_in_freestanding_mode():
     modules = [
         "stdlib/collections.astra",
         "stdlib/crypto.astra",
+        "stdlib/random.astra",
+        "stdlib/crypto/otp.astra",
         "stdlib/io.astra",
         "stdlib/str.astra",
         "stdlib/net.astra",
@@ -51,6 +53,8 @@ def test_extended_stdlib_exports_exist():
         "stdlib/net.astra": {"tcp_send_line"},
         "stdlib/process.astra": {"env_or", "run_ok", "eprintln"},
         "stdlib/crypto.astra": {"digest_pair"},
+        "stdlib/random.astra": {"secure_bytes"},
+        "stdlib/crypto/otp.astra": {"OtpError", "OtpKey", "xor_bytes", "xor_in_place", "new_random", "from_bytes", "encrypt", "decrypt", "encrypt_utf8", "decrypt_utf8"},
         "stdlib/math.astra": {"min_int", "max_int", "clamp_int", "abs_int"},
         "stdlib/vec.astra": {"vec_new_typed", "vec_len_typed", "vec_push_typed", "vec_get_typed"},
         "stdlib/mem.astra": {"fill_bytes", "copy_bytes"},
