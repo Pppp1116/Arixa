@@ -12,7 +12,7 @@ python build/hello.py
 ```
 
 ## Commands
-- `astra`: build/run/check/test/fmt/doc (`selfhost` is currently an unavailable placeholder command)
+- `astra`: build/run/check/test/fmt/doc/bench (`selfhost` is currently an unavailable placeholder command)
 - `astpm`: package manager
 - `astfmt`: formatter
 - `astlint`: linter
@@ -34,6 +34,9 @@ python build/hello.py
 - `astra test [--kind unit|integration|e2e]`
 - `astra fmt <files...> [--check]`
 - `astra doc <in> -o <out>`
+- `astra run <in> [args...] [--profile-compile] [--profile-json] [--threads N]`
+- `astra bench <in> -o <out> [--target py|llvm|native]`
+- `astra bench` prints per-run build logs and then JSON medians on stdout (its `--profile-compile/--profile-json` flags are accepted for parity).
 - `--target native` compiles/links LLVM IR into an executable via `clang` and a bundled portable runtime source (override path with `ASTRA_RUNTIME_C_PATH`).
 - `--freestanding` enforces runtime-free semantics/codegen for LLVM/native outputs:
   - hosted/runtime builtins are rejected during semantic analysis
@@ -42,6 +45,14 @@ python build/hello.py
   - freestanding container API is `vec_new`, `vec_from`, `vec_len`, `vec_get`, `vec_set`, `vec_push` (no hosted runtime shims)
 - Native regression sweep: `pytest tests/test_build.py -k native` (requires `clang`).
 - LSP diagnostics are produced by the same check pipeline used by `astra check` (stable codes/spans).
+
+
+## Backend pipeline (implementation detail)
+- Common pipeline: parse -> comptime -> semantic -> optimize -> emit target output.
+- `--target py`: emits Python + runtime helper scaffolding.
+- `--target llvm`: emits LLVM IR through `llvmlite`.
+- `--target native`: emits LLVM IR then links with `clang` (hosted links runtime C; freestanding uses `_start`).
+- Build cache key includes target, strict/freestanding, emit-ir presence, profile, resolved overflow mode, and triple.
 
 ## Syntax notes
 - Immutable locals use `fixed`, mutable/inferred locals use `let`.

@@ -206,37 +206,54 @@ fn main() -> Int {
 
 `comptime { ... }` runs deterministic/pure code at compile time.
 
-## 6. Backend contract (x86-64)
+## 6. Backend contract (py / llvm / native)
 
-Current x86-64 backend contract (System V ABI oriented):
+Current backend contract (implementation-aligned):
 
-- Scalar lowering:
-  - `Bool` -> logical `i1`, materialized as `0/1` in integer registers (`al`/`rax` path).
-  - `Int`, `iN`/`uN`, `isize`, `usize` -> integer register class.
-  - `&T`, `&mut T`, and `fn(...) -> ...` values -> pointer-sized integers (`u64` on x86-64).
-  - `Float`/`f32`/`f64` -> SSE class (`xmm*` registers).
-- Calls/returns:
-  - Integer/pointer args use `rdi, rsi, rdx, rcx, r8, r9`, overflow args spill to stack.
-  - Floating args use `xmm0..xmm7`, overflow args spill to stack.
-  - Integer/pointer returns use `rax`; float returns use `xmm0`.
-  - Call sites maintain 16-byte stack alignment before `call`.
-- Runtime ABI symbols used by lowered builtins:
-  - `astra_print_i64(Int) -> Void`
-  - `astra_print_str(usize ptr, usize len) -> Void`
-  - `astra_alloc(usize size, usize align) -> usize`
-  - `astra_free(usize ptr, usize size, usize align) -> Void`
-  - `astra_panic(usize ptr, usize len) -> Never`
-- Deferred calls:
-  - `defer <expr>;` is lowered to function-exit execution in reverse order (LIFO).
-  - Defer sites are counted, so loop-contained defer expressions execute once per hit.
-- Function values:
-  - First-class function pointers are supported (`fn(T...) -> R` values).
-  - Calls through function pointers lower to indirect machine calls.
-- Additional native-lowered constructs:
-  - `async` declarations and `await` expressions lower to direct native control flow.
-  - Aggregate and dynamic values lower as opaque pointer-sized handles at the ABI boundary.
-  - `match`, struct field access/assignment, and array/slice indexing/get are lowered directly.
-  - `@packed struct` field accesses/updates lower through shift/mask read-modify-write paths (packed integer fields are supported up to language maximum width `128`).
+### 6.1 Pipeline shared by all targets
+
+All targets run the same front/mid pipeline first:
+
+1. Parse source -> AST (with spans).
+2. Evaluate `comptime` blocks.
+3. Run semantic analysis.
+4. Run optimization.
+
+Only after that does target-specific emission happen.
+
+### 6.2 Python backend (`--target py`)
+
+- Emits Python code and inline runtime helpers.
+- `astra run` is implemented as: build with `py` target into `.astra-build/<stem>.py`, then execute with Python.
+- Builtins such as concurrency helpers (`spawn`/`join`), map/list/vector helpers, and bit helpers are implemented in generated Python support code.
+
+### 6.3 LLVM backend (`--target llvm`)
+
+- Emits validated LLVM IR via `llvmlite`.
+- Lowers control flow (`if`, loops, `match`) and short-circuit operations (`&&`, `||`, `??`) using explicit basic blocks and conditional branches.
+- Uses overflow-mode-dependent arithmetic lowering (`trap` vs `wrap`).
+
+### 6.4 Native backend (`--target native`)
+
+- Reuses LLVM lowering, then invokes `clang` for final executable linking.
+- Hosted mode links runtime C support (`astra_print_i64`, `astra_print_str`, `astra_alloc`, `astra_free`, `astra_panic`, and i128/u128 helper symbols).
+- Freestanding mode links with `-nostdlib -nostartfiles -Wl,-e,_start` and requires user-defined `fn _start()`.
+
+### 6.5 Freestanding enforcement
+
+Freestanding checks are layered and strict:
+
+- Semantic phase rejects hosted runtime builtins.
+- LLVM IR post-check rejects runtime symbol dependencies and non-LLVM extern declarations.
+- Native freestanding enforces `_start` entrypoint.
+
+### 6.6 Semantic guarantees preserved in lowering
+
+- Expression evaluation order is left-to-right.
+- `defer` sites run at function exit in LIFO order.
+- Packed struct field reads/writes lower to explicit bitfield operations.
+- Integer division/modulo by zero trap.
+- Signed overflow trap behavior is honored in trap-mode lowering.
 
 ## 7. EBNF snapshot
 
