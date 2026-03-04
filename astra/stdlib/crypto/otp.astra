@@ -10,10 +10,7 @@
 /// This module does not solve key distribution.
 /// For most applications use modern authenticated encryption (AEAD) instead.
 
-enum Result<T, E> {
-  Ok(T),
-  Err(E),
-}
+import std.core;
 
 enum OtpError {
   LengthMismatch(Int, Int),

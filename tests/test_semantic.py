@@ -769,3 +769,20 @@ fn main() -> Int {
         assert False
     except SemanticError as e:
         assert "spawn arg 1 requires Send" in str(e)
+
+
+def test_duplicate_type_definitions_are_rejected():
+    src = "enum R { A } enum R { B } fn main() -> Int { return 0; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "duplicate type definition R" in str(e)
+
+
+def test_any_binding_named_like_type_does_not_infer_struct_fields():
+    src = "struct Box { v Int } fn main() -> Int { let Box: Any = 1; let y = Box.v; return y as Int; }"
+    prog = parse(src)
+    analyze(prog)
+    expr = prog.items[1].body[1].expr
+    assert getattr(expr, "inferred_type", None) == "Any"

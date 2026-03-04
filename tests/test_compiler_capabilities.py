@@ -543,3 +543,29 @@ def test_runtime_c_exports_extended_builtin_symbols():
         "astra_sleep_ms",
     ):
         assert sym in text
+
+
+def test_llvm_field_get_callable_struct_field_not_treated_as_slice_sugar():
+    src = """
+struct Wrap { get fn(Int) -> Int }
+fn add1(x Int) -> Int { return x + 1; }
+fn main() -> Int {
+  let w = Wrap(add1);
+  return w.get(41);
+}
+"""
+    mod = to_llvm_ir(parse(src))
+    assert_valid_llvm_ir(mod)
+
+
+def test_llvm_supports_secure_bytes_and_utf8_builtins():
+    src = """
+fn main() -> Int {
+  let b = secure_bytes(4);
+  let sopt: Option<String> = utf8_decode(utf8_encode("ok"));
+  let s = sopt ?? "";
+  return vec_len(b) + len(s);
+}
+"""
+    mod = to_llvm_ir(parse(src))
+    assert_valid_llvm_ir(mod)

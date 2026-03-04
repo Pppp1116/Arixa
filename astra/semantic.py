@@ -993,6 +993,7 @@ def analyze(
         fn_groups: dict[str, list[FnDecl | ExternFnDecl]] = {}
         structs: dict[str, StructDecl] = {}
         enums: dict[str, EnumDecl] = {}
+        aliases: dict[str, TypeAliasDecl] = {}
         global_scope: dict[str, str] = {}
         for item in prog.items:
             try:
@@ -1009,6 +1010,8 @@ def analyze(
                         global_scope[item.alias] = f"module:{item.path[-1]}"
                     continue
                 if isinstance(item, StructDecl):
+                    if item.name in structs or item.name in enums or item.name in aliases:
+                        raise SemanticError(_diag(filename, item.line, item.col, f"duplicate type definition {item.name}"))
                     for _, field_ty in item.fields:
                         _validate_decl_type(field_ty, filename, item.line, item.col)
                     if item.packed:
@@ -1019,9 +1022,14 @@ def analyze(
                     structs[item.name] = item
                     continue
                 if isinstance(item, TypeAliasDecl):
+                    if item.name in structs or item.name in enums or item.name in aliases:
+                        raise SemanticError(_diag(filename, item.line, item.col, f"duplicate type definition {item.name}"))
                     _validate_decl_type(item.target, filename, item.line, item.col)
+                    aliases[item.name] = item
                     continue
                 if isinstance(item, EnumDecl):
+                    if item.name in structs or item.name in enums or item.name in aliases:
+                        raise SemanticError(_diag(filename, item.line, item.col, f"duplicate type definition {item.name}"))
                     enums[item.name] = item
                     continue
                 if isinstance(item, (FnDecl, ExternFnDecl)):
@@ -1781,12 +1789,13 @@ def _infer(
             return _typed(e, _vec_inner(base_ty))
         return _typed(e, "Any")
     if isinstance(e, FieldExpr):
-        obj_ty = _infer(e.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
-        # Strip reference types to get the underlying struct/enum type.
-        base_ty = _strip_ref(obj_ty)
-        if base_ty == "Any" and isinstance(e.obj, Name):
-            if e.obj.value in structs or e.obj.value in enums:
-                base_ty = e.obj.value
+        base_ty: str
+        if isinstance(e.obj, Name) and _lookup(e.obj.value, scopes) is None and (e.obj.value in structs or e.obj.value in enums):
+            base_ty = e.obj.value
+        else:
+            obj_ty = _infer(e.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+            # Strip reference types to get the underlying struct/enum type.
+            base_ty = _strip_ref(obj_ty)
         if base_ty in structs:
             for fname, fty in structs[base_ty].fields:
                 if fname == e.field:

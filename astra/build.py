@@ -486,20 +486,22 @@ def _parse_files_parallel(file_paths: list[Path]) -> dict[Path, Any]:
 
 
 def _merge_programs(asts: dict[Path, Any]) -> Any:
-    """Merge multiple AST programs into a single program"""
+    """Merge multiple AST programs into a single program."""
     from astra.ast import Program
-    
+
     all_items = []
-    for file_path, ast in asts.items():
-        if hasattr(ast, 'items'):
-            all_items.extend(ast.items)
+    for file_path in sorted(asts.keys()):
+        ast = asts[file_path]
+        if hasattr(ast, "items"):
+            items = list(ast.items)
+        elif isinstance(ast, list):
+            items = list(ast)
         else:
-            # Handle case where parse returned just items
-            if isinstance(ast, list):
-                all_items.extend(ast)
-            else:
-                all_items.append(ast)
-    
+            items = [ast]
+        for item in items:
+            setattr(item, "_source_file", str(file_path))
+            all_items.append(item)
+
     return Program(items=all_items)
 
 
