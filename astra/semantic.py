@@ -1857,31 +1857,31 @@ def _infer(
         return _typed(e, "Any")
     if isinstance(e, FieldExpr):
         obj_ty = _infer(e.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
-        
-        # Handle struct field access
-        if obj_ty.startswith("struct:"):
-            struct_name = obj_ty[7:]  # Remove "struct:" prefix
-            if struct_name not in structs:
+
+        # Method-like access on slices/vecs is handled in call inference.
+
+        # Handle struct field access (local or qualified/imported)
+        base_obj_ty = _strip_ref(_canonical_type(obj_ty))
+        struct_decl = None
+        if base_obj_ty.startswith("struct:"):
+            struct_name = base_obj_ty[7:]
+            struct_decl = structs.get(struct_name)
+            if struct_decl is None:
                 raise SemanticError(_diag(filename, e.line, e.col, f"unknown struct {struct_name}"))
-            struct_decl = structs[struct_name]
-            field_ty = None
+        elif base_obj_ty in structs:
+            struct_decl = structs[base_obj_ty]
+        else:
+            for struct_name, decl in structs.items():
+                if "::" in struct_name and struct_name.endswith(f"::{base_obj_ty}"):
+                    struct_decl = decl
+                    break
+
+        if struct_decl is not None:
             for fname, fty in struct_decl.fields:
                 if fname == e.field:
-                    field_ty = fty
-                    break
-            if field_ty is None:
-                raise SemanticError(_diag(filename, e.line, e.col, f"struct {struct_name} has no field {e.field}"))
-            return _typed(e, field_ty)
-        else:
-            # Check if it's an imported struct - look for qualified names
-            for struct_name, struct_decl in structs.items():
-                if "::" in struct_name and struct_name.endswith(f"::{obj_ty}"):
-                    struct_to_check = struct_decl
-                    break
-            if struct_to_check is not None:
-                for fname, fty in struct_to_check.fields:
-                    if fname == e.field:
-                        return _typed(e, fty)
+                    return _typed(e, fty)
+            raise SemanticError(_diag(filename, e.line, e.col, f"struct {struct_decl.name} has no field {e.field}"))
+
         return _typed(e, "Any")
     if isinstance(e, ModuleAccessExpr):
         obj_ty = _infer(e.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
@@ -2149,31 +2149,52 @@ def _infer_call(
         raise SemanticError(_diag(filename, e.line, e.col, f"undefined function {name}"))
     if isinstance(e.fn, FieldExpr):
         obj_ty = _infer(e.fn.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+
+        # Slice/Vec method sugar: <container>.get(index) -> Option<elem>
+        if e.fn.field == "get":
+            if len(e.args) != 1:
+                raise SemanticError(_diag(filename, e.line, e.col, "get expects 1 argument"))
+            idx_ty = arg_types[0] if arg_types else "Any"
+            _require_type(filename, e.args[0].line, e.args[0].col, "Int", idx_ty, "arg 0 for get")
+            base_ty = _strip_ref(_canonical_type(obj_ty))
+            if _is_slice_type(base_ty):
+                return f"Option<{_slice_inner(base_ty)}>"
+            if _is_vec_type(base_ty):
+                return f"Option<{_vec_inner(base_ty)}>"
+            raise SemanticError(_diag(filename, e.fn.line, e.fn.col, f"get is only supported on [T]/Vec<T>, got {obj_ty}"))
         
-        # Handle struct field access
-        if obj_ty.startswith("struct:"):
-            struct_name = obj_ty[7:]  # Remove "struct:" prefix
-            if struct_name not in structs:
-                raise SemanticError(_diag(filename, e.line, e.col, f"unknown struct {struct_name}"))
-            struct_decl = structs[struct_name]
+        # Handle struct field callables
+        base_obj_ty = _strip_ref(_canonical_type(obj_ty))
+        struct_decl = None
+        if base_obj_ty.startswith("struct:"):
+            struct_decl = structs.get(base_obj_ty[7:])
+        elif base_obj_ty in structs:
+            struct_decl = structs[base_obj_ty]
+        else:
+            for struct_name, decl in structs.items():
+                if "::" in struct_name and struct_name.endswith(f"::{base_obj_ty}"):
+                    struct_decl = decl
+                    break
+
+        if struct_decl is not None:
             field_ty = None
             for fname, fty in struct_decl.fields:
                 if fname == e.fn.field:
                     field_ty = fty
                     break
             if field_ty is None:
-                raise SemanticError(_diag(filename, e.line, e.col, f"struct {struct_name} has no field {e.fn.field}"))
+                raise SemanticError(_diag(filename, e.line, e.col, f"struct {struct_decl.name} has no field {e.fn.field}"))
             if not field_ty.startswith("fn("):
                 raise SemanticError(_diag(filename, e.line, e.col, f"field {e.fn.field} is not callable"))
             parsed = _parse_fn_type(field_ty)
             param_tys, ret_ty, callee_unsafe = parsed
             if callee_unsafe:
-                _require_unsafe_context(f"{struct_name}.{e.fn.field}", e.line, e.col)
+                _require_unsafe_context(f"{struct_decl.name}.{e.fn.field}", e.line, e.col)
             if len(param_tys) != len(e.args):
-                raise SemanticError(_diag(filename, e.line, e.col, f"{struct_name}.{e.fn.field} expects {len(param_tys)} args, got {len(e.args)}"))
+                raise SemanticError(_diag(filename, e.line, e.col, f"{struct_decl.name}.{e.fn.field} expects {len(param_tys)} args, got {len(e.args)}"))
             for i, (expected, arg) in enumerate(zip(param_tys, e.args)):
                 aty = arg_types[i]
-                _require_type(filename, arg.line, arg.col, expected, aty, f"arg {i} for {struct_name}.{e.fn.field}")
+                _require_type(filename, arg.line, arg.col, expected, aty, f"arg {i} for {struct_decl.name}.{e.fn.field}")
                 if not _is_ref_type(expected) and expected != "Any":
                     _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
             return ret_ty
