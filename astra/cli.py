@@ -25,6 +25,7 @@ def cmd_build(a):
         triple=a.triple,
         profile_compile=a.profile_compile,
         threads=a.threads,
+        opt_size=getattr(a, "opt_size", False),
     )
     if a.profile_compile and a.profile_json:
         print(profiler.to_json())
@@ -90,7 +91,7 @@ def cmd_check(a):
 
 def cmd_run(a):
     out = Path(".astra-build") / (Path(a.input).stem + ".py")
-    build(a.input, str(out), "py", profile_compile=a.profile_compile, threads=a.threads)
+    build(a.input, str(out), "py", profile_compile=a.profile_compile, threads=a.threads, opt_size=getattr(a, "opt_size", False))
     raise SystemExit(subprocess.call([sys.executable, str(out)] + a.args))
 
 
@@ -163,6 +164,7 @@ def cmd_bench(a):
             triple=a.triple,
             profile_compile=True,
             threads=a.threads,
+            opt_size=getattr(a, "opt_size", False),
         )
         # Capture JSON each run
         payload = json.loads(profiler.to_json() or "{}")
@@ -205,6 +207,7 @@ def main(argv=None):
     b.add_argument("--profile", choices=["debug", "release"], default="debug")
     b.add_argument("--overflow", choices=["trap", "wrap", "debug"], default="debug")
     b.add_argument("--triple")
+    b.add_argument("--opt-size", action="store_true", dest="opt_size")
     _add_global_flags(b)
     b.set_defaults(func=cmd_build)
 
@@ -221,6 +224,7 @@ def main(argv=None):
     r = sp.add_parser("run")
     r.add_argument("input")
     r.add_argument("args", nargs="*")
+    r.add_argument("--opt-size", action="store_true", dest="opt_size")
     _add_global_flags(r)
     r.set_defaults(func=cmd_run)
 
@@ -251,6 +255,7 @@ def main(argv=None):
     bench.add_argument("--profile", choices=["debug", "release"], default="debug")
     bench.add_argument("--overflow", choices=["trap", "wrap", "debug"], default="debug")
     bench.add_argument("--triple")
+    bench.add_argument("--opt-size", action="store_true", dest="opt_size")
     _add_global_flags(bench)
     bench.set_defaults(func=cmd_bench)
 

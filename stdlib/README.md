@@ -28,3 +28,5 @@ Each module is either **freestanding-safe** (can be analyzed/used with
 Freestanding analysis is validated in `tests/test_stdlib_modules.py` and
 runtime behavior is exercised throughout the end-to-end and integration tests.
 
+
+Build note: ASTRA now performs reachability-based dead-code elimination before codegen, so only standard-library declarations that are actually reachable from your entry point are emitted into final build artifacts.

@@ -692,3 +692,59 @@ def test_build_cache_key_includes_profile_and_overflow(tmp_path: Path):
     assert st3 == "built"
     assert st4 == "cached"
     assert st5 == "built"
+
+
+def test_build_dce_prunes_unreachable_functions_and_imported_module_items(tmp_path: Path):
+    src = tmp_path / "main.astra"
+    dep = tmp_path / "helper.astra"
+    out = tmp_path / "main.py"
+    dep.write_text(
+        """
+fn used_from_dep() -> Int { return 7; }
+fn unused_from_dep() -> Int { return 99; }
+"""
+    )
+    src.write_text(
+        """
+import helper;
+fn used_local() -> Int { return used_from_dep(); }
+fn unused_local() -> Int { return 13; }
+fn main() -> Int { return used_local(); }
+"""
+    )
+    st = build(str(src), str(out), "py")
+    assert st in {"built", "cached"}
+    py = out.read_text()
+    assert "def used_local(" in py
+    assert "def used_from_dep(" in py
+    assert "def unused_local(" not in py
+    assert "def unused_from_dep(" not in py
+
+
+def test_build_without_std_usage_does_not_emit_std_module_functions(tmp_path: Path):
+    src = tmp_path / "main.astra"
+    out = tmp_path / "main.py"
+    src.write_text('fn main() -> Int { print("hi"); return 0; }')
+    st = build(str(src), str(out), "py")
+    assert st in {"built", "cached"}
+    py = out.read_text()
+    assert "def digest_pair(" not in py
+    assert "def hmac_sha256(" in py  # runtime builtin helper remains available
+
+
+def test_build_dce_keeps_only_used_std_functions(tmp_path: Path):
+    src = tmp_path / "main.astra"
+    out = tmp_path / "main.py"
+    src.write_text(
+        """
+import std.math;
+fn main() -> Int { return abs_int(-9); }
+"""
+    )
+    st = build(str(src), str(out), "py")
+    assert st in {"built", "cached"}
+    py = out.read_text()
+    assert "def abs_int(" in py
+    assert "def min_int(" not in py
+    assert "def max_int(" not in py
+    assert "def clamp_int(" not in py

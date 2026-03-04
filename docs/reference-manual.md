@@ -1,7 +1,7 @@
 # Astra Reference Manual
 
 ## CLI
-- `astra build <in> -o <out> [--target py|llvm|native] [--emit-ir out.ll] [--strict] [--freestanding] [--profile debug|release] [--overflow trap|wrap|debug] [--triple <llvm-triple>]`
+- `astra build <in> -o <out> [--target py|llvm|native] [--emit-ir out.ll] [--strict] [--freestanding] [--profile debug|release] [--overflow trap|wrap|debug] [--triple <llvm-triple>] [--opt-size]`
 - `astra check <in> [--freestanding] [--overflow trap|wrap|debug] [--json]`
 - `astra check --files <f1> <f2> ... [--freestanding] [--overflow ...] [--json]`
 - `astra check --stdin [--stdin-filename name] [--freestanding] [--overflow ...] [--json]`
@@ -11,6 +11,7 @@
 - `astra doc <in> -o <out>`
 - `astra selfhost` (currently unavailable: placeholder only, no real self-hosting pipeline)
 - `--target native` requires `clang` in `PATH` and links against bundled runtime source (override with `ASTRA_RUNTIME_C_PATH`).
+- `--opt-size` enables size-oriented build tuning (aggressive reachability pruning, native `-Oz/-flto/-s` when applicable).
 - `--freestanding` enforces runtime-free semantics/codegen for LLVM/native outputs:
   - hosted/runtime builtins are rejected in semantic analysis
   - emitted LLVM IR cannot reference `astra_*` runtime symbols or non-LLVM external host symbols
@@ -35,6 +36,7 @@
   - `import "relative/path";` (relative to importing source file)
 - non-stdlib module imports resolve from nearest package root containing `Astra.toml`; if none exists, they resolve relative to the importing file directory.
 - stdlib lookup order: `ASTRA_STDLIB_PATH` -> repo `stdlib/` (dev checkout) -> bundled `astra/stdlib` (installed package)
+- Reachability-based dead-code elimination runs before codegen, so only stdlib symbols reachable from the entrypoint are emitted.
 - syntax guide: `docs/language-syntax-book.md`
 
 ## Language conveniences

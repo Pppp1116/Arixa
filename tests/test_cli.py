@@ -163,3 +163,12 @@ def test_cli_fmt_and_doc_subcommands(tmp_path: Path):
     rc_doc = subprocess.call([sys.executable, "-m", "astra.cli", "doc", str(src), "-o", str(out)])
     assert rc_doc == 0
     assert out.exists()
+
+
+def test_cli_build_accepts_opt_size_flag(tmp_path: Path):
+    src = tmp_path / "ok.astra"
+    out = tmp_path / "ok.py"
+    src.write_text("fn main() -> Int { return 0; }")
+    rc = subprocess.call([sys.executable, "-m", "astra.cli", "build", str(src), "-o", str(out), "--opt-size"])
+    assert rc == 0
+    assert out.exists()
