@@ -641,6 +641,18 @@ def test_slice_get_returns_option_type():
     analyze(parse(src))
 
 
+def test_struct_callable_field_named_get_is_not_treated_as_slice_sugar():
+    src = """
+struct Wrap { get fn(Int) -> Int }
+fn add1(x Int) -> Int { return x + 1; }
+fn main() -> Int {
+  let w = Wrap(add1);
+  return w.get(41);
+}
+"""
+    analyze(parse(src))
+
+
 def test_owned_internal_use_after_free_reports_exact_location():
     filename = "tmp/owned_use_after_free.astra"
     src = (
@@ -757,3 +769,20 @@ fn main() -> Int {
         assert False
     except SemanticError as e:
         assert "spawn arg 1 requires Send" in str(e)
+
+
+def test_duplicate_type_definitions_are_rejected():
+    src = "enum R { A } enum R { B } fn main() -> Int { return 0; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "duplicate type definition R" in str(e)
+
+
+def test_any_binding_named_like_type_does_not_infer_struct_fields():
+    src = "struct Box { v Int } fn main() -> Int { let Box: Any = 1; let y = Box.v; return y as Int; }"
+    prog = parse(src)
+    analyze(prog)
+    expr = prog.items[1].body[1].expr
+    assert getattr(expr, "inferred_type", None) == "Any"

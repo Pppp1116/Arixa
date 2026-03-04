@@ -20,9 +20,13 @@ Each module is either **freestanding-safe** (can be analyzed/used with
 | `net.astra`      | Hosted TCP helpers (`tcp_connect`, `tcp_send`, `tcp_send_line`, `tcp_recv`, `tcp_close`). | ❌ |
 | `process.astra`  | Hosted process/environment helpers (`exit`, `env_or`, `cwd`, `run_ok`, `eprintln`). | ❌ |
 | `crypto.astra`   | Hosted cryptographic helpers (`sha256`, `hmac_sha256`, `digest_pair`). | ❌ |
+| `random.astra`   | Hosted cryptographic randomness (`secure_bytes`). | ❌ |
+| `crypto/otp.astra` | Hosted one-time pad helpers (`OtpKey`, `OtpError`, `xor_bytes`, `encrypt`, `decrypt`, UTF-8 helpers). | ❌ |
 | `serde.astra`    | Hosted JSON helpers (`to_json`, `from_json`).    | ❌ |
 | `time.astra`     | Hosted time helpers (`now_ms`, `monotonic_ms`, `sleep_ms`, `sleep_seconds`). | ❌ |
 
 Freestanding analysis is validated in `tests/test_stdlib_modules.py` and
 runtime behavior is exercised throughout the end-to-end and integration tests.
 
+
+Build note: ASTRA now performs reachability-based dead-code elimination before codegen, so only standard-library declarations that are actually reachable from your entry point are emitted into final build artifacts.

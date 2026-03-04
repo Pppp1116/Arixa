@@ -1,0 +1,31 @@
+import std.crypto.otp as otp;
+
+fn test_known_vector() -> Bool {
+  let msg = vec_from([0x00u8, 0xFFu8, 0x55u8]) as Bytes;
+  let key = vec_from([0xFFu8, 0x0Fu8, 0x55u8]) as Bytes;
+  match otp.xor_bytes(msg, key) {
+    Result.Ok(ct) => {
+      return (vec_get(ct, 0) ?? 0u8) == 0xFFu8 && (vec_get(ct, 1) ?? 0u8) == 0xF0u8 && (vec_get(ct, 2) ?? 0u8) == 0x00u8;
+    }
+    _ => { return false; }
+  }
+  return false;
+}
+
+fn test_length_mismatch() -> Bool {
+  let msg = vec_from([0x00u8, 0xFFu8, 0x55u8]) as Bytes;
+  let key_short = vec_from([0xFFu8, 0x0Fu8]) as Bytes;
+  match otp.xor_bytes(msg, key_short) {
+    Result.Err(otp.OtpError.LengthMismatch(_, _)) => { return true; }
+    _ => { return false; }
+  }
+  return false;
+}
+
+fn main() -> Int {
+  match test_known_vector() && test_length_mismatch() {
+    true => { return 0; }
+    _ => { return 1; }
+  }
+  return 1;
+}

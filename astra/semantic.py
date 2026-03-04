@@ -206,6 +206,9 @@ BUILTIN_SIGS: dict[str, BuiltinSig] = {
     "vec_get": BuiltinSig(["Any", "Int"], "Any"),
     "vec_set": BuiltinSig(["Any", "Int", "Any"], "Int"),
     "vec_push": BuiltinSig(["Any", "Any"], "Int"),
+    "secure_bytes": BuiltinSig(["Int"], "Bytes"),
+    "utf8_encode": BuiltinSig(["String"], "Bytes"),
+    "utf8_decode": BuiltinSig(["Bytes"], "Option<String>"),
 }
 
 for _name, _sig in list(BUILTIN_SIGS.items()):
@@ -254,6 +257,9 @@ _FREESTANDING_FORBIDDEN_BUILTINS: set[str] = {
     "sleep_ms",
     "panic",
     "proc_exit",
+    "secure_bytes",
+    "utf8_encode",
+    "utf8_decode",
 }
 _FREESTANDING_MODE_STACK: list[bool] = []
 
@@ -987,6 +993,7 @@ def analyze(
         fn_groups: dict[str, list[FnDecl | ExternFnDecl]] = {}
         structs: dict[str, StructDecl] = {}
         enums: dict[str, EnumDecl] = {}
+        aliases: dict[str, TypeAliasDecl] = {}
         global_scope: dict[str, str] = {}
         for item in prog.items:
             try:
@@ -1003,6 +1010,8 @@ def analyze(
                         global_scope[item.alias] = f"module:{item.path[-1]}"
                     continue
                 if isinstance(item, StructDecl):
+                    if item.name in structs or item.name in enums or item.name in aliases:
+                        raise SemanticError(_diag(filename, item.line, item.col, f"duplicate type definition {item.name}"))
                     for _, field_ty in item.fields:
                         _validate_decl_type(field_ty, filename, item.line, item.col)
                     if item.packed:
@@ -1013,9 +1022,14 @@ def analyze(
                     structs[item.name] = item
                     continue
                 if isinstance(item, TypeAliasDecl):
+                    if item.name in structs or item.name in enums or item.name in aliases:
+                        raise SemanticError(_diag(filename, item.line, item.col, f"duplicate type definition {item.name}"))
                     _validate_decl_type(item.target, filename, item.line, item.col)
+                    aliases[item.name] = item
                     continue
                 if isinstance(item, EnumDecl):
+                    if item.name in structs or item.name in enums or item.name in aliases:
+                        raise SemanticError(_diag(filename, item.line, item.col, f"duplicate type definition {item.name}"))
                     enums[item.name] = item
                     continue
                 if isinstance(item, (FnDecl, ExternFnDecl)):
@@ -1775,13 +1789,26 @@ def _infer(
             return _typed(e, _vec_inner(base_ty))
         return _typed(e, "Any")
     if isinstance(e, FieldExpr):
-        obj_ty = _infer(e.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
-        # Strip reference types to get the underlying struct type
-        base_ty = _strip_ref(obj_ty)
+        base_ty: str
+        namespace_access = False
+        if isinstance(e.obj, Name) and _lookup(e.obj.value, scopes) is None and (e.obj.value in structs or e.obj.value in enums):
+            base_ty = e.obj.value
+            namespace_access = True
+        else:
+            obj_ty = _infer(e.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+            # Strip reference types to get the underlying struct/enum type.
+            base_ty = _strip_ref(obj_ty)
         if base_ty in structs:
             for fname, fty in structs[base_ty].fields:
                 if fname == e.field:
                     return _typed(e, fty)
+        if namespace_access and base_ty in enums:
+            for vname, vtypes in enums[base_ty].variants:
+                if vname != e.field:
+                    continue
+                if not vtypes:
+                    return _typed(e, base_ty)
+                return _typed(e, _fn_type([(f"v{i}", vty) for i, vty in enumerate(vtypes)], base_ty))
         return _typed(e, "Any")
     if isinstance(e, ArrayLit):
         if not e.elements:
@@ -2032,16 +2059,15 @@ def _infer_call(
         raise SemanticError(_diag(filename, e.line, e.col, f"undefined function {name}"))
     if isinstance(e.fn, FieldExpr):
         obj_ty = _infer(e.fn.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
-        if e.fn.field == "get":
+        base_ty = _strip_ref(_canonical_type(obj_ty))
+        if e.fn.field == "get" and (_is_slice_type(base_ty) or _is_vec_type(base_ty)):
             if len(e.args) != 1:
                 raise SemanticError(_diag(filename, e.line, e.col, "get expects 1 arg"))
             _require_type(filename, e.args[0].line, e.args[0].col, "Int", arg_types[0], "arg 0 for get")
-            base_ty = _strip_ref(_canonical_type(obj_ty))
             if _is_slice_type(base_ty):
                 return f"Option<{_slice_inner(base_ty)}>"
             if _is_vec_type(base_ty):
                 return f"Option<{_vec_inner(base_ty)}>"
-        return "Any"
     callee_ty = _infer(e.fn, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
     setattr(e.fn, "inferred_type", callee_ty)
     parsed = _parse_fn_type(callee_ty)
@@ -2052,10 +2078,12 @@ def _infer_call(
         _require_unsafe_context("<unsafe fn>", e.line, e.col)
     if len(param_tys) != len(e.args):
         raise SemanticError(_diag(filename, e.line, e.col, f"callee expects {len(param_tys)} args, got {len(e.args)}"))
+    known_types = set(PRIMITIVES) | set(structs.keys()) | set(enums.keys())
     for i, (expected, arg) in enumerate(zip(param_tys, e.args)):
         aty = arg_types[i]
-        _require_type(filename, arg.line, arg.col, expected, aty, f"arg {i} for function pointer call")
-        if not _is_ref_type(expected) and expected != "Any":
+        if not _is_typevar(expected, known_types):
+            _require_type(filename, arg.line, arg.col, expected, aty, f"arg {i} for function pointer call")
+        if not _is_ref_type(expected) and expected != "Any" and not _is_typevar(expected, known_types):
             _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
     return ret_ty
 

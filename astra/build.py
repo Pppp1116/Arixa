@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from astra import __version__ as ASTRA_VERSION
 from astra.ast import (
@@ -63,6 +64,7 @@ from astra.module_resolver import (
     stdlib_root_path,
 )
 from astra.optimizer import optimize_program
+from astra.reachability import prune_unreachable_items
 from astra.parser import parse
 from astra.semantic import analyze
 from astra.profiler import profiler
@@ -162,6 +164,7 @@ def _build_fingerprint(
     profile: str,
     overflow_mode: str,
     triple: str | None,
+    opt_size: bool,
 ) -> str:
     inputs = [
         {"path": p.as_posix(), "sha256": _sha256_file(p)}
@@ -176,6 +179,7 @@ def _build_fingerprint(
         "profile": profile,
         "overflow_mode": overflow_mode,
         "triple": triple or "",
+        "opt_size": bool(opt_size),
         "inputs": inputs,
         "toolchain": _toolchain_stamp(),
     }
@@ -381,13 +385,13 @@ def _strict_validate_program(prog: Program, src_file: Path) -> None:
         raise RuntimeError(f"CODEGEN {src_file}:1:1: strict mode rejected backend lowering: {details}")
 
 
-def _build_native_llvm(ir_text: str, out_path: str, src_file: Path, *, profile: str, triple: str | None, freestanding: bool):
+def _build_native_llvm(ir_text: str, out_path: str, src_file: Path, *, profile: str, triple: str | None, freestanding: bool, opt_size: bool = False):
     clang = shutil.which("clang")
     if clang is None:
         raise RuntimeError(f"CODEGEN {src_file}:1:1: native target requires `clang` in PATH")
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    opt_flag = "-O3" if profile == "release" else "-O0"
+    opt_flag = "-Oz" if opt_size else ("-O3" if profile == "release" else "-O0")
     print(f"Using clang with optimization: {opt_flag}")
     
     with tempfile.TemporaryDirectory(prefix="astra-native-") as td:
@@ -414,6 +418,9 @@ def _build_native_llvm(ir_text: str, out_path: str, src_file: Path, *, profile: 
                     f"CODEGEN {src_file}:1:1: missing runtime source; set ASTRA_RUNTIME_C_PATH or install bundled runtime"
                 )
             cmd = [clang, opt_flag, str(ll_path), str(runtime_c), "-lm", "-o", str(out)]
+
+        if opt_size:
+            cmd[1:1] = ["-flto", "-s"]
         
         if triple:
             cmd.insert(1, f"--target={triple}")
@@ -479,20 +486,22 @@ def _parse_files_parallel(file_paths: list[Path]) -> dict[Path, Any]:
 
 
 def _merge_programs(asts: dict[Path, Any]) -> Any:
-    """Merge multiple AST programs into a single program"""
+    """Merge multiple AST programs into a single program."""
     from astra.ast import Program
-    
+
     all_items = []
-    for file_path, ast in asts.items():
-        if hasattr(ast, 'items'):
-            all_items.extend(ast.items)
+    for file_path in sorted(asts.keys()):
+        ast = asts[file_path]
+        if hasattr(ast, "items"):
+            items = list(ast.items)
+        elif isinstance(ast, list):
+            items = list(ast)
         else:
-            # Handle case where parse returned just items
-            if isinstance(ast, list):
-                all_items.extend(ast)
-            else:
-                all_items.append(ast)
-    
+            items = [ast]
+        for item in items:
+            setattr(item, "_source_file", str(file_path))
+            all_items.append(item)
+
     return Program(items=all_items)
 
 
@@ -509,6 +518,7 @@ def build(
     *,
     profile_compile: bool = False,
     threads: int | None = None,
+    opt_size: bool = False,
 ):
     src_file = Path(src_path)
     print(f"Building {src_file} -> {out_path} (target: {target})")
@@ -523,10 +533,10 @@ def build(
     if profile not in {"debug", "release"}:
         raise RuntimeError(f"BUILD {src_file}:1:1: unsupported profile {profile}")
     overflow_mode = _resolve_overflow_mode(profile, overflow, check=False)
-    digest = _build_fingerprint(src_file, target, emit_ir, strict, freestanding, profile, overflow_mode, triple)
+    digest = _build_fingerprint(src_file, target, emit_ir, strict, freestanding, profile, overflow_mode, triple, opt_size)
     cache_key = (
         f"{src_file.resolve().as_posix()}::{target}::{int(bool(strict))}::{int(bool(freestanding))}::"
-        f"{int(bool(emit_ir))}::{profile}::{overflow_mode}::{triple or ''}"
+        f"{int(bool(emit_ir))}::{profile}::{overflow_mode}::{triple or ''}::{int(bool(opt_size))}"
     )
     cache = json.loads(CACHE.read_text()) if CACHE.exists() else {}
     if cache.get(cache_key) == digest and Path(out_path).exists():
@@ -578,6 +588,11 @@ def build(
             # Sequential semantic analysis
             analyze(prog, filename=str(src_file), freestanding=freestanding)
     
+    print("Running reachability + dead-code elimination...")
+    with profiler.section("reachability"):
+        entry = "_start" if (freestanding and target == "native") else "main"
+        prune_unreachable_items(prog, entry=entry)
+
     print("Running optimization...")
     with profiler.section("ir_opts"):
         if len(input_files) > 1 and is_parallel_enabled():
@@ -630,7 +645,7 @@ def build(
         assert llvm_ir is not None
         print("Compiling to native executable...")
         with profiler.section("link_native"):
-            _build_native_llvm(llvm_ir, out_path, src_file, profile=profile, triple=triple, freestanding=freestanding)
+            _build_native_llvm(llvm_ir, out_path, src_file, profile=profile, triple=triple, freestanding=freestanding, opt_size=opt_size)
         print(f"Wrote native executable to {out_path}")
     else:
         raise RuntimeError(f"BUILD {src_file}:1:1: unsupported target {target}")

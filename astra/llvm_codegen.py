@@ -787,6 +787,12 @@ def _declare_runtime(ctx: _ModuleCtx, name: str) -> ir.Function:
         fnty = ir.FunctionType(i64, [])
     elif name == "astra_sleep_ms":
         fnty = ir.FunctionType(i64, [i64])
+    elif name == "astra_secure_bytes":
+        fnty = ir.FunctionType(i8p, [i64])
+    elif name == "astra_utf8_encode":
+        fnty = ir.FunctionType(i8p, [i8p])
+    elif name == "astra_utf8_decode":
+        fnty = ir.FunctionType(i8p, [i8p])
     elif name == "astra_alloc":
         fnty = ir.FunctionType(i64, [i64, i64])
     elif name == "astra_free":
@@ -1599,6 +1605,30 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
         out = b.call(fn, [_as_i64(ms, call.args[0])])
         return _Value(out, "Int")
 
+    if base == "secure_bytes":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "secure_bytes expects 1 argument"))
+        n = _compile_expr(ctx, state, call.args[0], overflow_mode=overflow_mode)
+        fn = _declare_runtime(ctx, "astra_secure_bytes")
+        out = b.call(fn, [_as_i64(n, call.args[0])])
+        return _Value(out, "Bytes")
+
+    if base == "utf8_encode":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "utf8_encode expects 1 argument"))
+        src = _compile_expr(ctx, state, call.args[0], overflow_mode=overflow_mode)
+        fn = _declare_runtime(ctx, "astra_utf8_encode")
+        out = b.call(fn, [_as_string_ptr(src, call.args[0])])
+        return _Value(out, "Bytes")
+
+    if base == "utf8_decode":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "utf8_decode expects 1 argument"))
+        src = _compile_expr(ctx, state, call.args[0], overflow_mode=overflow_mode)
+        fn = _declare_runtime(ctx, "astra_utf8_decode")
+        out = b.call(fn, [_as_i8_ptr(state, src.value, call.args[0])])
+        return _Value(out, "Option<String>")
+
     if base == "panic":
         if len(call.args) != 1:
             raise CodegenError(_diag(call, "panic expects 1 argument"))
@@ -1692,42 +1722,45 @@ def _compile_struct_init(
 
 def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: str) -> _Value:
     if isinstance(call.fn, FieldExpr) and call.fn.field == "get":
-        if len(call.args) != 1:
-            raise CodegenError(_diag(call, "get expects 1 argument"))
-        elem_ty, _, idx64, ln, data_ptr = _compile_index_base(
-            ctx,
-            state,
-            call.fn.obj,
-            call.args[0],
-            overflow_mode,
-            call,
-        )
-        b = state.builder
-        fn_ir = state.fn_ir
-        zero = ir.Constant(ir.IntType(64), 0)
-        nonneg = b.icmp_signed(">=", idx64, zero)
-        lt = b.icmp_signed("<", idx64, ln)
-        in_bounds = b.and_(nonneg, lt)
-        some_block = fn_ir.append_basic_block("get_some")
-        none_block = fn_ir.append_basic_block("get_none")
-        end_block = fn_ir.append_basic_block("get_end")
-        b.cbranch(in_bounds, some_block, none_block)
+        recv_ty = _strip_ref_type(_expr_type(state, call.fn.obj))
+        if _is_vec_type(recv_ty) or _is_slice_type(recv_ty):
+            if len(call.args) != 1:
+                raise CodegenError(_diag(call, "get expects 1 argument"))
+            elem_ty, _, idx64, ln, data_ptr = _compile_index_base(
+                ctx,
+                state,
+                call.fn.obj,
+                call.args[0],
+                overflow_mode,
+                call,
+            )
+            b = state.builder
+            fn_ir = state.fn_ir
+            zero = ir.Constant(ir.IntType(64), 0)
+            nonneg = b.icmp_signed(">=", idx64, zero)
+            lt = b.icmp_signed("<", idx64, ln)
+            in_bounds = b.and_(nonneg, lt)
+            some_block = fn_ir.append_basic_block("get_some")
+            none_block = fn_ir.append_basic_block("get_none")
+            end_block = fn_ir.append_basic_block("get_end")
+            b.cbranch(in_bounds, some_block, none_block)
 
-        b.position_at_end(some_block)
-        elem_ptr = b.gep(data_ptr, [idx64])
-        some_val = _as_i8_ptr(state, elem_ptr, call)
-        b.branch(end_block)
-        some_block = b.block
+            b.position_at_end(some_block)
+            elem_ptr = b.gep(data_ptr, [idx64])
+            some_val = _as_i8_ptr(state, elem_ptr, call)
+            b.branch(end_block)
+            some_block = b.block
 
-        b.position_at_end(none_block)
-        b.branch(end_block)
-        none_block = b.block
+            b.position_at_end(none_block)
+            b.branch(end_block)
+            none_block = b.block
 
-        b.position_at_end(end_block)
-        out = b.phi(ir.IntType(8).as_pointer())
-        out.add_incoming(some_val, some_block)
-        out.add_incoming(ir.Constant(ir.IntType(8).as_pointer(), None), none_block)
-        return _Value(out, f"Option<{elem_ty}>")
+            b.position_at_end(end_block)
+            out = b.phi(ir.IntType(8).as_pointer())
+            out.add_incoming(some_val, some_block)
+            out.add_incoming(ir.Constant(ir.IntType(8).as_pointer(), None), none_block)
+            return _Value(out, f"Option<{elem_ty}>")
+
 
     if isinstance(call.fn, Name):
         name = call.fn.value
@@ -1777,6 +1810,9 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
             "now_unix",
             "monotonic_ms",
             "sleep_ms",
+            "secure_bytes",
+            "utf8_encode",
+            "utf8_decode",
             "countOnes",
             "leadingZeros",
             "trailingZeros",
@@ -1828,6 +1864,9 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
             "__now_unix",
             "__monotonic_ms",
             "__sleep_ms",
+            "__secure_bytes",
+            "__utf8_encode",
+            "__utf8_decode",
             "__countOnes",
             "__leadingZeros",
             "__trailingZeros",
