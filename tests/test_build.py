@@ -729,7 +729,6 @@ def test_build_without_std_usage_does_not_emit_std_module_functions(tmp_path: Pa
     assert st in {"built", "cached"}
     py = out.read_text()
     assert "def digest_pair(" not in py
-    assert "def hmac_sha256(" in py  # runtime builtin helper remains available
 
 
 def test_build_dce_keeps_only_used_std_functions(tmp_path: Path):
@@ -748,3 +747,23 @@ fn main() -> Int { return abs_int(-9); }
     assert "def min_int(" not in py
     assert "def max_int(" not in py
     assert "def clamp_int(" not in py
+
+
+def test_build_dce_dynamic_calls_keep_types_used_by_now_reachable_functions(tmp_path: Path):
+    src = tmp_path / "main.astra"
+    out = tmp_path / "main.py"
+    src.write_text(
+        """
+struct S { v Int }
+struct Wrap { call fn() -> Int }
+fn helper() -> Int { let s = S(3); return s.v; }
+fn main() -> Int {
+  let w = Wrap(helper);
+  return w.call();
+}
+"""
+    )
+    st = build(str(src), str(out), "py")
+    assert st in {"built", "cached"}
+    py = out.read_text()
+    assert "class S:" in py

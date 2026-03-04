@@ -569,3 +569,13 @@ fn main() -> Int {
 """
     mod = to_llvm_ir(parse(src))
     assert_valid_llvm_ir(mod)
+
+
+def test_python_codegen_secure_utf8_wrappers_use_host_impls():
+    py = to_python(parse("fn main() -> Int { return 0; }"))
+    assert "def _astra_host_secure_bytes(" in py
+    assert "def _astra_host_utf8_encode(" in py
+    assert "def _astra_host_utf8_decode(" in py
+    assert "def __secure_bytes(n): return _astra_host_secure_bytes(n)" in py
+    assert "def __utf8_encode(s): return _astra_host_utf8_encode(s)" in py
+    assert "def __utf8_decode(bs): return _astra_host_utf8_decode(bs)" in py

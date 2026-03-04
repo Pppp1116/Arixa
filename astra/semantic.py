@@ -1790,8 +1790,10 @@ def _infer(
         return _typed(e, "Any")
     if isinstance(e, FieldExpr):
         base_ty: str
+        namespace_access = False
         if isinstance(e.obj, Name) and _lookup(e.obj.value, scopes) is None and (e.obj.value in structs or e.obj.value in enums):
             base_ty = e.obj.value
+            namespace_access = True
         else:
             obj_ty = _infer(e.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
             # Strip reference types to get the underlying struct/enum type.
@@ -1800,7 +1802,7 @@ def _infer(
             for fname, fty in structs[base_ty].fields:
                 if fname == e.field:
                     return _typed(e, fty)
-        if base_ty in enums:
+        if namespace_access and base_ty in enums:
             for vname, vtypes in enums[base_ty].variants:
                 if vname != e.field:
                     continue

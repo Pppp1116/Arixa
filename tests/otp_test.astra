@@ -12,8 +12,18 @@ fn test_known_vector() -> Bool {
   return false;
 }
 
+fn test_length_mismatch() -> Bool {
+  let msg = vec_from([0x00u8, 0xFFu8, 0x55u8]) as Bytes;
+  let key_short = vec_from([0xFFu8, 0x0Fu8]) as Bytes;
+  match otp.xor_bytes(msg, key_short) {
+    Result.Err(otp.OtpError.LengthMismatch(_, _)) => { return true; }
+    _ => { return false; }
+  }
+  return false;
+}
+
 fn main() -> Int {
-  match test_known_vector() {
+  match test_known_vector() && test_length_mismatch() {
     true => { return 0; }
     _ => { return 1; }
   }

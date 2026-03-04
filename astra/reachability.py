@@ -119,6 +119,17 @@ def prune_unreachable_items(prog: Program, *, entry: str = "main") -> Program:
 
     if dynamic_calls:
         reachable_fns = set(fn_by_key.keys())
+        reachable_types.clear()
+        for key in reachable_fns:
+            decl = fn_by_key.get(key)
+            if decl is None:
+                continue
+            newly_used_types: set[str] = set()
+            _collect_types_from_signature(decl, newly_used_types, type_names)
+            _mark_new_types(newly_used_types, reachable_types, struct_map, enum_map, alias_map, type_names)
+            if isinstance(decl, FnDecl):
+                _, used_types, _ = _scan_fn_body(decl, fn_name_to_keys, enum_map, type_names)
+                _mark_new_types(used_types, reachable_types, struct_map, enum_map, alias_map, type_names)
 
     kept: list[Any] = []
     for item in prog.items:
@@ -218,7 +229,7 @@ def _scan_stmt(st: Any, fn_name_to_keys: dict[str, set[str]], enum_map: dict[str
         c2, t2, d2 = _scan_expr(st.expr, fn_name_to_keys, enum_map, known_types)
         return c1 | c2, t1 | t2, d1 or d2
     if isinstance(st, (ExprStmt, DropStmt, ReturnStmt, DeferStmt)):
-        expr = st.expr if not isinstance(st, ReturnStmt) else st.expr
+        expr = st.expr
         if expr is None:
             return set(), set(), False
         return _scan_expr(expr, fn_name_to_keys, enum_map, known_types)
@@ -313,6 +324,8 @@ def _scan_expr(e: Any, fn_name_to_keys: dict[str, set[str]], enum_map: dict[str,
         return called, used_types, False
     if isinstance(e, Call):
         if isinstance(e.fn, Name):
+            if e.fn.value in known_types:
+                used_types.add(e.fn.value)
             resolved = getattr(e, "resolved_name", "") or getattr(e.fn, "resolved_name", "")
             if resolved:
                 called.add(resolved)
