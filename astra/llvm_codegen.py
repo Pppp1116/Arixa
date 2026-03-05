@@ -72,6 +72,9 @@ class _ModuleCtx:
     fn_sigs: dict[str, _FnSig]
     fn_map: dict[str, ir.Function]
     string_globals: dict[str, ir.GlobalVariable]
+    cpu_dispatch: bool = False
+    cpu_target: str = "baseline"
+    multiversion_variants: dict[str, list[str]] = field(default_factory=dict)
 
 
 _FREESTANDING_HEAP_BYTES = 8 * 1024 * 1024
@@ -2879,6 +2882,103 @@ def _build_structs(ctx: _ModuleCtx, prog: Program) -> None:
         sinfo.field_index = {fname: i for i, (fname, _) in enumerate(item.fields)}
 
 
+
+
+def _has_loop(stmts: list[Any]) -> bool:
+    for st in stmts:
+        if isinstance(st, (ForStmt, WhileStmt)):
+            return True
+        if isinstance(st, IfStmt):
+            if _has_loop(st.then_body) or _has_loop(st.else_body):
+                return True
+        if hasattr(st, "body") and isinstance(st.body, list):
+            if _has_loop(st.body):
+                return True
+    return False
+
+
+def _is_multiversion_candidate(item: FnDecl) -> bool:
+    if item.name in {"main", "_start"}:
+        return False
+    return _has_loop(item.body)
+
+
+def _variant_suffixes(cpu_target: str) -> list[str]:
+    if cpu_target == "baseline":
+        return ["baseline"]
+    if cpu_target == "avx2":
+        return ["baseline", "sse4", "avx2"]
+    return ["baseline", "sse4", "avx2", "avx512"]
+
+
+def _variant_features(suffix: str) -> str | None:
+    return {
+        "baseline": None,
+        "sse4": "+sse4.2",
+        "avx2": "+avx2",
+        "avx512": "+avx512f",
+    }.get(suffix)
+
+
+def _set_variant_attrs(fn: ir.Function, suffix: str) -> None:
+    feat = _variant_features(suffix)
+    if feat is None:
+        return
+    # llvmlite does not expose generic key/value target-feature attributes here;
+    # keep this as a no-op marker hook to avoid changing optimization semantics.
+    _ = fn
+
+
+def _declare_cpu_probe(ctx: _ModuleCtx, name: str) -> ir.Function:
+    f = ctx.fn_map.get(name)
+    if isinstance(f, ir.Function):
+        return f
+    f = ir.Function(ctx.module, ir.FunctionType(ir.IntType(32), []), name=name)
+    ctx.fn_map[name] = f
+    return f
+
+
+def _compile_multiversion_dispatcher(ctx: _ModuleCtx, item: FnDecl) -> None:
+    key = item.symbol or item.name
+    fn_ir = ctx.fn_map[key]
+    sig = ctx.fn_sigs[key]
+    entry = fn_ir.append_basic_block("entry")
+    b = ir.IRBuilder(entry)
+    args = list(fn_ir.args)
+    variants = ctx.multiversion_variants.get(key, [])
+    ordered = [v for v in ["avx512", "avx2", "sse4", "baseline"] if v in variants]
+
+    for idx, variant in enumerate(ordered):
+        if variant == "baseline":
+            target = ctx.fn_map[f"{key}__mv_baseline"]
+            out = b.call(target, args)
+            if _canonical_type(sig.ret) in {"Void", "Never"}:
+                b.ret_void()
+            else:
+                b.ret(out)
+            return
+        probe = _declare_cpu_probe(ctx, f"astra_cpu_has_{variant}")
+        probe_val = b.call(probe, [])
+        cond = b.icmp_unsigned("!=", probe_val, ir.Constant(ir.IntType(32), 0))
+        then_bb = fn_ir.append_basic_block(f"mv_{variant}")
+        else_bb = fn_ir.append_basic_block(f"mv_next_{idx}")
+        b.cbranch(cond, then_bb, else_bb)
+        b.position_at_end(then_bb)
+        target = ctx.fn_map[f"{key}__mv_{variant}"]
+        out = b.call(target, args)
+        if _canonical_type(sig.ret) in {"Void", "Never"}:
+            b.ret_void()
+        else:
+            b.ret(out)
+        b.position_at_end(else_bb)
+    # Fallback
+    target = ctx.fn_map[f"{key}__mv_baseline"]
+    out = b.call(target, args)
+    if _canonical_type(sig.ret) in {"Void", "Never"}:
+        b.ret_void()
+    else:
+        b.ret(out)
+
 def _declare_functions(ctx: _ModuleCtx, prog: Program, freestanding: bool) -> tuple[list[FnDecl], str | None]:
     user_fns: list[FnDecl] = []
     user_main_key: str | None = None
@@ -2898,14 +2998,21 @@ def _declare_functions(ctx: _ModuleCtx, prog: Program, freestanding: bool) -> tu
                 user_main_key = key
             fnty = ir.FunctionType(_llvm_type(ctx, sig.ret), [_llvm_type(ctx, t) for t in sig.params])
             ctx.fn_map[key] = ir.Function(ctx.module, fnty, name=llvm_name)
+            if item.multiversion and ctx.cpu_dispatch and _is_multiversion_candidate(item):
+                suffixes = _variant_suffixes(ctx.cpu_target)
+                ctx.multiversion_variants[key] = suffixes
+                for suf in suffixes:
+                    vkey = f"{key}__mv_{suf}"
+                    vfn = ir.Function(ctx.module, fnty, name=f"{llvm_name}_{suf}")
+                    _set_variant_attrs(vfn, suf)
+                    ctx.fn_map[vkey] = vfn
             user_fns.append(item)
 
     return user_fns, user_main_key
 
-
-def _compile_function(ctx: _ModuleCtx, item: FnDecl, overflow_mode: str) -> None:
-    key = item.symbol or item.name
-    sig = ctx.fn_sigs[key]
+def _compile_function(ctx: _ModuleCtx, item: FnDecl, overflow_mode: str, *, fn_key: str | None = None) -> None:
+    key = fn_key or (item.symbol or item.name)
+    sig = ctx.fn_sigs[item.symbol or item.name]
     fn_ir = ctx.fn_map[key]
     entry = fn_ir.append_basic_block("entry")
     epilogue = fn_ir.append_basic_block("epilogue")
@@ -3002,6 +3109,8 @@ def to_llvm_ir(
     overflow_mode: str = "trap",
     triple: str | None = None,
     profile: str = "debug",
+    cpu_dispatch: bool = False,
+    cpu_target: str = "baseline",
 ) -> str:
     _init_llvm_once()
 
@@ -3031,13 +3140,21 @@ def to_llvm_ir(
         fn_sigs=_collect_fn_sigs(prog),
         fn_map={},
         string_globals={},
+        cpu_dispatch=cpu_dispatch,
+        cpu_target=cpu_target,
     )
 
     _build_structs(ctx, prog)
     user_fns, user_main_key = _declare_functions(ctx, prog, freestanding=freestanding)
 
     for fn in user_fns:
-        _compile_function(ctx, fn, overflow_mode)
+        base_key = fn.symbol or fn.name
+        if base_key in ctx.multiversion_variants:
+            for suf in ctx.multiversion_variants[base_key]:
+                _compile_function(ctx, fn, overflow_mode, fn_key=f"{base_key}__mv_{suf}")
+            _compile_multiversion_dispatcher(ctx, fn)
+        else:
+            _compile_function(ctx, fn, overflow_mode)
 
     if not freestanding:
         _emit_hosted_main_wrapper(ctx, user_main_key)

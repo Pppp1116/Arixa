@@ -124,12 +124,43 @@ class Parser:
             raise ParseError("\n".join(self.errors))
         return Program(items)
 
+
+    def _assert_attrs_allowed_on(
+        self,
+        decl_kind: str,
+        *,
+        is_unsafe: bool,
+        is_async: bool,
+        is_packed: bool,
+        is_multiversion: bool,
+    ) -> None:
+        if decl_kind in {"import", "struct", "enum", "type alias"} and (is_unsafe or is_async):
+            if decl_kind == "import":
+                self._err("import cannot be prefixed with unsafe/async")
+            elif decl_kind == "struct":
+                self._err("struct cannot be prefixed with unsafe/async")
+            elif decl_kind == "enum":
+                self._err("enum cannot be prefixed with unsafe/async")
+            elif decl_kind == "type alias":
+                self._err("type alias cannot be prefixed with unsafe/async")
+            raise ParseError(self.errors[-1])
+        if decl_kind == "extern" and is_async:
+            self._err("extern fn cannot be prefixed with async")
+            raise ParseError(self.errors[-1])
+        if is_packed and decl_kind != "struct":
+            self._err("@packed is only valid on struct declarations")
+            raise ParseError(self.errors[-1])
+        if is_multiversion and decl_kind != "fn":
+            self._err("@multiversion is only valid on fn declarations")
+            raise ParseError(self.errors[-1])
+
     def parse_top_level(self, doc: str):
         is_pub = False
         is_unsafe = False
         is_async = False
         is_impl = False
         is_packed = False
+        is_multiversion = False
         while True:
             if self.opt("pub"):
                 is_pub = True
@@ -145,51 +176,69 @@ class Parser:
                 continue
             if self.opt("@"):
                 attr = self.eat("IDENT").text
-                if attr != "packed":
-                    self._err(f"unknown attribute @{attr}")
-                    raise ParseError(self.errors[-1])
-                is_packed = True
-                continue
+                if attr == "packed":
+                    is_packed = True
+                    continue
+                if attr == "multiversion":
+                    is_multiversion = True
+                    continue
+                self._err(f"unknown attribute @{attr}")
+                raise ParseError(self.errors[-1])
             break
         if self.cur().kind == "import":
-            if is_unsafe or is_async:
-                self._err("import cannot be prefixed with unsafe/async")
-                raise ParseError(self.errors[-1])
-            if is_packed:
-                self._err("@packed is only valid on struct declarations")
-                raise ParseError(self.errors[-1])
+            self._assert_attrs_allowed_on(
+                "import",
+                is_unsafe=is_unsafe,
+                is_async=is_async,
+                is_packed=is_packed,
+                is_multiversion=is_multiversion,
+            )
             return self.parse_import()
         if self.cur().kind == "struct":
-            if is_unsafe or is_async:
-                self._err("struct cannot be prefixed with unsafe/async")
-                raise ParseError(self.errors[-1])
+            self._assert_attrs_allowed_on(
+                "struct",
+                is_unsafe=is_unsafe,
+                is_async=is_async,
+                is_packed=is_packed,
+                is_multiversion=is_multiversion,
+            )
             return self.parse_struct(is_pub, doc, packed=is_packed)
         if self.cur().kind == "enum":
-            if is_unsafe or is_async:
-                self._err("enum cannot be prefixed with unsafe/async")
-                raise ParseError(self.errors[-1])
-            if is_packed:
-                self._err("@packed is only valid on struct declarations")
-                raise ParseError(self.errors[-1])
+            self._assert_attrs_allowed_on(
+                "enum",
+                is_unsafe=is_unsafe,
+                is_async=is_async,
+                is_packed=is_packed,
+                is_multiversion=is_multiversion,
+            )
             return self.parse_enum(is_pub, doc)
         if self.cur().kind == "type":
-            if is_unsafe or is_async:
-                self._err("type alias cannot be prefixed with unsafe/async")
-                raise ParseError(self.errors[-1])
-            if is_packed:
-                self._err("@packed is only valid on struct declarations")
-                raise ParseError(self.errors[-1])
+            self._assert_attrs_allowed_on(
+                "type alias",
+                is_unsafe=is_unsafe,
+                is_async=is_async,
+                is_packed=is_packed,
+                is_multiversion=is_multiversion,
+            )
             return self.parse_type_alias()
         if self.cur().kind == "extern":
-            if is_packed:
-                self._err("@packed is only valid on struct declarations")
-                raise ParseError(self.errors[-1])
+            self._assert_attrs_allowed_on(
+                "extern",
+                is_unsafe=is_unsafe,
+                is_async=is_async,
+                is_packed=is_packed,
+                is_multiversion=is_multiversion,
+            )
             return self.parse_extern_fn(is_pub, is_unsafe, doc)
         if self.cur().kind == "fn":
-            if is_packed:
-                self._err("@packed is only valid on struct declarations")
-                raise ParseError(self.errors[-1])
-            return self.parse_fn(is_pub, is_async, doc, is_impl=is_impl, is_unsafe=is_unsafe)
+            self._assert_attrs_allowed_on(
+                "fn",
+                is_unsafe=is_unsafe,
+                is_async=is_async,
+                is_packed=is_packed,
+                is_multiversion=is_multiversion,
+            )
+            return self.parse_fn(is_pub, is_async, doc, is_impl=is_impl, is_unsafe=is_unsafe, multiversion=is_multiversion)
         if is_impl:
             self._err("impl must be followed by fn")
             raise ParseError(self.errors[-1])
@@ -284,6 +333,7 @@ class Parser:
         doc: str = "",
         is_impl: bool = False,
         is_unsafe: bool = False,
+        multiversion: bool = False,
     ) -> FnDecl:
         fn_tok = self.eat("fn")
         name = self.eat("IDENT").text
@@ -304,6 +354,7 @@ class Parser:
             pub=is_pub,
             async_fn=is_async,
             unsafe=is_unsafe,
+            multiversion=multiversion,
             doc=doc,
             pos=fn_tok.pos,
             line=fn_tok.line,

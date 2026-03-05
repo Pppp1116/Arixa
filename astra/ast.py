@@ -34,6 +34,7 @@ class FnDecl:
     pub: bool = False
     async_fn: bool = False
     unsafe: bool = False
+    multiversion: bool = False
     symbol: str = ""
     doc: str = ""
     pos: int = 0

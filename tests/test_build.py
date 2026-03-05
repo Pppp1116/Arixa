@@ -767,3 +767,43 @@ fn main() -> Int {
     assert st in {"built", "cached"}
     py = out.read_text()
     assert "class S:" in py
+
+
+def test_build_rejects_conflicting_layout_profile_modes(tmp_path: Path):
+    src = tmp_path / "main.astra"
+    out = tmp_path / "main.ll"
+    src.write_text("fn main() -> Int { return 0; }")
+    with pytest.raises(RuntimeError) as excinfo:
+        build(str(src), str(out), "llvm", profile_layout=True, opt_layout=True)
+    assert "mutually exclusive" in str(excinfo.value)
+
+
+def test_build_rejects_conflicting_value_profile_modes(tmp_path: Path):
+    src = tmp_path / "main.astra"
+    out = tmp_path / "main.ll"
+    src.write_text("fn main() -> Int { return 0; }")
+    with pytest.raises(RuntimeError) as excinfo:
+        build(str(src), str(out), "llvm", profile_values=True, opt_value_profile=True)
+    assert "mutually exclusive" in str(excinfo.value)
+
+
+def test_cached_build_still_emits_missing_profile_templates(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    src = tmp_path / "main.astra"
+    out = tmp_path / "main.ll"
+    src.write_text("fn main() -> Int { return 0; }")
+
+    st1 = build(str(src), str(out), "llvm", profile_layout=True, profile_values=True)
+    assert st1 in {"built", "cached"}
+
+    layout_path = tmp_path / ".build" / "astra-profile.json"
+    value_path = tmp_path / ".build" / "value_profile.json"
+    if layout_path.exists():
+        layout_path.unlink()
+    if value_path.exists():
+        value_path.unlink()
+
+    st2 = build(str(src), str(out), "llvm", profile_layout=True, profile_values=True)
+    assert st2 == "cached"
+    assert layout_path.exists()
+    assert value_path.exists()

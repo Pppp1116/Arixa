@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -12,6 +14,14 @@ def test_bundled_stdlib_matches_repo_stdlib():
 
 
 def test_bundled_runtime_matches_repo_runtime():
+    repo_runtime = Path("runtime/llvm_runtime.c")
+    bundled_runtime = Path("astra/assets/runtime/llvm_runtime.c")
+    assert bundled_runtime.read_text() == repo_runtime.read_text()
+
+
+def test_runtime_sync_script_keeps_bundled_runtime_in_sync():
+    rc = subprocess.call([sys.executable, "scripts/sync_runtime_asset.py"])
+    assert rc == 0
     repo_runtime = Path("runtime/llvm_runtime.c")
     bundled_runtime = Path("astra/assets/runtime/llvm_runtime.c")
     assert bundled_runtime.read_text() == repo_runtime.read_text()

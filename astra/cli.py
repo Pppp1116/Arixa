@@ -26,6 +26,12 @@ def cmd_build(a):
         profile_compile=a.profile_compile,
         threads=a.threads,
         opt_size=getattr(a, "opt_size", False),
+        profile_layout=getattr(a, "profile_layout", False),
+        opt_layout=getattr(a, "opt_layout", False),
+        profile_values=getattr(a, "profile_values", False),
+        opt_value_profile=getattr(a, "opt_value_profile", False),
+        cpu_dispatch=getattr(a, "cpu_dispatch", False),
+        cpu_target=getattr(a, "cpu_target", "baseline"),
     )
     if a.profile_compile and a.profile_json:
         print(profiler.to_json())
@@ -165,6 +171,12 @@ def cmd_bench(a):
             profile_compile=True,
             threads=a.threads,
             opt_size=getattr(a, "opt_size", False),
+            profile_layout=getattr(a, "profile_layout", False),
+            opt_layout=getattr(a, "opt_layout", False),
+            profile_values=getattr(a, "profile_values", False),
+            opt_value_profile=getattr(a, "opt_value_profile", False),
+            cpu_dispatch=getattr(a, "cpu_dispatch", False),
+            cpu_target=getattr(a, "cpu_target", "baseline"),
         )
         # Capture JSON each run
         payload = json.loads(profiler.to_json() or "{}")
@@ -208,6 +220,12 @@ def main(argv=None):
     b.add_argument("--overflow", choices=["trap", "wrap", "debug"], default="debug")
     b.add_argument("--triple")
     b.add_argument("--opt-size", action="store_true", dest="opt_size")
+    b.add_argument("--profile-layout", action="store_true", dest="profile_layout")
+    b.add_argument("--opt-layout", action="store_true", dest="opt_layout")
+    b.add_argument("--profile-values", action="store_true", dest="profile_values")
+    b.add_argument("--opt-value-profile", action="store_true", dest="opt_value_profile")
+    b.add_argument("--cpu-dispatch", action="store_true", dest="cpu_dispatch")
+    b.add_argument("--cpu-target", choices=["baseline", "avx2", "native"], default="baseline")
     _add_global_flags(b)
     b.set_defaults(func=cmd_build)
 
@@ -256,6 +274,12 @@ def main(argv=None):
     bench.add_argument("--overflow", choices=["trap", "wrap", "debug"], default="debug")
     bench.add_argument("--triple")
     bench.add_argument("--opt-size", action="store_true", dest="opt_size")
+    bench.add_argument("--profile-layout", action="store_true", dest="profile_layout")
+    bench.add_argument("--opt-layout", action="store_true", dest="opt_layout")
+    bench.add_argument("--profile-values", action="store_true", dest="profile_values")
+    bench.add_argument("--opt-value-profile", action="store_true", dest="opt_value_profile")
+    bench.add_argument("--cpu-dispatch", action="store_true", dest="cpu_dispatch")
+    bench.add_argument("--cpu-target", choices=["baseline", "avx2", "native"], default="baseline")
     _add_global_flags(bench)
     bench.set_defaults(func=cmd_bench)
 
