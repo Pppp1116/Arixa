@@ -79,3 +79,8 @@ def test_lexes_multiline_string_literal():
     toks = lex(src)
     kinds = [t.kind for t in toks]
     assert "STR_MULTI" in kinds
+
+
+def test_lexes_ellipsis_token_for_variadic_externs():
+    toks = lex("extern fn printf(fmt: *u8, ...) -> i32;")
+    assert any(t.kind == "..." for t in toks)

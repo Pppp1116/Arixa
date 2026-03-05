@@ -292,14 +292,22 @@ def _fmt_item(item, cfg: FormatConfig) -> list[str]:
             out.extend([f"/// {line}" for line in item.doc.splitlines()])
         pub = "pub " if item.pub else ""
         us = "unsafe " if item.unsafe else ""
-        sig = ", ".join(f"{n} {type_text(t)}" for n, t in item.params)
-        line = f'{pub}{us}extern "{item.lib}" fn {item.name}({sig}) -> {type_text(item.ret)};'
+        libs = list(item.link_libs) or ([item.lib] if item.lib else [])
+        for lib in libs:
+            out.append(f'@link("{lib}")')
+        sig_parts = [f"{n} {type_text(t)}" for n, t in item.params]
+        if item.is_variadic:
+            sig_parts.append("...")
+        sig = ", ".join(sig_parts)
+        line = f"{pub}{us}extern fn {item.name}({sig}) -> {type_text(item.ret)};"
         if len(line) <= cfg.line_width or not item.params:
             out.append(line)
             return out
-        out.append(f'{pub}{us}extern "{item.lib}" fn {item.name}(')
+        out.append(f"{pub}{us}extern fn {item.name}(")
         for n, t in item.params:
             out.append(f"{_indent(1, cfg)}{n} {type_text(t)},")
+        if item.is_variadic:
+            out.append(f"{_indent(1, cfg)}...,")
         out.append(f") -> {type_text(item.ret)};")
         return out
     if isinstance(item, FnDecl):

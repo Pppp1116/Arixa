@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+try:
+    import tomllib
+except Exception:  # pragma: no cover - only for older Python fallback
+    import tomli as tomllib
 
 from astra.ast import ImportDecl
 
 _MANIFEST = "Astra.toml"
 _STDLIB_ENV = "ASTRA_STDLIB_PATH"
 _RUNTIME_ENV = "ASTRA_RUNTIME_C_PATH"
+_PKG_HOME_ENV = "ASTRA_PKG_HOME"
 _PACKAGE_ROOT = Path(__file__).resolve().parent
 _REPO_ROOT = _PACKAGE_ROOT.parent
 
@@ -97,6 +102,13 @@ def runtime_source_path() -> Path | None:
     return None
 
 
+def package_cache_root() -> Path:
+    env = os.environ.get(_PKG_HOME_ENV)
+    if env:
+        return Path(env).expanduser().resolve()
+    return (Path.home() / ".astra" / "packages").resolve()
+
+
 def resolve_import_path(decl: ImportDecl, from_filename: str) -> Path:
     """Resolve an import declaration into an absolute filesystem path.
     
@@ -126,9 +138,83 @@ def _resolve_string_import(source: str, from_filename: str) -> Path:
     rel = Path(source).expanduser()
     if rel.is_absolute():
         return rel
+    importer_dir = Path.cwd() if from_filename == "<input>" else Path(from_filename).resolve().parent
+    # Relative file/module import from the importer directory.
+    rel_candidates: list[Path] = [importer_dir / rel]
+    if rel.suffix == "":
+        rel_candidates.append((importer_dir / rel).with_suffix(".astra"))
+        rel_candidates.append(importer_dir / rel / "mod.astra")
+    for cand in rel_candidates:
+        if cand.exists():
+            return cand
+
+    # Import from stdlib bindings and root stdlib modules.
+    stdlib_root = stdlib_root_path()
+    if stdlib_root is not None and rel.suffix == "":
+        binding = stdlib_root / "bindings" / f"{source}.astra"
+        if binding.exists():
+            return binding
+        std_mod = stdlib_root / f"{source}.astra"
+        if std_mod.exists():
+            return std_mod
+
+    # Import from package cache (~/.astra/packages/<name>/<version>/...).
+    if rel.suffix == "" and "/" not in source and "\\" not in source:
+        project_root = find_project_root(from_filename) if from_filename != "<input>" else find_project_root(str(Path.cwd()))
+        version = _dependency_version(project_root, source)
+        root = package_cache_root()
+        if version:
+            by_ver = root / source / version
+            cand = _package_module_candidate(by_ver, source)
+            if cand is not None:
+                return cand
+        pkg_dir = root / source
+        if pkg_dir.is_dir():
+            versions = sorted([p for p in pkg_dir.iterdir() if p.is_dir()], reverse=True)
+            for ver_dir in versions:
+                cand = _package_module_candidate(ver_dir, source)
+                if cand is not None:
+                    return cand
     if from_filename == "<input>":
         return Path.cwd() / rel
     return Path(from_filename).resolve().parent / rel
+
+
+def _package_module_candidate(pkg_version_dir: Path, name: str) -> Path | None:
+    cands = [
+        pkg_version_dir / f"{name}.astra",
+        pkg_version_dir / "bindings" / f"{name}.astra",
+        pkg_version_dir / name / "mod.astra",
+        pkg_version_dir / "mod.astra",
+    ]
+    for cand in cands:
+        if cand.exists():
+            return cand
+    return None
+
+
+def _dependency_version(project_root: Path | None, name: str) -> str | None:
+    if project_root is None:
+        return None
+    manifest = project_root / _MANIFEST
+    if not manifest.exists():
+        return None
+    try:
+        data = tomllib.loads(manifest.read_text())
+    except Exception:
+        return None
+
+    deps = data.get("dependencies")
+    if isinstance(deps, dict):
+        val = deps.get(name)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    deps_legacy = data.get("deps")
+    if isinstance(deps_legacy, dict):
+        val = deps_legacy.get(name)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return None
 
 
 def _resolve_module_import(path: list[str], from_filename: str, label: str) -> Path:

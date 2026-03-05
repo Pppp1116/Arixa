@@ -28,6 +28,8 @@ class _FnSig:
     params: list[str]
     ret: str
     extern: bool = False
+    variadic: bool = False
+    link_libs: tuple[str, ...] = ()
 
 
 @dataclass
@@ -75,6 +77,7 @@ class _ModuleCtx:
     fn_sigs: dict[str, _FnSig]
     fn_map: dict[str, ir.Function]
     string_globals: dict[str, ir.GlobalVariable]
+    ffi_libs: set[str]
 
 
 _FREESTANDING_HEAP_BYTES = 8 * 1024 * 1024
@@ -379,14 +382,35 @@ def _collect_fn_sigs(prog: Program) -> dict[str, _FnSig]:
     for item in prog.items:
         if isinstance(item, FnDecl):
             name = item.symbol or item.name
-            out[name] = _FnSig(name=name, params=[_canonical_type(typ) for _, typ in item.params], ret=_canonical_type(item.ret), extern=False)
+            out[name] = _FnSig(
+                name=name,
+                params=[_canonical_type(typ) for _, typ in item.params],
+                ret=_canonical_type(item.ret),
+                extern=False,
+            )
         elif isinstance(item, ExternFnDecl):
-            out[item.name] = _FnSig(name=item.name, params=[_canonical_type(typ) for _, typ in item.params], ret=_canonical_type(item.ret), extern=True)
+            libs = tuple(item.link_libs or ([item.lib] if item.lib else []))
+            out[item.name] = _FnSig(
+                name=item.name,
+                params=[_canonical_type(typ) for _, typ in item.params],
+                ret=_canonical_type(item.ret),
+                extern=True,
+                variadic=bool(item.is_variadic),
+                link_libs=libs,
+            )
     return out
 
 
 def _llvm_type(ctx: _ModuleCtx, typ: str) -> ir.Type:
     c = _canonical_type(typ)
+    if c.startswith("*"):
+        base = c.lstrip("*")
+        depth = len(c) - len(base)
+        # All FFI pointer types currently map to i8*
+        out_ty: ir.Type = ir.IntType(8).as_pointer()
+        for _ in range(max(0, depth - 1)):
+            out_ty = out_ty.as_pointer()
+        return out_ty
     if _is_option_type(c):
         return ir.IntType(8).as_pointer()
     if c == "Bool":
@@ -2786,8 +2810,11 @@ def _declare_functions(ctx: _ModuleCtx, prog: Program, freestanding: bool) -> tu
         if isinstance(item, ExternFnDecl):
             key = item.name
             sig = ctx.fn_sigs[key]
-            fnty = ir.FunctionType(_llvm_type(ctx, sig.ret), [_llvm_type(ctx, t) for t in sig.params])
+            fnty = ir.FunctionType(_llvm_type(ctx, sig.ret), [_llvm_type(ctx, t) for t in sig.params], var_arg=sig.variadic)
             ctx.fn_map[key] = ir.Function(ctx.module, fnty, name=key)
+            for lib in sig.link_libs:
+                if lib:
+                    ctx.ffi_libs.add(lib)
         elif isinstance(item, FnDecl):
             key = item.symbol or item.name
             sig = ctx.fn_sigs[key]
@@ -2901,6 +2928,7 @@ def to_llvm_ir(
     overflow_mode: str = "trap",
     triple: str | None = None,
     profile: str = "debug",
+    filename: str = "<input>",
 ) -> str:
     """Lower an analyzed AST program into LLVM IR text.
     
@@ -2917,7 +2945,7 @@ def to_llvm_ir(
     _init_llvm_once()
 
     # Ensure semantic annotations (symbols/inferred types) are present for direct backend use.
-    analyze(prog, filename="<input>", freestanding=freestanding)
+    analyze(prog, filename=filename, freestanding=freestanding)
     lower_for_loops(prog)
 
     module = ir.Module(name="astra_module")
@@ -2943,6 +2971,7 @@ def to_llvm_ir(
         fn_sigs=_collect_fn_sigs(prog),
         fn_map={},
         string_globals={},
+        ffi_libs=set(getattr(prog, "ffi_libs", set())),
     )
 
     _build_structs(ctx, prog)

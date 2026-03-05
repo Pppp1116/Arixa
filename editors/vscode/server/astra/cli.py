@@ -32,6 +32,7 @@ def cmd_build(a):
         profile=a.profile,
         overflow=a.overflow,
         triple=a.triple,
+        links=a.link,
     )
     print(state)
 
@@ -81,22 +82,13 @@ def cmd_check(a):
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
+        for diag in result.diagnostics:
+            print(format_diagnostic(diag), file=sys.stderr)
         if result.ok:
             if len(result.files_checked) > 1:
                 print(f"ok ({len(result.files_checked)} files)")
             else:
                 print("ok")
-        else:
-            for diag in result.diagnostics:
-                print(format_diagnostic(diag), file=sys.stderr)
-                for note in diag.notes:
-                    if note.span is None:
-                        print(f"  note: {note.message}", file=sys.stderr)
-                    else:
-                        print(
-                            f"  note: {note.span.filename}:{note.span.line}:{note.span.col}: {note.message}",
-                            file=sys.stderr,
-                        )
     if not result.ok:
         raise SystemExit(1)
 
@@ -216,6 +208,7 @@ def main(argv=None):
     b.add_argument("--profile", choices=["debug", "release"], default="debug")
     b.add_argument("--overflow", choices=["trap", "wrap", "debug"], default="debug")
     b.add_argument("--triple")
+    b.add_argument("--link", action="append", default=[])
     b.set_defaults(func=cmd_build)
 
     c = sp.add_parser("check")

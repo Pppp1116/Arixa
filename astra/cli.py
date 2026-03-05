@@ -32,6 +32,7 @@ def cmd_build(a):
         profile=a.profile,
         overflow=a.overflow,
         triple=a.triple,
+        links=a.link,
     )
     print(state)
 
@@ -207,6 +208,7 @@ def main(argv=None):
     b.add_argument("--profile", choices=["debug", "release"], default="debug")
     b.add_argument("--overflow", choices=["trap", "wrap", "debug"], default="debug")
     b.add_argument("--triple")
+    b.add_argument("--link", action="append", default=[])
     b.set_defaults(func=cmd_build)
 
     c = sp.add_parser("check")

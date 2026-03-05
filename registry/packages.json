@@ -1,0 +1,32 @@
+{
+  "c": {
+    "repo": "https://github.com/Pppp1116/astra-libc",
+    "description": "C standard library bindings",
+    "version": "1.0.0"
+  },
+  "curl": {
+    "repo": "https://github.com/Pppp1116/astra-curl",
+    "description": "libcurl bindings",
+    "version": "8.7.1"
+  },
+  "opengl": {
+    "repo": "https://github.com/Pppp1116/astra-opengl",
+    "description": "OpenGL bindings",
+    "version": "4.6.0"
+  },
+  "raylib": {
+    "repo": "https://github.com/Pppp1116/astra-raylib",
+    "description": "raylib game programming library",
+    "version": "5.0.0"
+  },
+  "sdl2": {
+    "repo": "https://github.com/Pppp1116/astra-sdl2",
+    "description": "SDL2 bindings - window, rendering, input",
+    "version": "2.0.0"
+  },
+  "sqlite3": {
+    "repo": "https://github.com/Pppp1116/astra-sqlite3",
+    "description": "SQLite3 bindings",
+    "version": "3.43.0"
+  }
+}

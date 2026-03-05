@@ -145,7 +145,24 @@ class Parser:
         Returns:
             Value described by the function return annotation.
         """
-        sync = {";", "}", "fn", "impl", "struct", "enum", "type", "import", "extern", "pub", "async", "unsafe", "comptime", "EOF"}
+        sync = {
+            ";",
+            "}",
+            "fn",
+            "impl",
+            "struct",
+            "enum",
+            "type",
+            "import",
+            "extern",
+            "let",
+            "fixed",
+            "pub",
+            "async",
+            "unsafe",
+            "comptime",
+            "EOF",
+        }
         start = self.i
         while self.cur().kind not in sync:
             self.i += 1
@@ -196,6 +213,7 @@ class Parser:
         is_async = False
         is_impl = False
         is_packed = False
+        link_libs: list[str] = []
         while True:
             if self.opt("pub"):
                 is_pub = True
@@ -211,13 +229,27 @@ class Parser:
                 continue
             if self.opt("@"):
                 attr = self.eat("IDENT").text
-                if attr != "packed":
-                    self._err(f"unknown attribute @{attr}")
-                    raise ParseError(self.errors[-1])
-                is_packed = True
+                if attr == "packed":
+                    is_packed = True
+                    continue
+                if attr == "link":
+                    self.eat("(")
+                    lib_tok = self.cur()
+                    if lib_tok.kind != "STR":
+                        self._err("@link expects a string literal, for example @link(\"SDL2\")", lib_tok)
+                        raise ParseError(self.errors[-1])
+                    self.i += 1
+                    self.eat(")")
+                    link_libs.append(lib_tok.text)
+                    continue
+                self._err(f"unknown attribute @{attr}")
+                raise ParseError(self.errors[-1])
                 continue
             break
         if self.cur().kind == "import":
+            if link_libs:
+                self._err("@link is only valid on extern function declarations")
+                raise ParseError(self.errors[-1])
             if is_unsafe or is_async:
                 self._err("import cannot be prefixed with unsafe/async")
                 raise ParseError(self.errors[-1])
@@ -226,11 +258,17 @@ class Parser:
                 raise ParseError(self.errors[-1])
             return self.parse_import()
         if self.cur().kind == "struct":
+            if link_libs:
+                self._err("@link is only valid on extern function declarations")
+                raise ParseError(self.errors[-1])
             if is_unsafe or is_async:
                 self._err("struct cannot be prefixed with unsafe/async")
                 raise ParseError(self.errors[-1])
             return self.parse_struct(is_pub, doc, packed=is_packed)
         if self.cur().kind == "enum":
+            if link_libs:
+                self._err("@link is only valid on extern function declarations")
+                raise ParseError(self.errors[-1])
             if is_unsafe or is_async:
                 self._err("enum cannot be prefixed with unsafe/async")
                 raise ParseError(self.errors[-1])
@@ -239,6 +277,9 @@ class Parser:
                 raise ParseError(self.errors[-1])
             return self.parse_enum(is_pub, doc)
         if self.cur().kind == "type":
+            if link_libs:
+                self._err("@link is only valid on extern function declarations")
+                raise ParseError(self.errors[-1])
             if is_unsafe or is_async:
                 self._err("type alias cannot be prefixed with unsafe/async")
                 raise ParseError(self.errors[-1])
@@ -250,12 +291,23 @@ class Parser:
             if is_packed:
                 self._err("@packed is only valid on struct declarations")
                 raise ParseError(self.errors[-1])
-            return self.parse_extern_fn(is_pub, is_unsafe, doc)
+            return self.parse_extern_fn(is_pub, is_unsafe, doc, link_libs=link_libs)
         if self.cur().kind == "fn":
             if is_packed:
                 self._err("@packed is only valid on struct declarations")
                 raise ParseError(self.errors[-1])
+            if link_libs:
+                self._err("@link is only valid on extern function declarations")
+                raise ParseError(self.errors[-1])
             return self.parse_fn(is_pub, is_async, doc, is_impl=is_impl, is_unsafe=is_unsafe)
+        if self.cur().kind in {"let", "fixed"}:
+            if link_libs or is_packed or is_pub or is_unsafe or is_async or is_impl:
+                self._err("top-level bindings cannot use declaration modifiers or attributes")
+                raise ParseError(self.errors[-1])
+            return self.parse_global_binding()
+        if link_libs:
+            self._err("@link is only valid on extern function declarations")
+            raise ParseError(self.errors[-1])
         if is_impl:
             self._err("impl must be followed by fn")
             raise ParseError(self.errors[-1])
@@ -302,17 +354,32 @@ class Parser:
         self.eat(">")
         return generics
 
-    def _parse_params(self) -> list[tuple[str, str]]:
+    def _parse_params(self, *, allow_variadic: bool = False) -> tuple[list[tuple[str, str]], bool]:
         params: list[tuple[str, str]] = []
+        variadic = False
         self.eat("(")
         if self.cur().kind != ")":
-            params.append(self._parse_named_type())
+            if allow_variadic and self.cur().kind == "...":
+                self.eat("...")
+                variadic = True
+            else:
+                params.append(self._parse_named_type())
             while self.opt(","):
                 if self.cur().kind == ")":
                     break
+                if allow_variadic and self.cur().kind == "...":
+                    self.eat("...")
+                    variadic = True
+                    break
+                if variadic:
+                    self._err("variadic marker `...` must be the last parameter")
+                    raise ParseError(self.errors[-1])
                 params.append(self._parse_named_type())
+            if variadic and self.cur().kind != ")":
+                self._err("variadic marker `...` must be the last parameter")
+                raise ParseError(self.errors[-1])
         self.eat(")")
-        return params
+        return params, variadic
 
     def _parse_named_type(self) -> tuple[str, str]:
         name = self.eat("IDENT").text
@@ -320,7 +387,14 @@ class Parser:
         typ = self.parse_type()
         return name, typ
 
-    def parse_extern_fn(self, is_pub: bool, is_unsafe: bool, doc: str) -> ExternFnDecl:
+    def parse_extern_fn(
+        self,
+        is_pub: bool,
+        is_unsafe: bool,
+        doc: str,
+        *,
+        link_libs: list[str] | None = None,
+    ) -> ExternFnDecl:
         """Parse the `extern_fn` grammar production from the token stream.
         
         Parameters:
@@ -332,27 +406,24 @@ class Parser:
             Value described by the function return annotation.
         """
         tok = self.eat("extern")
-        lib_tok = self.cur()
-        if lib_tok.kind == "STR":
+        libs = list(link_libs or [])
+        # Backward compatibility: accept legacy `extern "lib" fn` / `extern libc fn`.
+        if self.cur().kind in {"STR", "IDENT"} and self.peek().kind == "fn":
+            libs.append(self.cur().text)
             self.i += 1
-            lib = lib_tok.text
-        elif lib_tok.kind == "IDENT":
-            self.i += 1
-            lib = lib_tok.text
-        else:
-            self._err("extern requires a library name string", lib_tok)
-            raise ParseError(self.errors[-1])
         self.eat("fn")
         name_tok = self.eat("IDENT")
-        params = self._parse_params()
+        params, is_variadic = self._parse_params(allow_variadic=True)
         self.eat("->")
         ret = self.parse_type()
         self.eat(";")
         return ExternFnDecl(
-            lib=lib,
             name=name_tok.text,
             params=params,
             ret=ret,
+            is_variadic=is_variadic,
+            link_libs=libs,
+            lib=(libs[0] if libs else ""),
             unsafe=is_unsafe,
             pub=is_pub,
             doc=doc,
@@ -384,7 +455,7 @@ class Parser:
         fn_tok = self.eat("fn")
         name = self.eat("IDENT").text
         generics = self._parse_generics()
-        params = self._parse_params()
+        params, _ = self._parse_params()
         if self.opt("->"):
             ret = self.parse_type()
         elif name == "main" and not is_impl and not params and not generics:
@@ -487,7 +558,9 @@ class Parser:
             Value produced by the routine, if any.
         """
         typ: str
-        if self.opt("&"):
+        if self.opt("*"):
+            typ = f"*{type_text(self.parse_type())}"
+        elif self.opt("&"):
             mut = "mut " if self.opt("mut") else ""
             typ = f"&{mut}{type_text(self.parse_type())}"
         elif self.opt("["):
@@ -556,6 +629,25 @@ class Parser:
         self.eat("}")
         return body
 
+    def parse_global_binding(self) -> LetStmt:
+        tok = self.cur()
+        if self.cur().kind not in {"let", "fixed"}:
+            self._err("expected top-level binding")
+            raise ParseError(self.errors[-1])
+        is_fixed = self.eat(self.cur().kind).kind == "fixed"
+        is_mut = bool(self.opt("mut"))
+        if is_mut:
+            self._err("top-level bindings cannot be mutable", tok)
+            raise ParseError(self.errors[-1])
+        name_tok = self.eat("IDENT")
+        type_name = None
+        if self.opt(":"):
+            type_name = self.parse_type()
+        self.eat("=")
+        expr = self.parse_expr()
+        self.eat(";")
+        return LetStmt(name_tok.text, expr, False, type_name, tok.pos, tok.line, tok.col, fixed=is_fixed)
+
     def parse_stmt(self):
         """Parse the `stmt` grammar production from the token stream.
         
@@ -566,6 +658,12 @@ class Parser:
             Value produced by the routine, if any.
         """
         tok = self.cur()
+        if self.cur().kind == "extern":
+            self._err("extern function declarations are only allowed at module scope", tok)
+            raise ParseError(self.errors[-1])
+        if self.cur().kind == "@":
+            self._err("attributes are only allowed on module-level declarations", tok)
+            raise ParseError(self.errors[-1])
         if self.cur().kind in {"let", "fixed"}:
             is_fixed = self.eat(self.cur().kind).kind == "fixed"
             is_mut = bool(self.opt("mut"))

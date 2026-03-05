@@ -163,6 +163,16 @@ fn main() -> Int { return 0; }
     assert isinstance(fn.body[0].expr, AwaitExpr)
 
 
+def test_parse_linked_variadic_extern_fn():
+    src = '@link("c") extern fn printf(fmt: *u8, ...) -> i32;'
+    prog = parse(src)
+    ext = prog.items[0]
+    assert isinstance(ext, ExternFnDecl)
+    assert ext.link_libs == ["c"]
+    assert ext.params == [("fmt", "*u8")]
+    assert ext.is_variadic
+
+
 def test_parse_unsafe_fn_and_block():
     src = """
 unsafe fn poke(x Int) -> Int { return x; }

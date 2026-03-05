@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+from pathlib import Path
 
 from astra.ast import *
 from astra.int_types import is_int_type_name, parse_int_type_name
 from astra.layout import LayoutError, canonical_type as _layout_canonical_type, layout_of_type
-from astra.module_resolver import ModuleResolutionError, resolve_import_path
+from astra.module_resolver import resolve_import_path
+from astra.parser import parse
 
 
 class SemanticError(Exception):
@@ -932,7 +934,11 @@ def _specialization_score(
     arg_types: list[str],
     known_types: set[str],
 ) -> tuple[int, int, int, int] | None:
-    if len(decl.params) != len(arg_types):
+    is_variadic = bool(getattr(decl, "is_variadic", False))
+    if is_variadic:
+        if len(arg_types) < len(decl.params):
+            return None
+    elif len(decl.params) != len(arg_types):
         return None
     type_vars = set(getattr(decl, "generics", []))
     for _, pty in decl.params:
@@ -987,6 +993,69 @@ def _choose_impl(
     return best[0]
 
 
+def _const_expr_type(expr: Any, known: dict[str, str]) -> str | None:
+    if isinstance(expr, BoolLit):
+        return "Bool"
+    if isinstance(expr, Literal):
+        if isinstance(expr.value, bool):
+            return "Bool"
+        if isinstance(expr.value, int):
+            return "Int"
+        if isinstance(expr.value, float):
+            return "Float"
+        if isinstance(expr.value, str):
+            return "String"
+        return None
+    if isinstance(expr, CastExpr):
+        return _canonical_type(expr.type_name)
+    if isinstance(expr, TypeAnnotated):
+        return _canonical_type(expr.type_name)
+    if isinstance(expr, Name):
+        return known.get(expr.value)
+    if isinstance(expr, Unary) and expr.op in {"-", "+"}:
+        inner = _const_expr_type(expr.expr, known)
+        if inner in {"Int", "Float"} or _is_int_type(inner or "") or _is_float_type(inner or ""):
+            return inner
+    return None
+
+
+def _load_imported_program_items(
+    importer_file: str,
+    import_decl: ImportDecl,
+    *,
+    seen: set[str],
+) -> tuple[list[Any], Path]:
+    try:
+        resolved_path = resolve_import_path(import_decl, importer_file)
+    except Exception as err:
+        raise SemanticError(_diag(importer_file, import_decl.line, import_decl.col, str(err))) from err
+    key = resolved_path.resolve().as_posix()
+    if key in seen:
+        return [], resolved_path
+    seen.add(key)
+    try:
+        text = resolved_path.read_text()
+    except OSError as err:
+        raise SemanticError(_diag(importer_file, import_decl.line, import_decl.col, str(err))) from err
+    try:
+        imported_prog = parse(text, filename=str(resolved_path))
+    except Exception as err:
+        raise SemanticError(_diag(importer_file, import_decl.line, import_decl.col, str(err))) from err
+
+    items: list[Any] = list(imported_prog.items)
+    for item in items:
+        try:
+            setattr(item, "_source_filename", str(resolved_path))
+        except Exception:
+            pass
+    for sub in imported_prog.items:
+        if not isinstance(sub, ImportDecl):
+            continue
+        sub_items, _ = _load_imported_program_items(str(resolved_path), sub, seen=seen)
+        items.extend(sub_items)
+    return items, resolved_path
+
+
 def analyze(
     prog: Program,
     filename: str = "<input>",
@@ -1025,44 +1094,91 @@ def analyze(
         structs: dict[str, StructDecl] = {}
         enums: dict[str, EnumDecl] = {}
         global_scope: dict[str, str] = {}
+        global_fixed_scope: dict[str, bool] = {}
+        imported_seen: set[str] = set()
+        ffi_libs: set[str] = set()
+        local_const_types: dict[str, str] = {}
+        seen_fn_decls: set[tuple[str, tuple[tuple[str, str], ...], str, bool, bool, bool]] = set()
+
+        work_items: list[tuple[Any, str]] = [(item, filename) for item in prog.items]
         for item in prog.items:
+            if not isinstance(item, ImportDecl):
+                continue
+            try:
+                imported_items, resolved_path = _load_imported_program_items(filename, item, seen=imported_seen)
+            except SemanticError as err:
+                _record(err)
+                continue
+            if item.alias:
+                alias_name = item.alias
+                if item.path:
+                    alias_name = item.path[-1]
+                elif item.source is not None:
+                    alias_name = Path(item.source).stem
+                global_scope[item.alias] = f"module:{alias_name}"
+            for sub_item in imported_items:
+                work_items.append((sub_item, str(resolved_path)))
+
+        for item, item_filename in work_items:
             try:
                 if isinstance(item, ImportDecl):
-                    try:
-                        resolved_path = resolve_import_path(item, filename)
-                    except ModuleResolutionError as err:
-                        raise SemanticError(_diag(filename, item.line, item.col, str(err))) from err
-                    
-                    # Add import alias to global scope if present
-                    if item.alias:
-                        # For now, we'll add a placeholder for the imported module
-                        # In a full implementation, this would load the module symbols
-                        global_scope[item.alias] = f"module:{item.path[-1]}"
                     continue
                 if isinstance(item, StructDecl):
                     for _, field_ty in item.fields:
-                        _validate_decl_type(field_ty, filename, item.line, item.col)
+                        _validate_decl_type(field_ty, item_filename, item.line, item.col)
                     if item.packed:
                         for _, field_ty in item.fields:
                             c = _canonical_type(field_ty)
                             if c != "Bool" and not _is_int_type(c):
-                                raise SemanticError(_diag(filename, item.line, item.col, "packed struct fields must be integer or bool types"))
+                                raise SemanticError(_diag(item_filename, item.line, item.col, "packed struct fields must be integer or bool types"))
                     structs[item.name] = item
                     continue
                 if isinstance(item, TypeAliasDecl):
-                    _validate_decl_type(item.target, filename, item.line, item.col)
+                    _validate_decl_type(item.target, item_filename, item.line, item.col)
                     continue
                 if isinstance(item, EnumDecl):
                     enums[item.name] = item
                     continue
+                if isinstance(item, LetStmt):
+                    if not item.fixed:
+                        raise SemanticError(_diag(item_filename, item.line, item.col, "top-level `let` bindings must be `fixed`"))
+                    inferred = item.type_name or _const_expr_type(item.expr, local_const_types)
+                    if inferred is None:
+                        raise SemanticError(_diag(item_filename, item.line, item.col, f"cannot infer type for top-level fixed binding {item.name}"))
+                    _validate_decl_type(inferred, item_filename, item.line, item.col)
+                    local_const_types[item.name] = inferred
+                    global_scope[item.name] = inferred
+                    global_fixed_scope[item.name] = True
+                    continue
                 if isinstance(item, (FnDecl, ExternFnDecl)):
                     for _, pty in item.params:
-                        _validate_decl_type(pty, filename, item.line, item.col)
-                    _validate_decl_type(item.ret, filename, item.line, item.col)
+                        _validate_decl_type(pty, item_filename, item.line, item.col)
+                    _validate_decl_type(item.ret, item_filename, item.line, item.col)
+                    key = (
+                        item.name,
+                        tuple((pn, _canonical_type(pt)) for pn, pt in item.params),
+                        _canonical_type(item.ret),
+                        bool(getattr(item, "is_variadic", False)),
+                        bool(getattr(item, "unsafe", False)),
+                        isinstance(item, ExternFnDecl),
+                    )
+                    if key in seen_fn_decls:
+                        continue
+                    seen_fn_decls.add(key)
+                    if isinstance(item, ExternFnDecl):
+                        libs = list(item.link_libs)
+                        if not libs and item.lib:
+                            libs = [item.lib]
+                        item.link_libs = libs
+                        for lib in libs:
+                            if lib:
+                                ffi_libs.add(lib)
                     fn_groups.setdefault(item.name, []).append(item)
             except SemanticError as err:
                 _record(err)
                 continue
+
+        prog.ffi_libs = set(sorted(ffi_libs))
 
         for name, decls in fn_groups.items():
             if len(decls) == 1 and not (isinstance(decls[0], FnDecl) and decls[0].is_impl):
@@ -1104,7 +1220,8 @@ def analyze(
                 if isinstance(fn, ExternFnDecl):
                     continue
                 try:
-                    _analyze_fn(fn, fn_groups, structs, enums, filename, global_scope)
+                    fn_filename = getattr(fn, "_source_filename", filename)
+                    _analyze_fn(fn, fn_groups, structs, enums, fn_filename, global_scope, global_fixed_scope)
                 except SemanticError as err:
                     _record(err)
                     continue
@@ -1121,6 +1238,7 @@ def _analyze_fn(
     enums: dict[str, EnumDecl],
     filename: str,
     global_scope: dict[str, str],
+    global_fixed_scope: dict[str, bool],
 ):
     for pname, pty in fn.params:
         _require_sized_value_type(filename, fn.line, fn.col, pty, f"parameter {pname}")
@@ -1129,7 +1247,7 @@ def _analyze_fn(
     if _is_ref_type(fn.ret) and not ref_param_names:
         raise SemanticError(_diag(filename, fn.line, fn.col, f"function {fn.name} returns a reference but has no reference parameter to tie its lifetime"))
     scopes: list[dict[str, str]] = [global_scope, {n: t for n, t in fn.params}]
-    fixed_scopes: list[dict[str, bool]] = [{n: False for n, _ in fn.params}]
+    fixed_scopes: list[dict[str, bool]] = [global_fixed_scope, {n: False for n, _ in fn.params}]
     owned = _OwnedState()
     borrow = _BorrowState()
     move = _MoveState()
@@ -2040,7 +2158,13 @@ def _infer_call(
             decl = _choose_impl(name, fn_groups[name], arg_types, known_types, filename, e.line, e.col)
             if getattr(decl, "unsafe", False):
                 _require_unsafe_context(name, e.line, e.col)
-            if len(e.args) != len(decl.params):
+            is_variadic = bool(getattr(decl, "is_variadic", False))
+            if is_variadic:
+                if len(e.args) < len(decl.params):
+                    raise SemanticError(
+                        _diag(filename, e.line, e.col, f"{name} expects at least {len(decl.params)} args, got {len(e.args)}")
+                    )
+            elif len(e.args) != len(decl.params):
                 raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects {len(decl.params)} args, got {len(e.args)}"))
             for i, ((_, pty), arg) in enumerate(zip(decl.params, e.args)):
                 aty = arg_types[i]

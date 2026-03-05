@@ -50,8 +50,13 @@ def main(argv=None):
         elif isinstance(item, ExternFnDecl):
             pub = "pub " if item.pub else ""
             us = "unsafe " if item.unsafe else ""
-            sig = ", ".join(f"{n}: {t}" for n, t in item.params)
-            lines.append(f'- `{pub}{us}extern "{item.lib}" fn {item.name}({sig}) -> {item.ret}`')
+            sig_parts = [f"{n}: {t}" for n, t in item.params]
+            if item.is_variadic:
+                sig_parts.append("...")
+            sig = ", ".join(sig_parts)
+            libs = list(item.link_libs) or ([item.lib] if item.lib else [])
+            attrs = "".join([f'@link("{lib}") ' for lib in libs])
+            lines.append(f"- `{attrs}{pub}{us}extern fn {item.name}({sig}) -> {item.ret}`")
             lines.extend(_doc_block(item.doc))
             lines.append("")
         elif isinstance(item, FnDecl):

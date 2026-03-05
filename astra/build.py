@@ -7,6 +7,10 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+try:
+    import tomllib
+except Exception:  # pragma: no cover - fallback for older runtimes
+    import tomli as tomllib
 
 from astra import __version__ as ASTRA_VERSION
 from astra.ast import (
@@ -61,6 +65,8 @@ from astra.for_lowering import lower_for_loops
 from astra.llvm_codegen import to_llvm_ir
 from astra.module_resolver import (
     ModuleResolutionError,
+    find_project_root,
+    package_cache_root,
     resolve_import_path,
     runtime_source_path,
     stdlib_root_path,
@@ -150,6 +156,46 @@ def _collect_input_files(src_file: Path) -> list[Path]:
     return sorted(visited)
 
 
+def _collect_imported_externs(src_file: Path) -> list[ExternFnDecl]:
+    visited: set[Path] = set()
+    out: list[ExternFnDecl] = []
+    stack: list[Path] = []
+    try:
+        root_prog = parse(src_file.read_text(), filename=str(src_file))
+        for item in root_prog.items:
+            if not isinstance(item, ImportDecl):
+                continue
+            try:
+                dep = resolve_import_path(item, str(src_file))
+            except ModuleResolutionError:
+                continue
+            stack.append(dep.resolve())
+    except Exception:
+        return out
+    while stack:
+        cur = stack.pop()
+        if cur in visited:
+            continue
+        visited.add(cur)
+        try:
+            text = cur.read_text()
+            prog = parse(text, filename=str(cur))
+        except Exception:
+            continue
+        for item in prog.items:
+            if isinstance(item, ImportDecl):
+                try:
+                    dep = resolve_import_path(item, str(cur))
+                except ModuleResolutionError:
+                    continue
+                if dep.exists() and dep not in visited:
+                    stack.append(dep)
+                continue
+            if isinstance(item, ExternFnDecl):
+                out.append(item)
+    return out
+
+
 def _build_fingerprint(
     src_file: Path,
     target: str,
@@ -160,6 +206,7 @@ def _build_fingerprint(
     profile: str,
     overflow_mode: str,
     triple: str | None,
+    links: list[str] | None,
 ) -> str:
     inputs = [
         {"path": p.as_posix(), "sha256": _sha256_file(p)}
@@ -175,6 +222,7 @@ def _build_fingerprint(
         "profile": profile,
         "overflow_mode": overflow_mode,
         "triple": triple or "",
+        "links": sorted(set(links or [])),
         "inputs": inputs,
         "toolchain": _toolchain_stamp(),
     }
@@ -193,7 +241,51 @@ def _resolve_overflow_mode(profile: str, overflow: str, *, check: bool = False) 
     return "trap" if profile == "debug" else "wrap"
 
 
-_STRICT_TOP_LEVEL = {FnDecl, StructDecl, EnumDecl, TypeAliasDecl, ImportDecl, ExternFnDecl}
+def _load_project_dependencies(src_file: Path) -> dict[str, str]:
+    root = find_project_root(str(src_file))
+    if root is None:
+        return {}
+    manifest = root / "Astra.toml"
+    if not manifest.exists():
+        return {}
+    try:
+        data = tomllib.loads(manifest.read_text())
+    except Exception:
+        return {}
+    deps = data.get("dependencies")
+    if isinstance(deps, dict):
+        return {str(k): str(v) for k, v in deps.items() if isinstance(k, str) and isinstance(v, str)}
+    deps_legacy = data.get("deps")
+    if isinstance(deps_legacy, dict):
+        return {str(k): str(v) for k, v in deps_legacy.items() if isinstance(k, str) and isinstance(v, str)}
+    return {}
+
+
+def _dependency_native_libs(src_file: Path) -> set[str]:
+    out: set[str] = set()
+    deps = _load_project_dependencies(src_file)
+    cache_root = package_cache_root()
+    for name, ver in deps.items():
+        manifest = cache_root / name / ver / "Astra.toml"
+        if not manifest.exists():
+            continue
+        try:
+            data = tomllib.loads(manifest.read_text())
+        except Exception:
+            continue
+        native = data.get("native")
+        if not isinstance(native, dict):
+            continue
+        libs = native.get("libs")
+        if not isinstance(libs, list):
+            continue
+        for lib in libs:
+            if isinstance(lib, str) and lib.strip():
+                out.add(lib.strip())
+    return out
+
+
+_STRICT_TOP_LEVEL = {FnDecl, StructDecl, EnumDecl, TypeAliasDecl, ImportDecl, ExternFnDecl, LetStmt}
 _STRICT_STMTS = {LetStmt, AssignStmt, ReturnStmt, ExprStmt, DropStmt, IfStmt, MatchStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, ComptimeStmt, DeferStmt, UnsafeStmt}
 _STRICT_EXPRS = {
     Literal,
@@ -383,6 +475,7 @@ def _build_native_llvm(
     triple: str | None,
     freestanding: bool,
     kind: str,
+    link_libs: list[str] | None = None,
 ):
     clang = shutil.which("clang")
     if clang is None:
@@ -421,6 +514,10 @@ def _build_native_llvm(
                     f"CODEGEN {src_file}:1:1: missing runtime source; set ASTRA_RUNTIME_C_PATH or install bundled runtime"
                 )
             cmd = [clang, opt_flag, str(ll_path), str(runtime_c), "-lm", "-o", str(out)]
+        if link_libs:
+            for lib in sorted(set(link_libs)):
+                if lib:
+                    cmd.append(f"-l{lib}")
         if triple:
             cmd.insert(1, f"--target={triple}")
         cp = subprocess.run(cmd, capture_output=True, text=True)
@@ -466,6 +563,7 @@ def build(
     profile: str = "debug",
     overflow: str = "debug",
     triple: str | None = None,
+    links: list[str] | None = None,
 ):
     """Compile an Astra source file into Python, LLVM IR, or native output.
     
@@ -490,16 +588,29 @@ def build(
     if profile not in {"debug", "release"}:
         raise RuntimeError(f"BUILD {src_file}:1:1: unsupported profile {profile}")
     overflow_mode = _resolve_overflow_mode(profile, overflow, check=False)
-    digest = _build_fingerprint(src_file, target, kind, emit_ir, strict, freestanding, profile, overflow_mode, triple)
+    digest = _build_fingerprint(src_file, target, kind, emit_ir, strict, freestanding, profile, overflow_mode, triple, links)
     cache_key = (
         f"{src_file.resolve().as_posix()}::{target}::{kind}::{int(bool(strict))}::{int(bool(freestanding))}::"
-        f"{int(bool(emit_ir))}::{profile}::{overflow_mode}::{triple or ''}"
+        f"{int(bool(emit_ir))}::{profile}::{overflow_mode}::{triple or ''}::{','.join(sorted(set(links or [])))}"
     )
     cache = json.loads(CACHE.read_text()) if CACHE.exists() else {}
     if cache.get(cache_key) == digest and Path(out_path).exists():
         return 'cached'
     src = src_file.read_text()
     prog = parse(src, filename=str(src_file))
+    imported_externs = _collect_imported_externs(src_file)
+    if imported_externs:
+        existing = {
+            (item.name, tuple(item.params), item.ret, bool(item.is_variadic))
+            for item in prog.items
+            if isinstance(item, ExternFnDecl)
+        }
+        for ext in imported_externs:
+            key = (ext.name, tuple(ext.params), ext.ret, bool(ext.is_variadic))
+            if key in existing:
+                continue
+            prog.items.append(ext)
+            existing.add(key)
     required_entrypoint = None if kind == "lib" else ("_start" if freestanding else "main")
     run_comptime(prog, filename=str(src_file), overflow_mode=overflow_mode)
     analyze(
@@ -508,6 +619,9 @@ def build(
         freestanding=freestanding,
         require_entrypoint=required_entrypoint,
     )
+    ffi_libs: set[str] = set(getattr(prog, "ffi_libs", set()))
+    ffi_libs.update(_dependency_native_libs(src_file))
+    ffi_libs.update({lib for lib in (links or []) if lib})
     lower_for_loops(prog)
     optimize_program(prog)
     if strict:
@@ -520,6 +634,7 @@ def build(
             overflow_mode=overflow_mode,
             triple=triple,
             profile=profile,
+            filename=str(src_file),
         )
     if freestanding and llvm_ir is not None:
         _require_runtime_free_freestanding(llvm_ir, src_file)
@@ -547,6 +662,7 @@ def build(
             triple=triple,
             freestanding=freestanding,
             kind=kind,
+            link_libs=sorted(ffi_libs),
         )
     else:
         raise RuntimeError(f"BUILD {src_file}:1:1: unsupported target {target}")

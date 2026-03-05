@@ -1,0 +1,10 @@
+import "raylib";
+
+fn main() -> i32 {
+    let w = GetScreenWidth();
+    let h = GetScreenHeight();
+    if w < 0i32 || h < 0i32 {
+        return 1i32;
+    }
+    return 0i32;
+}

@@ -38,6 +38,7 @@ KEYWORDS = {
 }
 
 MULTI_TOKENS = [
+    "...",
     "::",
     "=>",
     "->",

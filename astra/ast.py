@@ -38,6 +38,7 @@ class Program:
     This type is part of Astra's public compiler/tooling surface.
     """
     items: list[Any] = field(default_factory=list)
+    ffi_libs: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -68,16 +69,34 @@ class ExternFnDecl:
     
     This type is part of Astra's public compiler/tooling surface.
     """
-    lib: str
     name: str
     params: list[tuple[str, str]]
     ret: str
+    is_variadic: bool = False
+    link_libs: list[str] = field(default_factory=list)
+    lib: str = ""
     unsafe: bool = False
     pub: bool = False
     doc: str = ""
     pos: int = 0
     line: int = 0
     col: int = 0
+
+    @property
+    def return_type(self) -> str:
+        return self.ret
+
+    @property
+    def legacy_lib(self) -> str:
+        if self.lib:
+            return self.lib
+        if self.link_libs:
+            return self.link_libs[0]
+        return "c"
+
+    def __post_init__(self) -> None:
+        if self.lib and self.lib not in self.link_libs:
+            self.link_libs.insert(0, self.lib)
 
 
 @dataclass

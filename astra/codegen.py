@@ -275,9 +275,34 @@ def to_python(
         "def __rotl(x, n, bits=64): return rotl(x, n, bits)",
         "def __rotr(x, n, bits=64): return rotr(x, n, bits)",
         "def _astra_load_lib(name):",
-        "    if name not in _astra_libs:",
-        "        _astra_libs[name] = ctypes.CDLL(name)",
-        "    return _astra_libs[name]",
+        "    if name in _astra_libs:",
+        "        return _astra_libs[name]",
+        "    if name == 'c':",
+        "        _astra_libs[name] = ctypes.CDLL(None)",
+        "        return _astra_libs[name]",
+        "    if sys.platform == 'win32':",
+        "        candidates = [f'{name}.dll', f'lib{name}.dll']",
+        "    elif sys.platform == 'darwin':",
+        "        candidates = [f'lib{name}.dylib', f'lib{name}.so']",
+        "    else:",
+        "        candidates = [f'lib{name}.so', f'lib{name}.so.0', f'lib{name}.so.1']",
+        "    for c in candidates:",
+        "        try:",
+        "            _astra_libs[name] = ctypes.CDLL(c)",
+        "            return _astra_libs[name]",
+        "        except OSError:",
+        "            continue",
+        "    raise OSError(f\"ASTRA FFI: cannot find native library '{name}'\")",
+        "def _astra_load_first_lib(names):",
+        "    last = None",
+        "    for n in names:",
+        "        try:",
+        "            return _astra_load_lib(n)",
+        "        except OSError as err:",
+        "            last = err",
+        "    if last is not None:",
+        "        raise last",
+        "    raise OSError('ASTRA FFI: no link libraries were provided')",
     ]
     for item in prog.items:
         if isinstance(item, StructDecl):
@@ -351,33 +376,61 @@ def _emit_py_enum(item: EnumDecl) -> list[str]:
 
 def _emit_py_extern(item: ExternFnDecl) -> list[str]:
     args = ", ".join(n for n, _ in item.params)
+    libs = list(item.link_libs)
+    if not libs and item.lib:
+        libs = [item.lib]
+    if not libs:
+        libs = ["c"]
+
     lines = [f"def {item.name}({args}):"]
-    lines.append(f"    _lib = _astra_load_lib({item.lib!r})")
+    lines.append(f"    _lib = _astra_load_first_lib({libs!r})")
     lines.append(f"    _fn = getattr(_lib, {item.name!r})")
-    call_args: list[str] = []
-    for i, (name, typ) in enumerate(item.params):
-        t = type_text(typ)
-        if t == "String":
-            lines.append(f"    _s{i} = str({name}).encode()")
-            call_args.extend([f"_s{i}", f"len(_s{i})"])
-        else:
-            call_args.append(name)
-    ret_ty = type_text(item.ret)
-    if ret_ty == "Int":
-        lines.append("    _fn.restype = ctypes.c_longlong")
-    elif ret_ty == "Bool":
-        lines.append("    _fn.restype = ctypes.c_int")
-    elif ret_ty == "String":
-        lines.append("    _fn.restype = ctypes.c_char_p")
-    lines.append(f"    _ret = _fn({', '.join(call_args)})")
-    if ret_ty == "String":
-        lines.append("    return _ret.decode() if _ret is not None else ''")
-    elif ret_ty == "Bool":
-        lines.append("    return bool(_ret)")
+    ret_ctype = _extern_ctype_name(item.ret, is_return=True)
+    if ret_ctype is None:
+        lines.append("    _fn.restype = None")
     else:
-        lines.append("    return _ret")
+        lines.append(f"    _fn.restype = {ret_ctype}")
+    if not item.is_variadic:
+        argtypes: list[str] = []
+        for _, typ in item.params:
+            ctype_name = _extern_ctype_name(typ, is_return=False)
+            argtypes.append(ctype_name or "ctypes.c_void_p")
+        lines.append(f"    _fn.argtypes = [{', '.join(argtypes)}]")
+    lines.append(f"    return _fn({', '.join(n for n, _ in item.params)})")
     lines.append("")
     return lines
+
+
+def _extern_ctype_name(typ: str, *, is_return: bool) -> str | None:
+    c = _canonical_type(type_text(typ))
+    if c in {"Void", "Never"}:
+        return None if is_return else "ctypes.c_void_p"
+    ints = {
+        "i8": "ctypes.c_int8",
+        "i16": "ctypes.c_int16",
+        "i32": "ctypes.c_int32",
+        "i64": "ctypes.c_int64",
+        "u8": "ctypes.c_uint8",
+        "u16": "ctypes.c_uint16",
+        "u32": "ctypes.c_uint32",
+        "u64": "ctypes.c_uint64",
+        "Int": "ctypes.c_longlong",
+        "isize": "ctypes.c_ssize_t",
+        "usize": "ctypes.c_size_t",
+        "f32": "ctypes.c_float",
+        "Float": "ctypes.c_double",
+        "f64": "ctypes.c_double",
+        "Bool": "ctypes.c_bool",
+    }
+    if c in ints:
+        return ints[c]
+    if c.startswith("*"):
+        base = c.lstrip("*")
+        depth = len(c) - len(base)
+        if depth == 1 and base == "u8":
+            return "ctypes.c_char_p"
+        return "ctypes.c_void_p"
+    return "ctypes.c_void_p"
 
 
 def _call_name(fn: Any) -> str:

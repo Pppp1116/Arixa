@@ -1,0 +1,15 @@
+@link("sqlite3") extern fn sqlite3_open(filename: *u8, db: **Void) -> i32;
+@link("sqlite3") extern fn sqlite3_close(db: *Void) -> i32;
+@link("sqlite3") extern fn sqlite3_exec(db: *Void, sql: *u8, callback: *Void, arg: *Void, errmsg: **u8) -> i32;
+@link("sqlite3") extern fn sqlite3_errmsg(db: *Void) -> *u8;
+@link("sqlite3") extern fn sqlite3_prepare_v2(db: *Void, sql: *u8, nbyte: i32, stmt: **Void, tail: **u8) -> i32;
+@link("sqlite3") extern fn sqlite3_step(stmt: *Void) -> i32;
+@link("sqlite3") extern fn sqlite3_finalize(stmt: *Void) -> i32;
+@link("sqlite3") extern fn sqlite3_column_int(stmt: *Void, col: i32) -> i32;
+@link("sqlite3") extern fn sqlite3_column_text(stmt: *Void, col: i32) -> *u8;
+@link("sqlite3") extern fn sqlite3_bind_int(stmt: *Void, idx: i32, val: i32) -> i32;
+@link("sqlite3") extern fn sqlite3_bind_text(stmt: *Void, idx: i32, val: *u8, n: i32, destructor: *Void) -> i32;
+
+fixed SQLITE_OK: i32 = 0i32;
+fixed SQLITE_ROW: i32 = 100i32;
+fixed SQLITE_DONE: i32 = 101i32;
