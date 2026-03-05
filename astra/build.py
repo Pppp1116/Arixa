@@ -3,8 +3,10 @@
 import hashlib
 import json
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 try:
@@ -208,6 +210,7 @@ def _build_fingerprint(
     triple: str | None,
     links: list[str] | None,
 ) -> str:
+    dep_libs, dep_link_args = _dependency_native_link_data(src_file)
     inputs = [
         {"path": p.as_posix(), "sha256": _sha256_file(p)}
         for p in _collect_input_files(src_file)
@@ -223,6 +226,8 @@ def _build_fingerprint(
         "overflow_mode": overflow_mode,
         "triple": triple or "",
         "links": sorted(set(links or [])),
+        "dep_libs": sorted(dep_libs),
+        "dep_link_args": list(dep_link_args),
         "inputs": inputs,
         "toolchain": _toolchain_stamp(),
     }
@@ -241,7 +246,7 @@ def _resolve_overflow_mode(profile: str, overflow: str, *, check: bool = False) 
     return "trap" if profile == "debug" else "wrap"
 
 
-def _load_project_dependencies(src_file: Path) -> dict[str, str]:
+def _load_project_manifest(src_file: Path) -> dict:
     root = find_project_root(str(src_file))
     if root is None:
         return {}
@@ -252,6 +257,11 @@ def _load_project_dependencies(src_file: Path) -> dict[str, str]:
         data = tomllib.loads(manifest.read_text())
     except Exception:
         return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _load_project_dependencies(src_file: Path) -> dict[str, str]:
+    data = _load_project_manifest(src_file)
     deps = data.get("dependencies")
     if isinstance(deps, dict):
         return {str(k): str(v) for k, v in deps.items() if isinstance(k, str) and isinstance(v, str)}
@@ -261,28 +271,93 @@ def _load_project_dependencies(src_file: Path) -> dict[str, str]:
     return {}
 
 
-def _dependency_native_libs(src_file: Path) -> set[str]:
-    out: set[str] = set()
+def _platform_key() -> str:
+    if sys.platform.startswith("linux"):
+        return "linux"
+    if sys.platform == "darwin":
+        return "macos"
+    if sys.platform.startswith("win"):
+        return "windows"
+    return sys.platform
+
+
+def _append_unique(dst: list[str], value: str) -> None:
+    if value and value not in dst:
+        dst.append(value)
+
+
+def _extract_link_list(raw: object, platform: str) -> list[str]:
+    if isinstance(raw, list):
+        return [x.strip() for x in raw if isinstance(x, str) and x.strip()]
+    if isinstance(raw, dict):
+        value = raw.get(platform)
+        if isinstance(value, list):
+            return [x.strip() for x in value if isinstance(x, str) and x.strip()]
+    return []
+
+
+def _extract_pkg_config_name(raw: object, platform: str) -> str | None:
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    if isinstance(raw, dict):
+        value = raw.get(platform)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _pkg_config_link_args(name: str) -> list[str]:
+    pkg_config = shutil.which("pkg-config")
+    if pkg_config is None:
+        return []
+    cp = subprocess.run([pkg_config, "--libs", name], capture_output=True, text=True)
+    if cp.returncode != 0:
+        return []
+    return [arg for arg in shlex.split(cp.stdout.strip()) if arg]
+
+
+def _dependency_native_link_data(src_file: Path) -> tuple[set[str], list[str]]:
+    libs: set[str] = set()
+    link_args: list[str] = []
     deps = _load_project_dependencies(src_file)
+    project_manifest = _load_project_manifest(src_file)
+    pkg_overrides = project_manifest.get("package")
+    if not isinstance(pkg_overrides, dict):
+        pkg_overrides = {}
+    platform = _platform_key()
     cache_root = package_cache_root()
     for name, ver in deps.items():
         manifest = cache_root / name / ver / "Astra.toml"
-        if not manifest.exists():
-            continue
-        try:
-            data = tomllib.loads(manifest.read_text())
-        except Exception:
-            continue
+        data: dict = {}
+        if manifest.exists():
+            try:
+                loaded = tomllib.loads(manifest.read_text())
+            except Exception:
+                loaded = {}
+            if isinstance(loaded, dict):
+                data = loaded
         native = data.get("native")
-        if not isinstance(native, dict):
+        if isinstance(native, dict):
+            for lib in _extract_link_list(native.get("libs"), platform):
+                libs.add(lib)
+            for lib in _extract_link_list(native.get("link"), platform):
+                libs.add(lib)
+            pkg_cfg = _extract_pkg_config_name(native.get("pkg_config"), platform)
+            if pkg_cfg:
+                for arg in _pkg_config_link_args(pkg_cfg):
+                    _append_unique(link_args, arg)
+
+        dep_cfg = pkg_overrides.get(name)
+        if not isinstance(dep_cfg, dict):
             continue
-        libs = native.get("libs")
-        if not isinstance(libs, list):
-            continue
-        for lib in libs:
-            if isinstance(lib, str) and lib.strip():
-                out.add(lib.strip())
-    return out
+        for lib in _extract_link_list(dep_cfg.get("link"), platform):
+            libs.add(lib)
+        pkg_cfg = _extract_pkg_config_name(dep_cfg.get("pkg_config"), platform)
+        if pkg_cfg:
+            for arg in _pkg_config_link_args(pkg_cfg):
+                _append_unique(link_args, arg)
+
+    return libs, link_args
 
 
 _STRICT_TOP_LEVEL = {FnDecl, StructDecl, EnumDecl, TypeAliasDecl, ImportDecl, ExternFnDecl, LetStmt}
@@ -476,6 +551,7 @@ def _build_native_llvm(
     freestanding: bool,
     kind: str,
     link_libs: list[str] | None = None,
+    link_args: list[str] | None = None,
 ):
     clang = shutil.which("clang")
     if clang is None:
@@ -518,6 +594,8 @@ def _build_native_llvm(
             for lib in sorted(set(link_libs)):
                 if lib:
                     cmd.append(f"-l{lib}")
+        if link_args:
+            cmd.extend([arg for arg in link_args if arg])
         if triple:
             cmd.insert(1, f"--target={triple}")
         cp = subprocess.run(cmd, capture_output=True, text=True)
@@ -619,8 +697,9 @@ def build(
         freestanding=freestanding,
         require_entrypoint=required_entrypoint,
     )
+    dep_libs, dep_link_args = _dependency_native_link_data(src_file)
     ffi_libs: set[str] = set(getattr(prog, "ffi_libs", set()))
-    ffi_libs.update(_dependency_native_libs(src_file))
+    ffi_libs.update(dep_libs)
     ffi_libs.update({lib for lib in (links or []) if lib})
     lower_for_loops(prog)
     optimize_program(prog)
@@ -663,6 +742,7 @@ def build(
             freestanding=freestanding,
             kind=kind,
             link_libs=sorted(ffi_libs),
+            link_args=dep_link_args,
         )
     else:
         raise RuntimeError(f"BUILD {src_file}:1:1: unsupported target {target}")

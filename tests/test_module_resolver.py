@@ -46,3 +46,21 @@ def test_missing_import_is_reported(tmp_path: Path):
     importer.write_text("fn main() -> Int { return 0; }\n")
     with pytest.raises(ModuleResolutionError, match="cannot resolve import missing.mod"):
         resolve_import_path(ImportDecl(path=["missing", "mod"]), str(importer))
+
+
+def test_package_submodule_import_resolves_from_cache(monkeypatch, tmp_path: Path):
+    project = tmp_path / "app"
+    project.mkdir(parents=True)
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("ASTRA_PKG_HOME", str(cache))
+    (project / "Astra.toml").write_text('[project]\nname = "app"\nversion = "0.1.0"\n[dependencies]\nsdl2 = "0.1.0"\n')
+    importer = project / "src" / "main.astra"
+    importer.parent.mkdir(parents=True)
+    importer.write_text('import "sdl2/video";\nfn main() -> Int { return 0; }\n')
+
+    pkg_dir = cache / "sdl2" / "0.1.0" / "sdl2"
+    pkg_dir.mkdir(parents=True)
+    (pkg_dir / "video.astra").write_text("fn noop() -> Int { return 0; }\n")
+
+    resolved = resolve_import_path(ImportDecl(path=[], source="sdl2/video"), str(importer))
+    assert resolved == (pkg_dir / "video.astra").resolve()

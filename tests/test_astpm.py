@@ -109,3 +109,51 @@ def test_build_with_dependency_auto_adds_native_link_flags(monkeypatch, tmp_path
     state = build(str(project / "main.astra"), str(out), "native")
     assert state in {"built", "cached"}
     assert any("-ldemoffi" in arg for cmd in seen_cmds for arg in cmd)
+
+
+def test_build_uses_project_package_link_overrides(monkeypatch, tmp_path: Path):
+    project = tmp_path / "app"
+    project.mkdir(parents=True)
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("ASTRA_PKG_HOME", str(cache))
+
+    (project / "Astra.toml").write_text(
+        '[project]\nname = "app"\nversion = "0.1.0"\n'
+        '[dependencies]\npkgdemo = "2.0.0"\n'
+        '[package.pkgdemo]\nlink.linux = ["demo_override"]\npkg_config = "demoffi"\n'
+    )
+    (project / "main.astra").write_text('import "pkgdemo";\nfn main() -> Int { return demo_init(0u32); }\n')
+
+    pkg_dir = cache / "pkgdemo" / "2.0.0"
+    pkg_dir.mkdir(parents=True)
+    (pkg_dir / "Astra.toml").write_text(
+        "[package]\nname = \"pkgdemo\"\nversion = \"2.0.0\"\n[native]\nlibs = [\"demoffi\"]\n"
+    )
+    (pkg_dir / "pkgdemo.astra").write_text('extern fn demo_init(flags: u32) -> Int;\n')
+
+    seen_cmds: list[list[str]] = []
+
+    def fake_run(cmd, capture_output=True, text=True):
+        seen_cmds.append(cmd)
+        out_idx = cmd.index("-o") + 1 if "-o" in cmd else -1
+        if out_idx > 0:
+            Path(cmd[out_idx]).write_text("")
+        class CP:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+        return CP()
+
+    monkeypatch.setattr("astra.build.shutil.which", lambda tool: "/usr/bin/pkg-config" if tool == "pkg-config" else "/usr/bin/clang")
+    monkeypatch.setattr("astra.build.subprocess.run", fake_run)
+    monkeypatch.setattr("astra.build.sys.platform", "linux")
+    monkeypatch.setattr("astra.build._pkg_config_link_args", lambda _: ["-L/opt/demo/lib", "-ldemoffi_extra"])
+
+    out = project / "app"
+    state = build(str(project / "main.astra"), str(out), "native")
+    assert state in {"built", "cached"}
+    flat = [arg for cmd in seen_cmds for arg in cmd]
+    assert "-ldemoffi" in flat
+    assert "-ldemo_override" in flat
+    assert "-L/opt/demo/lib" in flat
+    assert "-ldemoffi_extra" in flat

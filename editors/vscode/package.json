@@ -2,7 +2,7 @@
   "name": "astra-language",
   "displayName": "Astra Language",
   "description": "VS Code support for Astra via the astlsp language server.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "icon": "images/astra.png",
   "publisher": "astra-lang",
   "engines": {
@@ -20,7 +20,9 @@
     "onLanguage:astra",
     "onCommand:astra.restartLanguageServer",
     "onCommand:astra.showLanguageServerStatus",
-    "onCommand:astra.openExtensionLog"
+    "onCommand:astra.openExtensionLog",
+    "onCommand:astra.buildCurrentFile",
+    "onCommand:astra.checkForToolchainUpdates"
   ],
   "files": [
     "extension.js",
@@ -77,6 +79,14 @@
       {
         "command": "astra.openExtensionLog",
         "title": "Astra: Open Extension Log"
+      },
+      {
+        "command": "astra.buildCurrentFile",
+        "title": "Astra: Build Current File"
+      },
+      {
+        "command": "astra.checkForToolchainUpdates",
+        "title": "Astra: Check Toolchain Updates"
       }
     ],
     "configuration": {
@@ -89,7 +99,7 @@
             "external"
           ],
           "default": "bundled",
-          "description": "How to start the language server. Bundled uses the server shipped inside this extension."
+          "description": "How to start the language server. Bundled mode auto-provisions a private toolchain in VS Code storage, then tries workspace dist/toolchain/bin/astlsp, then falls back to the server shipped inside this extension."
         },
         "astra.languageServer.command": {
           "type": "string",
@@ -118,6 +128,81 @@
           ],
           "default": "off",
           "description": "Trace level for language server protocol logs."
+        },
+        "astra.compiler.mode": {
+          "type": "string",
+          "enum": [
+            "bundled",
+            "external"
+          ],
+          "default": "bundled",
+          "description": "How to run compiler commands from VS Code. Bundled mode auto-provisions a private toolchain in VS Code storage, then tries workspace dist/toolchain/bin/astra, then falls back to the compiler copy shipped in this extension."
+        },
+        "astra.compiler.command": {
+          "type": "string",
+          "default": "",
+          "description": "Executable used to launch the Astra compiler in external mode."
+        },
+        "astra.compiler.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Python executable used for bundled compiler mode (optional override)."
+        },
+        "astra.compiler.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional command line arguments passed before compiler subcommands in external mode."
+        },
+        "astra.compiler.target": {
+          "type": "string",
+          "enum": [
+            "py",
+            "llvm",
+            "native"
+          ],
+          "default": "native",
+          "description": "Default target for `Astra: Build Current File`."
+        },
+        "astra.compiler.outputDir": {
+          "type": "string",
+          "default": ".astra-build",
+          "description": "Output directory for `Astra: Build Current File` (absolute or workspace-relative)."
+        },
+        "astra.compiler.buildArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra CLI arguments appended to `astra build`."
+        },
+        "astra.toolchain.autoUpdateCheck": {
+          "type": "boolean",
+          "default": true,
+          "description": "Periodically check online for newer Astra toolchain versions."
+        },
+        "astra.toolchain.checkIntervalHours": {
+          "type": "number",
+          "default": 24,
+          "minimum": 1,
+          "description": "How often to check for toolchain updates (hours)."
+        },
+        "astra.toolchain.updateChannel": {
+          "type": "string",
+          "enum": [
+            "stable",
+            "prerelease"
+          ],
+          "default": "stable",
+          "description": "Update channel for online toolchain checks."
+        },
+        "astra.toolchain.updateManifestUrl": {
+          "type": "string",
+          "default": "https://raw.githubusercontent.com/Pppp1116/ASTRA/main/registry/toolchain-updates.json",
+          "description": "Manifest URL used by the online toolchain update checker."
         }
       }
     },
@@ -139,8 +224,9 @@
     }
   },
   "scripts": {
+    "bundle-server": "node ./scripts/bundle-server.js",
     "lint": "echo 'No lint step configured'",
-    "package": "vsce package --allow-missing-repository"
+    "package": "npm run bundle-server && vsce package --allow-missing-repository"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"

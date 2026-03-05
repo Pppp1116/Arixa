@@ -1,0 +1,11 @@
+/// std.serde - serialization helpers for dynamic values.
+
+/// Serialize any value to JSON text.
+fn to_json(v Any) -> String {
+    return __to_json(v);
+}
+
+/// Parse JSON text into a dynamic value.
+fn from_json(v String) -> Any {
+    return __from_json(v);
+}

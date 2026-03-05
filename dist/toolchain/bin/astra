@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PY="${ASTRA_PYTHON:-python3}"
+if ! command -v "$PY" >/dev/null 2>&1; then
+  PY="python"
+fi
+export PYTHONPATH="$ROOT"
+export ASTRA_STDLIB_PATH="$ROOT/astra/stdlib"
+export ASTRA_RUNTIME_C_PATH="$ROOT/astra/assets/runtime/llvm_runtime.c"
+exec "$PY" -m astra.cli "$@"

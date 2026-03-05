@@ -5,6 +5,7 @@ This extension provides:
 - syntax highlighting and snippets
 - diagnostics, hover, completion, and go-to-definition via Astra LSP
 - bundled language server for plug-and-play usage (no repo checkout required)
+- bundled compiler command support (`Astra: Build Current File`)
 - marketplace/file icon at `images/astra.png`
 
 ## Plug-and-play install
@@ -12,8 +13,11 @@ This extension provides:
 1. Install the `.vsix` in VS Code (`Extensions: Install from VSIX...`).
 2. Ensure Python 3.11+ is available on your system (`python3`/`python`, or `py -3` on Windows).
 3. Open any `.astra` file.
+4. Run `Astra: Build Current File` from the command palette to compile immediately.
 
 By default, the extension runs its bundled server.
+On first run it auto-provisions a private ASTRA toolchain in VS Code storage, so you do not need a repo checkout.
+If `dist/toolchain/bin/astlsp` exists in the opened workspace, it is used automatically first.
 The status bar shows server health (`Astra: ready`/`Astra: failed`).
 
 ## Optional external server mode
@@ -45,6 +49,7 @@ npm install
 ## Configuration
 
 - `astra.languageServer.mode`: `bundled` (default) or `external`
+  - bundled mode auto-provisions a private toolchain on first launch
 - `astra.languageServer.command`: executable for external mode
 - `astra.languageServer.pythonPath`: optional Python path override for bundled mode
 - `astra.languageServer.args`: extra CLI args for external mode
@@ -53,6 +58,23 @@ npm install
 
 Use `Astra: Restart Language Server` after changing server settings.
 Use `Astra: Show Language Server Status` or `Astra: Open Extension Log` for troubleshooting.
+Use `Astra: Build Current File` to run `astra build` from VS Code.
+Use `Astra: Check Toolchain Updates` for a manual online update check.
+
+Compiler-related settings:
+
+- `astra.compiler.mode`: `bundled` (default) or `external`
+  - bundled mode auto-prefers workspace `dist/toolchain/bin/astra` when available
+- `astra.compiler.command`: executable for external compiler mode
+- `astra.compiler.pythonPath`: optional Python path override for bundled compiler mode
+- `astra.compiler.args`: extra args inserted before the compiler subcommand in external mode
+- `astra.compiler.target`: build target for `Astra: Build Current File` (`native`, `llvm`, `py`)
+- `astra.compiler.outputDir`: output directory for generated artifacts
+- `astra.compiler.buildArgs`: extra args appended to `astra build`
+- `astra.toolchain.autoUpdateCheck`: periodic online update checks (enabled by default)
+- `astra.toolchain.checkIntervalHours`: update polling interval
+- `astra.toolchain.updateChannel`: `stable` or `prerelease`
+- `astra.toolchain.updateManifestUrl`: remote manifest URL for update metadata
 
 ## Packaging
 
@@ -63,3 +85,4 @@ npm run package
 ```
 
 This creates a `.vsix` package you can install in VS Code.
+`npm run package` automatically refreshes the bundled compiler/server copy before building the VSIX.

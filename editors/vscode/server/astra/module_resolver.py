@@ -159,20 +159,23 @@ def _resolve_string_import(source: str, from_filename: str) -> Path:
             return std_mod
 
     # Import from package cache (~/.astra/packages/<name>/<version>/...).
-    if rel.suffix == "" and "/" not in source and "\\" not in source:
+    if rel.suffix == "":
         project_root = find_project_root(from_filename) if from_filename != "<input>" else find_project_root(str(Path.cwd()))
-        version = _dependency_version(project_root, source)
+        source_norm = source.replace("\\", "/")
+        pkg_name = source_norm.split("/", 1)[0]
+        subpath = source_norm.split("/", 1)[1] if "/" in source_norm else ""
+        version = _dependency_version(project_root, pkg_name)
         root = package_cache_root()
         if version:
-            by_ver = root / source / version
-            cand = _package_module_candidate(by_ver, source)
+            by_ver = root / pkg_name / version
+            cand = _package_module_candidate(by_ver, pkg_name, subpath)
             if cand is not None:
                 return cand
-        pkg_dir = root / source
+        pkg_dir = root / pkg_name
         if pkg_dir.is_dir():
             versions = sorted([p for p in pkg_dir.iterdir() if p.is_dir()], reverse=True)
             for ver_dir in versions:
-                cand = _package_module_candidate(ver_dir, source)
+                cand = _package_module_candidate(ver_dir, pkg_name, subpath)
                 if cand is not None:
                     return cand
     if from_filename == "<input>":
@@ -180,13 +183,22 @@ def _resolve_string_import(source: str, from_filename: str) -> Path:
     return Path(from_filename).resolve().parent / rel
 
 
-def _package_module_candidate(pkg_version_dir: Path, name: str) -> Path | None:
-    cands = [
-        pkg_version_dir / f"{name}.astra",
-        pkg_version_dir / "bindings" / f"{name}.astra",
-        pkg_version_dir / name / "mod.astra",
-        pkg_version_dir / "mod.astra",
-    ]
+def _package_module_candidate(pkg_version_dir: Path, name: str, subpath: str = "") -> Path | None:
+    if subpath:
+        cands = [
+            pkg_version_dir / f"{subpath}.astra",
+            pkg_version_dir / subpath / "mod.astra",
+            pkg_version_dir / "bindings" / f"{subpath}.astra",
+            pkg_version_dir / name / f"{subpath}.astra",
+            pkg_version_dir / name / subpath / "mod.astra",
+        ]
+    else:
+        cands = [
+            pkg_version_dir / f"{name}.astra",
+            pkg_version_dir / "bindings" / f"{name}.astra",
+            pkg_version_dir / name / "mod.astra",
+            pkg_version_dir / "mod.astra",
+        ]
     for cand in cands:
         if cand.exists():
             return cand

@@ -6,7 +6,7 @@ PYTEST := $(ASTRA_BIN)/pytest
 
 ASTRA_SOURCES := $(shell find . -name '*.astra' -print)
 
-.PHONY: help venv fmt fmt-check lint test e2e all
+.PHONY: help venv fmt fmt-check lint test e2e bundle-vscode bundle-toolchain all
 
 help:
 	@echo "Available targets:"
@@ -16,6 +16,8 @@ help:
 	@echo "  lint       - run astra linter on all .astra sources"
 	@echo "  test       - run astra CLI tests and full pytest suite"
 	@echo "  e2e        - run e2e tests via 'astra test --kind e2e' (if configured)"
+	@echo "  bundle-vscode   - refresh bundled compiler snapshot used by VS Code extension"
+	@echo "  bundle-toolchain - build portable compiler bundle into dist/toolchain/"
 	@echo "  all        - fmt-check, lint, and test"
 
 venv:
@@ -41,5 +43,10 @@ test:
 e2e:
 	$(ASTRA) test --kind e2e
 
-all: fmt-check lint test
+bundle-vscode:
+	python scripts/build_vscode_bundle.py
 
+bundle-toolchain:
+	python scripts/build_toolchain_bundle.py --layout portable --clean --output dist/toolchain
+
+all: fmt-check lint test

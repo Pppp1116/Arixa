@@ -43,6 +43,16 @@ pytest -q tests/test_property_fuzz.py
 mutmut run --max-children 1
 ```
 
+## VS Code Bundle Refresh
+
+Before packaging the VS Code extension, refresh the bundled compiler/server snapshot:
+
+```bash
+python scripts/build_vscode_bundle.py
+cd editors/vscode
+npm run package
+```
+
 ## Coding Expectations
 
 - Preserve deterministic behavior in parser/semantic/codegen phases.
