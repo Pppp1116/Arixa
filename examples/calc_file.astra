@@ -1,8 +1,10 @@
-import std.io;
 
 fn main() -> Int {
   // Read input file; fallback if empty/missing
-  let text = std.io.read_or("input.txt", "6 7\n");
+  let text = read_file("input.txt");
+  if len(text) == 0 {
+    text = "6 7\n";
+  }
 
   // NOTE: if you don’t have string splitting/parsing yet,
   // keep it simple: just write results to a file and return.
@@ -10,7 +12,7 @@ fn main() -> Int {
   // Demonstrate basic hosted IO:
   let out = "Loaded bytes: ";
   let n = len(text);
-  std.io.write("output.txt", out + __to_json(n)); // writes JSON number as string
+  write_file("output.txt", out + __to_json(n)); // writes JSON number as string
 
   print("wrote output.txt");
   return 0;

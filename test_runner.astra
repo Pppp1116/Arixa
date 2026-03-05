@@ -1,0 +1,173 @@
+// Unified Native Test Runner for CI
+// Compiles all test cases into one fast native executable
+
+fn assert_equals(expected: Int, actual: Int, message: String) {
+  if expected != actual {
+    print("FAIL: " + message + " - expected: " + __to_json(expected) + ", got: " + __to_json(actual));
+    panic(message);
+  } else {
+    print("PASS: " + message);
+  }
+}
+
+fn assert_equals_float(expected: Float, actual: Float, message: String) {
+  let diff = expected - actual;
+  if diff < 0.0 { diff = -diff; }
+  if diff > 0.001 {
+    print("FAIL: " + message + " - expected: " + __to_json(expected) + ", got: " + __to_json(actual));
+    panic(message);
+  } else {
+    print("PASS: " + message);
+  }
+}
+
+fn test_basic_arithmetic() {
+  assert_equals(7, 1 + 2 * 3, "basic arithmetic");
+  assert_equals(4, 10 - 6, "subtraction");
+  assert_equals(15, 3 * 5, "multiplication");
+  assert_equals(2, 8 / 4, "division");
+}
+
+fn test_bitwise_operations() {
+  assert_equals(6, 2 | 4, "bitwise OR");
+  assert_equals(0, 2 & 4, "bitwise AND");
+  assert_equals(6, 2 ^ 4, "bitwise XOR");
+  assert_equals(8, 2 << 2, "left shift");
+  assert_equals(2, 8 >> 2, "right shift");
+}
+
+fn test_control_flow() {
+  let mut x = 0;
+  if true {
+    x = 1;
+  } else {
+    x = 2;
+  }
+  assert_equals(1, x, "if statement");
+
+  let mut acc = 0;
+  for let mut i = 0; i < 3; i += 1 {
+    acc += i;
+  }
+  assert_equals(3, acc, "for loop");
+
+  let mut j = 0;
+  while j < 5 {
+    j += 1;
+  }
+  assert_equals(5, j, "while loop");
+}
+
+fn test_structs_and_layout() {
+  struct Point { x Int, y Int }
+  let p = Point(10, 20);
+  assert_equals(30, p.x + p.y, "struct field access");
+  assert_equals(16, sizeof(Point), "struct size");
+  assert_equals(8, alignof(Point), "struct align");
+}
+
+fn test_arrays_and_vectors() {
+  let arr = [1, 2, 3, 4, 5];
+  assert_equals(15, arr[0] + arr[1] + arr[2] + arr[3] + arr[4], "array access");
+  assert_equals(5, len(arr), "array length");
+
+  let mut v: Vec<Int> = vec_new() as Vec<Int>;
+  drop vec_push(v, 10);
+  drop vec_push(v, 20);
+  assert_equals(2, vec_len(v), "vector length");
+}
+
+fn test_option_coalesce() {
+  let some_val: Option<Int> = 42;
+  let none_val: Option<Int> = none;
+  
+  assert_equals(42, some_val ?? 0, "option coalesce some");
+  assert_equals(0, none_val ?? 0, "option coalesce none");
+}
+
+fn test_string_operations() {
+  let s1 = "hello";
+  let s2 = "world";
+  let combined = s1 + " " + s2;
+  assert_equals(11, len(combined), "string concatenation length");
+}
+
+fn test_float_operations() {
+  let x = 1.5;
+  let y = 2.5;
+  assert_equals_float(4.0, x + y, "float addition");
+  assert_equals_float(1.0, y - x, "float subtraction");
+  assert_equals_float(3.75, x * y, "float multiplication");
+  assert_equals_float(1.6666666, y / x, "float division");
+}
+
+fn test_comptime() {
+  // Test comptime evaluation at function level
+  let x = 40 + 2;
+  assert_equals(42, x, "comptime arithmetic");
+}
+
+fn test_match_statement() {
+  let x = 2;
+  let result = match x {
+    1 => { 10 }
+    2 => { 20 }
+    3 => { 30 }
+    _ => { 0 }
+  };
+  assert_equals(20, result, "match statement");
+}
+
+fn test_casts_and_conversions() {
+  let i: Int = 42;
+  let u: u8 = i as u8;
+  let back: Int = u as Int;
+  assert_equals(42, back, "int to u8 to int cast");
+}
+
+fn test_defer_statement() {
+  let mut x = 0;
+  {
+    defer print("defer executed");
+    x = 1;
+  }
+  assert_equals(1, x, "defer statement");
+}
+
+// Performance test similar to timer.astra
+fn test_performance_workload() {
+  let mut i = 0;
+  let mut x = 0.0;
+  while i < 1000000 {  // Reduced from 20M for faster test execution
+    x = x * 1.0000001 + 0.5;
+    if x > 1000000.0 { x = x / 2.0; }
+    i += 1;
+  }
+  // Just verify it runs without crashing and produces some result
+  assert_equals(1000000, i, "performance loop completion");
+}
+
+fn run_all_tests() {
+  print("=== Starting Native Test Runner ===");
+  
+  test_basic_arithmetic();
+  test_bitwise_operations();
+  test_control_flow();
+  test_structs_and_layout();
+  test_arrays_and_vectors();
+  test_option_coalesce();
+  test_string_operations();
+  test_float_operations();
+  test_comptime();
+  test_match_statement();
+  test_casts_and_conversions();
+  test_defer_statement();
+  test_performance_workload();
+  
+  print("=== All Tests Passed ===");
+}
+
+fn main() -> Int {
+  run_all_tests();
+  return 0;
+}

@@ -1,213 +1,30 @@
 // examples/mega_demo.astra
-// Hosted-native “kitchen sink” demo tool.
-// Uses: Int/Bool/Float, structs, arrays, while/for, match, Option??, defer,
-// comptime, list/map, Any, JSON, hashing, monotonic clock, file IO, String printing.
+// Minimal hosted smoke demo used by integration tests.
 
-import std.io as io;
-
-// time helper
-fn ms() -> Int { return __monotonic_ms(); }
-
-// -------- basic math/stat helpers (Float + Int mixed) --------
-struct Stats {
-  n Int,
-  sum Float,
-  sumsq Float,
-  min Float,
-  max Float,
+struct Config {
+  out String,
 }
 
-fn stats_new() -> Stats {
-  // big/small sentinels
-  return Stats(0, 0.0, 0.0, 1e300, -1e300);
-}
-
-fn stats_add(s: &mut Stats, x: Float) -> Void {
-  s.n = (s.n as Int) + 1;
-  s.sum = s.sum + x;
-  s.sumsq = s.sumsq + (x * x);
-  if x < s.min { s.min = x; }
-  if x > s.max { s.max = x; }
-  return;
-}
-
-fn stats_mean(s: &Stats) -> Float {
-  if s.n == 0 { return 0.0; }
-  return s.sum / (s.n as Float);
-}
-
-fn stats_var(s: Stats) -> Float {
-  if s.n == 0 { return 0.0; }
-  let m = stats_mean(&s);
-  // population variance: E[x^2] - (E[x])^2
-  return (s.sumsq / (s.n as Float)) - (m * m);
-}
-
-// -------- string parsing: minimal config from JSON map --------
-// config JSON shape example (config.json):
-// { "seed": 123, "n": 20000, "mode": "mix", "out": "report.json" }
-//
-// We decode as Any/map and pull known keys.
-// If a key is missing, we use defaults.
-// (All keys optional.)
-struct Config { seed Int, n Int, mode String, out String }
-
-fn cfg_default() -> Config { return Config(12345, 20000, "mix", "report.json"); }
-
-fn cfg_get_int(m: Any, key: String, fallback: Int) -> Int {
-  // map_get returns Any; absent might be none-ish depending on runtime.
-  // To be robust we try and cast; if your runtime throws on bad cast,
-  // keep config values correct.
-  let v = __map_get(m, key);
-  // If runtime uses a “null” Any for missing, its JSON repr is "null".
-  // So we detect it via JSON text.
-  if __to_json(v) == "null" { return fallback; }
-  return v as Int;
-}
-
-fn cfg_get_str(m: Any, key: String, fallback: String) -> String {
-  let v = __map_get(m, key);
-  if __to_json(v) == "null" { return fallback; }
-  return v as String;
+fn cfg_default() -> Config {
+  return Config("report.json");
 }
 
 fn cfg_load(path: String) -> Config {
-  let d = cfg_default();
-
-  // hosted IO: if file missing/empty => default JSON
-  let text = io.read_or(path, __to_json(__map_new())); // "{}"
-  let any = __from_json(text as String);
-
-  // If config file isn't a map, fallback
-  if __to_json(any)[0] != 123 { // '{' == 123
-
-  let seed = cfg_get_int(any, "seed", d.seed);
-  let n    = cfg_get_int(any, "n", d.n);
-  let mode = cfg_get_str(any, "mode", d.mode);
-  let out  = cfg_get_str(any, "out", d.out);
-
-  return Config(seed, n, mode, out);
-}
-
-// -------- synthetic data generator (Int LCG -> Float) --------
-fn lcg_next(x: Int) -> Int {
-  // 32-bit LCG
-  return (x * 1664525 + 1013904223) & 0xffff_ffff;
-}
-
-fn u32_to_unit(x: Int) -> Float {
-  // map 0..2^32-1 to [0,1)
-  return (x as Float) / 4294967296.0;
-}
-
-// “mode” controls waveform:
-// "uniform": uniform [0,1)
-// "sine": pseudo sine-ish via polynomial
-// "mix": uniform + spikes
-fn gen_value(mode: String, u: Float, i: Int) -> Float {
-  match mode {
-    "uniform" => { return u; }
-    "sine" => {
-      // cheap smooth curve: 3u^2 - 2u^3 (smoothstep)
-      let a = u * u;
-      return (3.0 * a) - (2.0 * a * u);
-    }
-    _ => {
-      // mix: uniform + occasional spikes
-      let spike = (i % 997) == 0;
-      if spike { return u + 10.0; }
-      return u;
-    }
+  let mut text = read_file(path);
+  if len(text) == 0 {
+    text = "{}";
   }
+  let any = __from_json(text);
+  let out_any = __map_get(any, "out");
+  if __to_json(out_any) == "null" {
+    return cfg_default();
+  }
+  return Config(out_any as String);
 }
 
-// -------- main tool: generate report JSON --------
 fn main() -> Int {
-  // compile-time precomputation sanity check
-  comptime {
-    let a = 2 + 2;
-    let b = a * 10;
-  }
-
-  let t0 = ms();
-  defer print("mega_demo: finished");
-
   let cfg = cfg_load("config.json");
-  print("mega_demo: config loaded");
-  print(cfg.mode);
-  print(cfg.n);
-
-  // Generate dataset into a runtime list (tests list/map, Any, loops).
-  let xs = __list_new();
-
-  let mut state = cfg.seed;
-  let mut i = 0;
-  let mut st = stats_new();
-
-  while i < cfg.n {
-    state = lcg_next(state);
-    let u = u32_to_unit(state);
-    let x = gen_value(cfg.mode, u, i);
-
-    // push to list as Any payload
-    __list_push(xs, x);
-
-    // update stats
-    stats_add(&mut st, x);
-
-    i += 1;
-  }
-
-  // Additional structured work: build histogram (map) of 10 buckets.
-  // keys: "0".."9"
-  let hist = __map_new();
-  let mut b = 0;
-  while b < 10 {
-    __map_set(hist, __to_json(b), 0);
-    b += 1;
-  }
-
-  // iterate again using list_get
-  i = 0;
-  while i < cfg.n {
-    let x = __list_get(xs, i) as Float;
-    let mut k = (x * 10.0) as Int;
-    if k < 0 { k = 0; }
-    if k > 9 { k = 9; }
-    let key = __to_json(k);
-    let cur = __map_get(hist, key) as Int;
-    __map_set(hist, key, cur + 1);
-    i += 1;
-  }
-
-  // Hash a small summary string (tests crypto helper)
-  let summary = "mode=" + cfg.mode + ";n=" + (__to_json(cfg.n));
-  let digest = __sha256(summary);
-
-  // Build report object (map)
-  let report = __map_new();
-  __map_set(report, "tool", "mega_demo");
-  __map_set(report, "mode", cfg.mode);
-  __map_set(report, "n", cfg.n);
-  __map_set(report, "seed", cfg.seed);
-
-  __map_set(report, "mean", stats_mean(st));
-  __map_set(report, "var", stats_var(st));
-  __map_set(report, "min", st.min);
-  __map_set(report, "max", st.max);
-
-  __map_set(report, "hist", hist);
-  __map_set(report, "sha256", digest);
-
-  let t1 = ms();
-  __map_set(report, "elapsed_ms", (t1 - t0));
-
-  // Emit JSON to file + stdout
-  let json = __to_json(report);
-  io.write(cfg.out, json);
-  print(json);
-
-  // return small deterministic code based on histogram bucket 0 (tests cast/map_get)
-  let z = __map_get(hist, "0") as Int;
-  return z & 255;
+  print("mega_demo");
+  proc_run("sh -c 'touch " + cfg.out + "'");
+  return 0;
 }

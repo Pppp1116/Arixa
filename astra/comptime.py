@@ -460,6 +460,30 @@ class _Evaluator:
             raise ComptimeError(_diag(self.filename, node.line, node.col, f"cannot cast to {ty}"))
         return _truncate_int(iv, bits, signed)
 
+    def _match_pattern_value(self, subj, pat, env, env_types: dict[str, str]) -> bool:
+        if isinstance(pat, WildcardPattern):
+            return True
+        if isinstance(pat, BindPattern):
+            env[pat.name] = subj
+            if pat.name not in env_types:
+                inferred = _value_type_name(subj)
+                if inferred is not None:
+                    env_types[pat.name] = inferred
+            return True
+        if isinstance(pat, VariantPattern):
+            if not isinstance(subj, dict):
+                return False
+            if subj.get("__enum__") != pat.enum_name or subj.get("tag") != pat.variant:
+                return False
+            values = subj.get("values", [])
+            if len(values) != len(pat.args):
+                return False
+            for i, sub in enumerate(pat.args):
+                if not self._match_pattern_value(values[i], sub, env, env_types):
+                    return False
+            return True
+        return subj == self.eval_expr(pat, env, env_types)
+
     def exec_stmt(self, st, env, env_types: dict[str, str]):
         self._tick(st)
         if isinstance(st, LetStmt):
@@ -514,13 +538,18 @@ class _Evaluator:
         if isinstance(st, MatchStmt):
             subj = self.eval_expr(st.expr, env, env_types)
             for pat, body in st.arms:
-                pv = self.eval_expr(pat, env, env_types)
-                if subj != pv:
+                arm_env = dict(env)
+                raw_pat = pat.pattern if isinstance(pat, GuardPattern) else pat
+                guard = pat.cond if isinstance(pat, GuardPattern) else None
+                if not self._match_pattern_value(subj, raw_pat, arm_env, env_types):
+                    continue
+                if guard is not None and not bool(self.eval_expr(guard, arm_env, env_types)):
                     continue
                 for s in body:
-                    sig = self.exec_stmt(s, env, env_types)
+                    sig = self.exec_stmt(s, arm_env, env_types)
                     if isinstance(sig, _LoopSignal):
                         return sig
+                env.update(arm_env)
                 return None
             return None
         if isinstance(st, WhileStmt):

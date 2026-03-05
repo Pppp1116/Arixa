@@ -29,10 +29,12 @@ class FnDecl:
     params: list[tuple[str, str]]
     ret: str
     body: list[Any]
+    where: dict[str, list[str]] = field(default_factory=dict)
     is_impl: bool = False
     pub: bool = False
     async_fn: bool = False
     unsafe: bool = False
+    multiversion: bool = False
     symbol: str = ""
     doc: str = ""
     pos: int = 0
@@ -285,6 +287,33 @@ class Unary:
 
 @dataclass
 class WildcardPattern:
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class BindPattern:
+    name: str
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class VariantPattern:
+    enum_name: str
+    variant: str
+    args: list[Any]
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class GuardPattern:
+    pattern: Any
+    cond: Any
     pos: int = 0
     line: int = 0
     col: int = 0

@@ -1501,6 +1501,131 @@ uintptr_t astra_hmac_sha256(uintptr_t k_ptr, uintptr_t s_ptr) {
   return (uintptr_t)astra_hex64x4(x, hk, hs, x ^ hk ^ hs);
 }
 
+
+static bool astra_is_valid_utf8(const unsigned char *s, size_t n) {
+  size_t i = 0;
+  while (i < n) {
+    unsigned char c = s[i];
+    if (c <= 0x7F) {
+      i += 1;
+      continue;
+    }
+    if ((c & 0xE0) == 0xC0) {
+      if (i + 1 >= n) return false;
+      unsigned char c1 = s[i + 1];
+      if ((c1 & 0xC0) != 0x80 || c < 0xC2) return false;
+      i += 2;
+      continue;
+    }
+    if ((c & 0xF0) == 0xE0) {
+      if (i + 2 >= n) return false;
+      unsigned char c1 = s[i + 1], c2 = s[i + 2];
+      if ((c1 & 0xC0) != 0x80 || (c2 & 0xC0) != 0x80) return false;
+      if (c == 0xE0 && c1 < 0xA0) return false;
+      if (c == 0xED && c1 >= 0xA0) return false;
+      i += 3;
+      continue;
+    }
+    if ((c & 0xF8) == 0xF0) {
+      if (i + 3 >= n) return false;
+      unsigned char c1 = s[i + 1], c2 = s[i + 2], c3 = s[i + 3];
+      if ((c1 & 0xC0) != 0x80 || (c2 & 0xC0) != 0x80 || (c3 & 0xC0) != 0x80) return false;
+      if (c == 0xF0 && c1 < 0x90) return false;
+      if (c > 0xF4 || (c == 0xF4 && c1 >= 0x90)) return false;
+      i += 4;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+typedef struct {
+  uint64_t len;
+  unsigned char *data;
+} AstraSliceHeader;
+
+uintptr_t astra_secure_bytes(uintptr_t n_raw) {
+  uint64_t n = (uint64_t)n_raw;
+  AstraSliceHeader *hdr = (AstraSliceHeader *)astra_heap_alloc(sizeof(AstraSliceHeader));
+  if (hdr == NULL) {
+    return 0;
+  }
+  hdr->len = n;
+  hdr->data = NULL;
+  if (n == 0) {
+    return (uintptr_t)hdr;
+  }
+  unsigned char *buf = (unsigned char *)astra_heap_alloc((size_t)n);
+  if (buf == NULL) {
+    return 0;
+  }
+  FILE *fp = fopen("/dev/urandom", "rb");
+  if (fp == NULL) {
+    return 0;
+  }
+  size_t got = fread(buf, 1, (size_t)n, fp);
+  fclose(fp);
+  if (got != (size_t)n) {
+    return 0;
+  }
+  hdr->data = buf;
+  return (uintptr_t)hdr;
+}
+
+uintptr_t astra_utf8_encode(uintptr_t s_ptr) {
+  const char *s = (const char *)s_ptr;
+  if (s == NULL) {
+    return astra_secure_bytes(0);
+  }
+  size_t n = strlen(s);
+  AstraSliceHeader *hdr = (AstraSliceHeader *)astra_heap_alloc(sizeof(AstraSliceHeader));
+  if (hdr == NULL) {
+    return 0;
+  }
+  hdr->len = (uint64_t)n;
+  hdr->data = NULL;
+  if (n == 0) {
+    return (uintptr_t)hdr;
+  }
+  unsigned char *buf = (unsigned char *)astra_heap_alloc(n);
+  if (buf == NULL) {
+    return 0;
+  }
+  memcpy(buf, s, n);
+  hdr->data = buf;
+  return (uintptr_t)hdr;
+}
+
+uintptr_t astra_utf8_decode(uintptr_t bytes_ptr) {
+  AstraSliceHeader *hdr = (AstraSliceHeader *)bytes_ptr;
+  if (hdr == NULL) {
+    return 0;
+  }
+  size_t n = (size_t)hdr->len;
+  const unsigned char *data = (const unsigned char *)hdr->data;
+  if (n > 0 && data == NULL) {
+    return 0;
+  }
+  if (!astra_is_valid_utf8(data, n)) {
+    return 0;
+  }
+  char *out = (char *)astra_heap_alloc(n + 1);
+  if (out == NULL) {
+    return 0;
+  }
+  if (n > 0) {
+    memcpy(out, data, n);
+  }
+  out[n] = '\0';
+  uintptr_t *opt = (uintptr_t *)astra_heap_alloc(sizeof(uintptr_t));
+  if (opt == NULL) {
+    return 0;
+  }
+  *opt = (uintptr_t)out;
+  return (uintptr_t)opt;
+}
+
 uintptr_t astra_env_get(uintptr_t key_ptr) {
   const char *k = (const char *)key_ptr;
   if (k == NULL) {
@@ -1649,4 +1774,29 @@ u128 astra_u128_mod_trap(u128 a, u128 b) {
     astra_trap();
   }
   return a % b;
+}
+
+
+int32_t astra_cpu_has_sse4(void) {
+#if defined(__x86_64__) || defined(__i386__)
+  return __builtin_cpu_supports("sse4.2") ? 1 : 0;
+#else
+  return 0;
+#endif
+}
+
+int32_t astra_cpu_has_avx2(void) {
+#if defined(__x86_64__) || defined(__i386__)
+  return __builtin_cpu_supports("avx2") ? 1 : 0;
+#else
+  return 0;
+#endif
+}
+
+int32_t astra_cpu_has_avx512(void) {
+#if defined(__x86_64__) || defined(__i386__)
+  return __builtin_cpu_supports("avx512f") ? 1 : 0;
+#else
+  return 0;
+#endif
 }

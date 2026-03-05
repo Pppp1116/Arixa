@@ -31,6 +31,7 @@ KEYWORDS = {
     "none",
     "in",
     "as",
+    "where",
     "sizeof",
     "alignof",
 }

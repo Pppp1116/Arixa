@@ -62,6 +62,8 @@ python build/hello.py
 - `a ?? b` coalesces `Option<T>` values (`a: Option<T>`, `b: T`).
 - Range loops are supported as `for i in start..end { ... }` and `for i in start..=end { ... }`.
 - `match` supports wildcard arm `_` (must be the last arm).
+- `match` also supports bind patterns, enum variant patterns, and guarded arms (`if ...`).
+- `impl fn` supports minimal generic `where` constraints (`Copy`, `Send`, `Sync`) for specialization selection.
 - Expression statements may discard values of any type; `drop expr;` remains available for explicit immediate destruction-style intent.
 - LLVM backend emits validated LLVM IR through `llvmlite` and native builds are performed by `clang`.
 - `i128/u128` helper runtime symbols remain available in the portable runtime for trap/wrap hard-op behavior.

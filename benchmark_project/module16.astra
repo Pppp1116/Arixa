@@ -1,0 +1,16 @@
+
+// Module 16 for benchmark project
+
+pub fn compute16() -> Int {
+    let mut result = 16;
+    let mut j = 0;
+    while j < 10 {
+        result = result + j;
+        j = j + 1;
+    }
+    return result;
+}
+
+fn helper16(x: Int) -> Int {
+    return x * 2;
+}

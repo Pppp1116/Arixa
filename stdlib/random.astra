@@ -1,0 +1,10 @@
+/// std.random – hosted secure random helpers.
+///
+/// `secure_bytes(n)` returns `n` cryptographically random bytes sourced from the
+/// host OS CSPRNG.
+fn secure_bytes(n: Int) -> Bytes {
+  if n <= 0 {
+    return vec_new() as Bytes;
+  }
+  return __secure_bytes(n);
+}

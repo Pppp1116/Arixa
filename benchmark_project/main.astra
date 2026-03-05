@@ -1,0 +1,49 @@
+
+// Main file for benchmark project with 20 modules
+
+import "module0.astra"
+import "module1.astra"
+import "module2.astra"
+import "module3.astra"
+import "module4.astra"
+import "module5.astra"
+import "module6.astra"
+import "module7.astra"
+import "module8.astra"
+import "module9.astra"
+import "module10.astra"
+import "module11.astra"
+import "module12.astra"
+import "module13.astra"
+import "module14.astra"
+import "module15.astra"
+import "module16.astra"
+import "module17.astra"
+import "module18.astra"
+import "module19.astra"
+
+fn main() -> Int {
+    let mut sum = 0;
+    sum = sum + compute0();
+    sum = sum + compute1();
+    sum = sum + compute2();
+    sum = sum + compute3();
+    sum = sum + compute4();
+    sum = sum + compute5();
+    sum = sum + compute6();
+    sum = sum + compute7();
+    sum = sum + compute8();
+    sum = sum + compute9();
+    sum = sum + compute10();
+    sum = sum + compute11();
+    sum = sum + compute12();
+    sum = sum + compute13();
+    sum = sum + compute14();
+    sum = sum + compute15();
+    sum = sum + compute16();
+    sum = sum + compute17();
+    sum = sum + compute18();
+    sum = sum + compute19();
+
+    return sum;
+}

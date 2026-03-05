@@ -20,6 +20,9 @@ from astra.ast import (
     LetStmt,
     Literal,
     MatchStmt,
+    GuardPattern,
+    VariantPattern,
+    BindPattern,
     MaxValTypeExpr,
     MinValTypeExpr,
     Name,
@@ -116,6 +119,27 @@ def test_parse_match_accepts_wildcard_pattern():
     m = fn.body[1]
     assert isinstance(m, MatchStmt)
     assert isinstance(m.arms[0][0], WildcardPattern)
+
+
+def test_parse_match_enum_variant_and_guard_pattern():
+    src = "fn main() -> Int { match v { Result.Ok(x) if x > 0 => { return x; }, _ => { return 0; } } }"
+    prog = parse(src)
+    fn = prog.items[0]
+    m = fn.body[0]
+    assert isinstance(m, MatchStmt)
+    assert isinstance(m.arms[0][0], GuardPattern)
+    pat = m.arms[0][0].pattern
+    assert isinstance(pat, VariantPattern)
+    assert pat.enum_name == "Result" and pat.variant == "Ok"
+    assert isinstance(pat.args[0], BindPattern)
+
+
+def test_parse_fn_where_constraints():
+    src = "impl fn clone_or<T>(x T) -> T where T: Copy + Send { return x; }"
+    prog = parse(src)
+    fn = prog.items[0]
+    assert isinstance(fn, FnDecl)
+    assert fn.where == {"T": ["Copy", "Send"]}
 
 
 def test_import_supports_dotted_module_and_string_forms():

@@ -1,0 +1,81 @@
+/// std.bytes – safe bytes/string helpers centered on borrowed slice views.
+///
+/// The core APIs operate on `&[u8]` / `&str` to avoid mandatory copying.
+/// UTF-8 helpers are hosted-only because they rely on runtime codecs.
+
+type Bytes = Vec<u8>;
+
+fn len_view(xs: &[u8]) -> Int {
+  return len(*xs);
+}
+
+fn is_empty_view(xs: &[u8]) -> Bool {
+  return len_view(xs) == 0;
+}
+
+fn get_view(xs: &[u8], idx: Int) -> Option<u8> {
+  return xs.get(idx);
+}
+
+fn eq_view(a: &[u8], b: &[u8]) -> Bool {
+  let al = len_view(a);
+  let bl = len_view(b);
+  if al != bl {
+    return false;
+  }
+  let mut i = 0;
+  while i < al {
+    let av = a.get(i) ?? 0u8;
+    let bv = b.get(i) ?? 0u8;
+    if av != bv {
+      return false;
+    }
+    i += 1;
+  }
+  return true;
+}
+
+fn starts_with_view(xs: &[u8], prefix: &[u8]) -> Bool {
+  let xl = len_view(xs);
+  let pl = len_view(prefix);
+  if pl > xl {
+    return false;
+  }
+  let mut i = 0;
+  while i < pl {
+    let xv = xs.get(i) ?? 0u8;
+    let pv = prefix.get(i) ?? 0u8;
+    if xv != pv {
+      return false;
+    }
+    i += 1;
+  }
+  return true;
+}
+
+fn str_len_view(s: &str) -> Int {
+  return len(*s);
+}
+
+fn str_is_empty_view(s: &str) -> Bool {
+  return str_len_view(s) == 0;
+}
+
+/// Hosted-only UTF-8 validation utility.
+fn utf8_is_valid(xs: &[u8]) -> Bool {
+  let decoded: Option<String> = __utf8_decode(vec_from(*xs) as Bytes);
+  match decoded {
+    Option.Some(_) => { return true; },
+    _ => { return false; }
+  }
+}
+
+/// Hosted-only UTF-8 decode utility.
+fn utf8_decode_view(xs: &[u8]) -> Option<String> {
+  return __utf8_decode(vec_from(*xs) as Bytes);
+}
+
+/// Hosted-only UTF-8 encode utility.
+fn utf8_encode_view(s: &str) -> Bytes {
+  return __utf8_encode(*s);
+}

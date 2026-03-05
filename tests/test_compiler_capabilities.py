@@ -543,3 +543,39 @@ def test_runtime_c_exports_extended_builtin_symbols():
         "astra_sleep_ms",
     ):
         assert sym in text
+
+
+def test_llvm_field_get_callable_struct_field_not_treated_as_slice_sugar():
+    src = """
+struct Wrap { get fn(Int) -> Int }
+fn add1(x Int) -> Int { return x + 1; }
+fn main() -> Int {
+  let w = Wrap(add1);
+  return w.get(41);
+}
+"""
+    mod = to_llvm_ir(parse(src))
+    assert_valid_llvm_ir(mod)
+
+
+def test_llvm_supports_secure_bytes_and_utf8_builtins():
+    src = """
+fn main() -> Int {
+  let b = secure_bytes(4);
+  let sopt: Option<String> = utf8_decode(utf8_encode("ok"));
+  let s = sopt ?? "";
+  return vec_len(b) + len(s);
+}
+"""
+    mod = to_llvm_ir(parse(src))
+    assert_valid_llvm_ir(mod)
+
+
+def test_python_codegen_secure_utf8_wrappers_use_host_impls():
+    py = to_python(parse("fn main() -> Int { return 0; }"))
+    assert "def _astra_host_secure_bytes(" in py
+    assert "def _astra_host_utf8_encode(" in py
+    assert "def _astra_host_utf8_decode(" in py
+    assert "def __secure_bytes(n): return _astra_host_secure_bytes(n)" in py
+    assert "def __utf8_encode(s): return _astra_host_utf8_encode(s)" in py
+    assert "def __utf8_decode(bs): return _astra_host_utf8_decode(bs)" in py

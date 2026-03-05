@@ -6,6 +6,7 @@ from astra.lexer import Token, lex
 
 
 class ParseError(SyntaxError):
+    """Parse-time syntax error raised by parser and recovery logic."""
     pass
 
 
@@ -35,10 +36,12 @@ ASSIGN_OPS = {"=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="}
 
 
 def _diag(code: str, filename: str, line: int, col: int, msg: str) -> str:
+    """Format a stable compiler diagnostic string with span info."""
     return f"{code} {filename}:{line}:{col}: {msg}"
 
 
 def _parse_int_literal(text: str) -> int:
+    """Parse decimal/hex/binary integer literal text into an int."""
     t = text.replace("_", "")
     if t.startswith(("0x", "0X")):
         return int(t[2:], 16)
@@ -48,10 +51,12 @@ def _parse_int_literal(text: str) -> int:
 
 
 def _parse_float_literal(text: str) -> float:
+    """Parse a float literal string supporting underscore separators."""
     return float(text.replace("_", ""))
 
 
 class Parser:
+    """Recursive-descent parser for ASTRA source tokens."""
     def __init__(self, src: str, filename: str = "<input>"):
         self.filename = filename
         self.toks = lex(src, filename=filename)
@@ -96,9 +101,13 @@ class Parser:
 
     def recover(self) -> None:
         sync = {";", "}", "fn", "impl", "struct", "enum", "type", "import", "extern", "pub", "async", "unsafe", "comptime", "EOF"}
+        start = self.i
         while self.cur().kind not in sync:
             self.i += 1
         if self.cur().kind in {";", "}"}:
+            self.i += 1
+        elif self.i == start and self.cur().kind != "EOF":
+            # Ensure forward progress at sync tokens that aren't directly consumed.
             self.i += 1
 
     def parse_program(self) -> Program:
@@ -120,12 +129,47 @@ class Parser:
             raise ParseError("\n".join(self.errors))
         return Program(items)
 
+
+    def _assert_attrs_allowed_on(
+        self,
+        decl_kind: str,
+        *,
+        is_unsafe: bool,
+        is_async: bool,
+        is_packed: bool,
+        is_multiversion: bool,
+        is_impl: bool,
+    ) -> None:
+        if decl_kind in {"import", "struct", "enum", "type alias"} and (is_unsafe or is_async):
+            if decl_kind == "import":
+                self._err("import cannot be prefixed with unsafe/async")
+            elif decl_kind == "struct":
+                self._err("struct cannot be prefixed with unsafe/async")
+            elif decl_kind == "enum":
+                self._err("enum cannot be prefixed with unsafe/async")
+            elif decl_kind == "type alias":
+                self._err("type alias cannot be prefixed with unsafe/async")
+            raise ParseError(self.errors[-1])
+        if decl_kind == "extern" and is_async:
+            self._err("extern fn cannot be prefixed with async")
+            raise ParseError(self.errors[-1])
+        if is_packed and decl_kind != "struct":
+            self._err("@packed is only valid on struct declarations")
+            raise ParseError(self.errors[-1])
+        if is_multiversion and decl_kind != "fn":
+            self._err("@multiversion is only valid on fn declarations")
+            raise ParseError(self.errors[-1])
+        if is_impl and decl_kind != "fn":
+            self._err("impl is only valid on fn declarations")
+            raise ParseError(self.errors[-1])
+
     def parse_top_level(self, doc: str):
         is_pub = False
         is_unsafe = False
         is_async = False
         is_impl = False
         is_packed = False
+        is_multiversion = False
         while True:
             if self.opt("pub"):
                 is_pub = True
@@ -141,51 +185,75 @@ class Parser:
                 continue
             if self.opt("@"):
                 attr = self.eat("IDENT").text
-                if attr != "packed":
-                    self._err(f"unknown attribute @{attr}")
-                    raise ParseError(self.errors[-1])
-                is_packed = True
-                continue
+                if attr == "packed":
+                    is_packed = True
+                    continue
+                if attr == "multiversion":
+                    is_multiversion = True
+                    continue
+                self._err(f"unknown attribute @{attr}")
+                raise ParseError(self.errors[-1])
             break
         if self.cur().kind == "import":
-            if is_unsafe or is_async:
-                self._err("import cannot be prefixed with unsafe/async")
-                raise ParseError(self.errors[-1])
-            if is_packed:
-                self._err("@packed is only valid on struct declarations")
-                raise ParseError(self.errors[-1])
+            self._assert_attrs_allowed_on(
+                "import",
+                is_unsafe=is_unsafe,
+                is_async=is_async,
+                is_packed=is_packed,
+                is_multiversion=is_multiversion,
+                is_impl=is_impl,
+            )
             return self.parse_import()
         if self.cur().kind == "struct":
-            if is_unsafe or is_async:
-                self._err("struct cannot be prefixed with unsafe/async")
-                raise ParseError(self.errors[-1])
+            self._assert_attrs_allowed_on(
+                "struct",
+                is_unsafe=is_unsafe,
+                is_async=is_async,
+                is_packed=is_packed,
+                is_multiversion=is_multiversion,
+                is_impl=is_impl,
+            )
             return self.parse_struct(is_pub, doc, packed=is_packed)
         if self.cur().kind == "enum":
-            if is_unsafe or is_async:
-                self._err("enum cannot be prefixed with unsafe/async")
-                raise ParseError(self.errors[-1])
-            if is_packed:
-                self._err("@packed is only valid on struct declarations")
-                raise ParseError(self.errors[-1])
+            self._assert_attrs_allowed_on(
+                "enum",
+                is_unsafe=is_unsafe,
+                is_async=is_async,
+                is_packed=is_packed,
+                is_multiversion=is_multiversion,
+                is_impl=is_impl,
+            )
             return self.parse_enum(is_pub, doc)
         if self.cur().kind == "type":
-            if is_unsafe or is_async:
-                self._err("type alias cannot be prefixed with unsafe/async")
-                raise ParseError(self.errors[-1])
-            if is_packed:
-                self._err("@packed is only valid on struct declarations")
-                raise ParseError(self.errors[-1])
+            self._assert_attrs_allowed_on(
+                "type alias",
+                is_unsafe=is_unsafe,
+                is_async=is_async,
+                is_packed=is_packed,
+                is_multiversion=is_multiversion,
+                is_impl=is_impl,
+            )
             return self.parse_type_alias()
         if self.cur().kind == "extern":
-            if is_packed:
-                self._err("@packed is only valid on struct declarations")
-                raise ParseError(self.errors[-1])
+            self._assert_attrs_allowed_on(
+                "extern",
+                is_unsafe=is_unsafe,
+                is_async=is_async,
+                is_packed=is_packed,
+                is_multiversion=is_multiversion,
+                is_impl=is_impl,
+            )
             return self.parse_extern_fn(is_pub, is_unsafe, doc)
         if self.cur().kind == "fn":
-            if is_packed:
-                self._err("@packed is only valid on struct declarations")
-                raise ParseError(self.errors[-1])
-            return self.parse_fn(is_pub, is_async, doc, is_impl=is_impl, is_unsafe=is_unsafe)
+            self._assert_attrs_allowed_on(
+                "fn",
+                is_unsafe=is_unsafe,
+                is_async=is_async,
+                is_packed=is_packed,
+                is_multiversion=is_multiversion,
+                is_impl=is_impl,
+            )
+            return self.parse_fn(is_pub, is_async, doc, is_impl=is_impl, is_unsafe=is_unsafe, multiversion=is_multiversion)
         if is_impl:
             self._err("impl must be followed by fn")
             raise ParseError(self.errors[-1])
@@ -280,6 +348,7 @@ class Parser:
         doc: str = "",
         is_impl: bool = False,
         is_unsafe: bool = False,
+        multiversion: bool = False,
     ) -> FnDecl:
         fn_tok = self.eat("fn")
         name = self.eat("IDENT").text
@@ -287,6 +356,7 @@ class Parser:
         params = self._parse_params()
         self.eat("->")
         ret = self.parse_type()
+        where = self._parse_where_constraints()
         body = self.parse_block()
         return FnDecl(
             name,
@@ -294,15 +364,32 @@ class Parser:
             params,
             ret,
             body,
+            where=where,
             is_impl=is_impl,
             pub=is_pub,
             async_fn=is_async,
             unsafe=is_unsafe,
+            multiversion=multiversion,
             doc=doc,
             pos=fn_tok.pos,
             line=fn_tok.line,
             col=fn_tok.col,
         )
+
+    def _parse_where_constraints(self) -> dict[str, list[str]]:
+        out: dict[str, list[str]] = {}
+        if not self.opt("where"):
+            return out
+        while True:
+            tvar = self.eat("IDENT")
+            self.eat(":")
+            traits = [self.eat("IDENT").text]
+            while self.opt("+"):
+                traits.append(self.eat("IDENT").text)
+            out[tvar.text] = traits
+            if not self.opt(","):
+                break
+        return out
 
     def parse_struct(self, is_pub: bool = False, doc: str = "", packed: bool = False) -> StructDecl:
         tok = self.eat("struct")
@@ -404,7 +491,10 @@ class Parser:
             try:
                 body.append(self.parse_stmt())
             except ParseError:
+                prev = self.i
                 self.recover()
+                if self.i == prev:
+                    raise
         self.eat("}")
         return body
 
@@ -590,17 +680,43 @@ class Parser:
         self.eat("{")
         arms: list[tuple[Any, list[Any]]] = []
         while self.cur().kind != "}":
-            if self.cur().kind == "IDENT" and self.cur().text == "_":
-                wtok = self.eat("IDENT")
-                pattern = WildcardPattern(wtok.pos, wtok.line, wtok.col)
-            else:
-                pattern = self.parse_expr()
+            pattern = self.parse_match_pattern()
+            if self.opt("if"):
+                iftok = self.toks[self.i - 1]
+                cond = self.parse_expr()
+                pattern = GuardPattern(pattern, cond, iftok.pos, iftok.line, iftok.col)
             self.eat("=>")
             body = self.parse_block()
             arms.append((pattern, body))
             self.opt(",")
         self.eat("}")
         return MatchStmt(expr, arms, tok.pos, tok.line, tok.col)
+
+    def parse_match_pattern(self):
+        tok = self.cur()
+        if tok.kind == "IDENT" and tok.text == "_":
+            wtok = self.eat("IDENT")
+            return WildcardPattern(wtok.pos, wtok.line, wtok.col)
+
+        if tok.kind == "IDENT" and self.peek().kind == "." and self.peek(2).kind == "IDENT":
+            enum_tok = self.eat("IDENT")
+            self.eat(".")
+            var_tok = self.eat("IDENT")
+            args: list[Any] = []
+            if self.opt("("):
+                if self.cur().kind != ")":
+                    while True:
+                        args.append(self.parse_match_pattern())
+                        if not self.opt(","):
+                            break
+                self.eat(")")
+            return VariantPattern(enum_tok.text, var_tok.text, args, enum_tok.pos, enum_tok.line, enum_tok.col)
+
+        if tok.kind == "IDENT":
+            btok = self.eat("IDENT")
+            return BindPattern(btok.text, btok.pos, btok.line, btok.col)
+
+        return self.parse_expr()
 
     def parse_expr(self, min_prec: int = 1):
         left = self.parse_cast()
@@ -721,4 +837,5 @@ class Parser:
 
 
 def parse(src: str, filename: str = "<input>"):
+    """Parse source text into a Program AST."""
     return Parser(src, filename=filename).parse_program()

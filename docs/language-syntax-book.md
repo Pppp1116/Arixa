@@ -182,7 +182,14 @@ Text/buffer rules:
 Move/copy rules:
 - Default for assignment, argument passing, and return is move semantics.
 - Copy-by-default set is currently: scalar numerics (`Int` and `iN`/`uN` ints), `Float`, `Bool`, and shared references (`&T`).
-- Other values are move-only unless explicitly designated copyable by future trait/type rules.
+- Other values are move-only unless constrained through impl selection (`where T: Copy` etc.).
+
+Generic constraints:
+- `impl fn` specializations may include `where` constraints over type variables.
+- Supported constraint names are currently `Copy`, `Send`, and `Sync`.
+
+Pattern matching:
+- `match` arms support literal patterns, wildcard `_`, bind patterns (`name`), enum variant patterns (`Enum.Variant`, `Enum.Variant(x, ...)`), and optional guards (`if cond`).
 
 Never rule:
 - `Never` is coercible to any type `T`, including `Void`.

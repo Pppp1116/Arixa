@@ -6,9 +6,10 @@ build-backend = "setuptools.build_meta"
 name = "astra-lang"
 version = "0.2.0"
 description = "Self-hosted-inspired toy programming language ecosystem"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "llvmlite>=0.44",
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]

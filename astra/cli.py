@@ -1,16 +1,19 @@
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 from astra.build import build
+from astra.profiler import profiler
 from astra.check import diagnostics_to_json_list, format_diagnostic, run_check_paths, run_check_source
 from astra.docgen import main as doc_main
 from astra.formatter import fmt
 
 
 def cmd_build(a):
+    """Handle the CLI build subcommand."""
     state = build(
         a.input,
         a.output,
@@ -21,11 +24,23 @@ def cmd_build(a):
         profile=a.profile,
         overflow=a.overflow,
         triple=a.triple,
+        profile_compile=a.profile_compile,
+        threads=a.threads,
+        opt_size=getattr(a, "opt_size", False),
+        profile_layout=getattr(a, "profile_layout", False),
+        opt_layout=getattr(a, "opt_layout", False),
+        profile_values=getattr(a, "profile_values", False),
+        opt_value_profile=getattr(a, "opt_value_profile", False),
+        cpu_dispatch=getattr(a, "cpu_dispatch", False),
+        cpu_target=getattr(a, "cpu_target", "baseline"),
     )
+    if a.profile_compile and a.profile_json:
+        print(profiler.to_json())
     print(state)
 
 
 def cmd_check(a):
+    """Handle the CLI check subcommand and format diagnostics."""
     modes = int(bool(a.stdin)) + int(bool(a.files)) + int(bool(a.input))
     if modes != 1:
         raise ValueError("check requires exactly one input mode: <input>, --files, or --stdin")
@@ -83,12 +98,14 @@ def cmd_check(a):
 
 
 def cmd_run(a):
+    """Build a Python target and execute it with provided arguments."""
     out = Path(".astra-build") / (Path(a.input).stem + ".py")
-    build(a.input, str(out), "py")
+    build(a.input, str(out), "py", profile_compile=a.profile_compile, threads=a.threads, opt_size=getattr(a, "opt_size", False))
     raise SystemExit(subprocess.call([sys.executable, str(out)] + a.args))
 
 
 def cmd_test(a):
+    """Run project tests by category through pytest."""
     args = [sys.executable, "-m", "pytest", "-q"]
     if a.kind == "unit":
         args += ["-k", "not integration and not e2e"]
@@ -100,6 +117,7 @@ def cmd_test(a):
 
 
 def cmd_fmt(a):
+    """Format files in-place or verify formatting with --check."""
     bad: list[str] = []
     for path in a.files:
         fp = Path(path)
@@ -121,11 +139,13 @@ def cmd_fmt(a):
 
 
 def cmd_doc(a):
+    """Generate API/docs output from an ASTRA input file."""
     args = [a.input, "-o", a.output]
     doc_main(args)
 
 
 def cmd_selfhost(a):
+    """Report self-host compiler availability status."""
     print(
         "selfhost-unavailable: selfhost/compiler.astra is a placeholder file copier, "
         "not a real self-hosted compiler",
@@ -134,7 +154,68 @@ def cmd_selfhost(a):
     raise SystemExit(1)
 
 
+def _add_global_flags(ap: argparse.ArgumentParser) -> None:
+    """Register shared CLI flags used by multiple subcommands."""
+    ap.add_argument("--profile-compile", action="store_true", dest="profile_compile")
+    ap.add_argument("--profile-json", action="store_true", dest="profile_json")
+    ap.add_argument("--threads", type=int, default=os.cpu_count())
+
+
+def cmd_bench(a):
+    """Benchmark build phases and print median timings as JSON."""
+    # Run 3 times and report median per-phase and total. Always enable profiling.
+    runs = []
+    for _ in range(3):
+        profiler.enable(False)
+        state = build(
+            a.input,
+            a.output,
+            a.target,
+            emit_ir=a.emit_ir,
+            strict=a.strict,
+            freestanding=a.freestanding,
+            profile=a.profile,
+            overflow=a.overflow,
+            triple=a.triple,
+            profile_compile=True,
+            threads=a.threads,
+            opt_size=getattr(a, "opt_size", False),
+            profile_layout=getattr(a, "profile_layout", False),
+            opt_layout=getattr(a, "opt_layout", False),
+            profile_values=getattr(a, "profile_values", False),
+            opt_value_profile=getattr(a, "opt_value_profile", False),
+            cpu_dispatch=getattr(a, "cpu_dispatch", False),
+            cpu_target=getattr(a, "cpu_target", "baseline"),
+        )
+        # Capture JSON each run
+        payload = json.loads(profiler.to_json() or "{}")
+        runs.append(payload)
+    # Compute medians
+    def median(xs):
+        ys = sorted(xs)
+        n = len(ys)
+        if n % 2 == 1:
+            return ys[n//2]
+        return 0.5 * (ys[n//2 - 1] + ys[n//2])
+
+    # Aggregate phase medians
+    phases = {}
+    for r in runs:
+        for k, v in r.get("phases", {}).items():
+            phases.setdefault(k, []).append(v)
+    phase_medians = {k: median(vs) for k, vs in phases.items()}
+    total_median = median([r.get("total", 0.0) for r in runs])
+    out = {
+        "phase_median_s": dict(sorted(phase_medians.items())),
+        "total_median_s": total_median,
+        "threads": a.threads or 0,
+        "target": a.target,
+    }
+    print(json.dumps(out, indent=2, sort_keys=True))
+
+
 def main(argv=None):
+    """CLI entrypoint that builds parser and dispatches subcommands."""
     p = argparse.ArgumentParser()
     sp = p.add_subparsers(dest="cmd", required=True)
 
@@ -148,6 +229,14 @@ def main(argv=None):
     b.add_argument("--profile", choices=["debug", "release"], default="debug")
     b.add_argument("--overflow", choices=["trap", "wrap", "debug"], default="debug")
     b.add_argument("--triple")
+    b.add_argument("--opt-size", action="store_true", dest="opt_size")
+    b.add_argument("--profile-layout", action="store_true", dest="profile_layout")
+    b.add_argument("--opt-layout", action="store_true", dest="opt_layout")
+    b.add_argument("--profile-values", action="store_true", dest="profile_values")
+    b.add_argument("--opt-value-profile", action="store_true", dest="opt_value_profile")
+    b.add_argument("--cpu-dispatch", action="store_true", dest="cpu_dispatch")
+    b.add_argument("--cpu-target", choices=["baseline", "avx2", "native"], default="baseline")
+    _add_global_flags(b)
     b.set_defaults(func=cmd_build)
 
     c = sp.add_parser("check")
@@ -163,6 +252,8 @@ def main(argv=None):
     r = sp.add_parser("run")
     r.add_argument("input")
     r.add_argument("args", nargs="*")
+    r.add_argument("--opt-size", action="store_true", dest="opt_size")
+    _add_global_flags(r)
     r.set_defaults(func=cmd_run)
 
     t = sp.add_parser("test")
@@ -181,6 +272,26 @@ def main(argv=None):
 
     s = sp.add_parser("selfhost")
     s.set_defaults(func=cmd_selfhost)
+
+    bench = sp.add_parser("bench")
+    bench.add_argument("input")
+    bench.add_argument("-o", "--output", required=True)
+    bench.add_argument("--target", choices=["py", "llvm", "native"], default="py")
+    bench.add_argument("--emit-ir")
+    bench.add_argument("--strict", action="store_true")
+    bench.add_argument("--freestanding", action="store_true")
+    bench.add_argument("--profile", choices=["debug", "release"], default="debug")
+    bench.add_argument("--overflow", choices=["trap", "wrap", "debug"], default="debug")
+    bench.add_argument("--triple")
+    bench.add_argument("--opt-size", action="store_true", dest="opt_size")
+    bench.add_argument("--profile-layout", action="store_true", dest="profile_layout")
+    bench.add_argument("--opt-layout", action="store_true", dest="opt_layout")
+    bench.add_argument("--profile-values", action="store_true", dest="profile_values")
+    bench.add_argument("--opt-value-profile", action="store_true", dest="opt_value_profile")
+    bench.add_argument("--cpu-dispatch", action="store_true", dest="cpu_dispatch")
+    bench.add_argument("--cpu-target", choices=["baseline", "avx2", "native"], default="baseline")
+    _add_global_flags(bench)
+    bench.set_defaults(func=cmd_bench)
 
     a = p.parse_args(argv)
     try:

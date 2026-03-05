@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import re
 
 from astra.ast import *
 from astra.int_types import is_int_type_name, parse_int_type_name
@@ -206,6 +207,9 @@ BUILTIN_SIGS: dict[str, BuiltinSig] = {
     "vec_get": BuiltinSig(["Any", "Int"], "Any"),
     "vec_set": BuiltinSig(["Any", "Int", "Any"], "Int"),
     "vec_push": BuiltinSig(["Any", "Any"], "Int"),
+    "secure_bytes": BuiltinSig(["Int"], "Bytes"),
+    "utf8_encode": BuiltinSig(["String"], "Bytes"),
+    "utf8_decode": BuiltinSig(["Bytes"], "Option<String>"),
 }
 
 for _name, _sig in list(BUILTIN_SIGS.items()):
@@ -254,6 +258,9 @@ _FREESTANDING_FORBIDDEN_BUILTINS: set[str] = {
     "sleep_ms",
     "panic",
     "proc_exit",
+    "secure_bytes",
+    "utf8_encode",
+    "utf8_decode",
 }
 _FREESTANDING_MODE_STACK: list[bool] = []
 
@@ -907,7 +914,8 @@ def _specialization_score(
     decl: FnDecl | ExternFnDecl,
     arg_types: list[str],
     known_types: set[str],
-) -> tuple[int, int, int, int] | None:
+    structs: dict[str, StructDecl],
+) -> tuple[tuple[int, int, int, int, int], dict[str, str]] | None:
     if len(decl.params) != len(arg_types):
         return None
     type_vars = set(getattr(decl, "generics", []))
@@ -935,8 +943,77 @@ def _specialization_score(
         constrained += 1
         if pty == aty:
             exact += 1
+    where_constraints = getattr(decl, "where", {}) or {}
+    for tvar, traits in where_constraints.items():
+        bound = bindings.get(tvar)
+        if bound is None:
+            continue
+        for tr in traits:
+            if tr == "Copy":
+                if not _is_copy_type(bound):
+                    return None
+            elif tr == "Send":
+                if not _is_send_type(bound, structs):
+                    return None
+            elif tr == "Sync":
+                if not _is_sync_type(bound, structs):
+                    return None
+            else:
+                return None
     impl_bonus = 1 if getattr(decl, "is_impl", False) else 0
-    return (exact, constrained, -wildcards, impl_bonus)
+    trait_weight = sum(len(v) for v in where_constraints.values())
+    return (exact, constrained, -wildcards, trait_weight, impl_bonus), bindings
+
+
+def _decl_specificity(decl: FnDecl | ExternFnDecl, known_types: set[str]) -> tuple[int, int, int]:
+    type_vars = set(getattr(decl, "generics", []))
+    concrete = 0
+    wildcard = 0
+    for _, pty in decl.params:
+        if pty == "Any" or _is_typevar(pty, known_types) or pty in type_vars:
+            wildcard += 1
+        else:
+            concrete += 1
+    trait_weight = sum(len(v) for v in (getattr(decl, "where", {}) or {}).values())
+    return concrete, -wildcard, trait_weight
+
+
+def _decls_overlap(a: FnDecl | ExternFnDecl, b: FnDecl | ExternFnDecl, known_types: set[str]) -> bool:
+    if len(a.params) != len(b.params):
+        return False
+    a_tvars = set(getattr(a, "generics", []))
+    b_tvars = set(getattr(b, "generics", []))
+    for (_, ap), (_, bp) in zip(a.params, b.params):
+        a_is_wild = ap == "Any" or ap in a_tvars or _is_typevar(ap, known_types)
+        b_is_wild = bp == "Any" or bp in b_tvars or _is_typevar(bp, known_types)
+        if not a_is_wild and not b_is_wild and not _same_type(ap, bp):
+            return False
+    return True
+
+
+def _bind_decl_typevars(decl: FnDecl | ExternFnDecl, arg_types: list[str], known_types: set[str]) -> dict[str, str] | None:
+    if len(decl.params) != len(arg_types):
+        return None
+    type_vars = set(getattr(decl, "generics", []))
+    for _, pty in decl.params:
+        if _is_typevar(pty, known_types):
+            type_vars.add(pty)
+    bindings: dict[str, str] = {}
+    for (_, pty), aty in zip(decl.params, arg_types):
+        if pty in type_vars:
+            bound = bindings.get(pty)
+            if bound is None:
+                bindings[pty] = _canonical_type(aty)
+            elif not _same_type(bound, aty):
+                return None
+    return bindings
+
+
+def _apply_type_bindings(typ: str, bindings: dict[str, str]) -> str:
+    out = str(typ)
+    for tv, bt in bindings.items():
+        out = re.sub(rf"\b{re.escape(tv)}\b", bt, out)
+    return _canonical_type(out)
 
 
 def _choose_impl(
@@ -944,14 +1021,16 @@ def _choose_impl(
     decls: list[FnDecl | ExternFnDecl],
     arg_types: list[str],
     known_types: set[str],
+    structs: dict[str, StructDecl],
     filename: str,
     line: int,
     col: int,
 ) -> FnDecl | ExternFnDecl:
-    ranked: list[tuple[tuple[int, int, int, int], FnDecl | ExternFnDecl]] = []
+    ranked: list[tuple[tuple[int, int, int, int, int], FnDecl | ExternFnDecl]] = []
     for d in decls:
-        sc = _specialization_score(d, arg_types, known_types)
-        if sc is not None:
+        scored = _specialization_score(d, arg_types, known_types, structs)
+        if scored is not None:
+            sc, _ = scored
             ranked.append((sc, d))
     if not ranked:
         raise SemanticError(_diag(filename, line, col, f"no matching impl for {name}({', '.join(arg_types)})"))
@@ -987,6 +1066,7 @@ def analyze(
         fn_groups: dict[str, list[FnDecl | ExternFnDecl]] = {}
         structs: dict[str, StructDecl] = {}
         enums: dict[str, EnumDecl] = {}
+        aliases: dict[str, TypeAliasDecl] = {}
         global_scope: dict[str, str] = {}
         for item in prog.items:
             try:
@@ -1003,6 +1083,8 @@ def analyze(
                         global_scope[item.alias] = f"module:{item.path[-1]}"
                     continue
                 if isinstance(item, StructDecl):
+                    if item.name in structs or item.name in enums or item.name in aliases:
+                        raise SemanticError(_diag(filename, item.line, item.col, f"duplicate type definition {item.name}"))
                     for _, field_ty in item.fields:
                         _validate_decl_type(field_ty, filename, item.line, item.col)
                     if item.packed:
@@ -1013,21 +1095,49 @@ def analyze(
                     structs[item.name] = item
                     continue
                 if isinstance(item, TypeAliasDecl):
+                    if item.name in structs or item.name in enums or item.name in aliases:
+                        raise SemanticError(_diag(filename, item.line, item.col, f"duplicate type definition {item.name}"))
                     _validate_decl_type(item.target, filename, item.line, item.col)
+                    aliases[item.name] = item
                     continue
                 if isinstance(item, EnumDecl):
+                    if item.name in structs or item.name in enums or item.name in aliases:
+                        raise SemanticError(_diag(filename, item.line, item.col, f"duplicate type definition {item.name}"))
                     enums[item.name] = item
                     continue
                 if isinstance(item, (FnDecl, ExternFnDecl)):
                     for _, pty in item.params:
                         _validate_decl_type(pty, filename, item.line, item.col)
                     _validate_decl_type(item.ret, filename, item.line, item.col)
+                    if isinstance(item, FnDecl):
+                        fn_type_vars = set(item.generics)
+                        for _, pty in item.params:
+                            if _is_typevar(pty, set(PRIMITIVES) | set(structs.keys()) | set(enums.keys())):
+                                fn_type_vars.add(pty)
+                        for tvar, traits in (item.where or {}).items():
+                            if tvar not in fn_type_vars:
+                                raise SemanticError(_diag(filename, item.line, item.col, f"where constraint references unknown type variable {tvar}"))
+                            for tr in traits:
+                                if tr not in {"Copy", "Send", "Sync"}:
+                                    raise SemanticError(_diag(filename, item.line, item.col, f"unknown constraint trait {tr}; supported: Copy, Send, Sync"))
                     fn_groups.setdefault(item.name, []).append(item)
             except SemanticError as err:
                 _record(err)
                 continue
 
         for name, decls in fn_groups.items():
+            known_types = set(PRIMITIVES) | set(structs.keys()) | set(enums.keys())
+            impls = [d for d in decls if isinstance(d, FnDecl) and d.is_impl]
+            for i in range(len(impls)):
+                for j in range(i + 1, len(impls)):
+                    a = impls[i]
+                    b = impls[j]
+                    if not _decls_overlap(a, b, known_types):
+                        continue
+                    sa = _decl_specificity(a, known_types)
+                    sb = _decl_specificity(b, known_types)
+                    if sa == sb:
+                        raise SemanticError(_diag(filename, a.line, a.col, f"overlapping impl specializations for {name}; add stronger constraints or remove one impl"))
             if len(decls) == 1 and not (isinstance(decls[0], FnDecl) and decls[0].is_impl):
                 if isinstance(decls[0], FnDecl):
                     decls[0].symbol = name
@@ -1496,28 +1606,81 @@ def _check_stmt(
     if isinstance(st, MatchStmt):
         subject_ty = _infer(st.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         seen_bool: set[bool] = set()
+        seen_enum_variants: set[str] = set()
         seen_wildcard = False
-        for idx, (pat, body) in enumerate(st.arms):
+
+        def _unwrap_guard(pat: Any) -> tuple[Any, Any | None]:
+            if isinstance(pat, GuardPattern):
+                return pat.pattern, pat.cond
+            return pat, None
+
+        def _check_pattern(pat: Any, expected_ty: str, bind_scope: dict[str, str], bind_fixed: dict[str, bool]) -> set[str]:
             if isinstance(pat, WildcardPattern):
+                return set()
+            if isinstance(pat, BindPattern):
+                if pat.name in bind_scope:
+                    raise SemanticError(_diag(filename, pat.line, pat.col, f"duplicate binding `{pat.name}` in pattern"))
+                bind_scope[pat.name] = expected_ty
+                bind_fixed[pat.name] = True
+                move.declare(pat.name)
+                return set()
+            if isinstance(pat, VariantPattern):
+                if expected_ty not in enums:
+                    raise SemanticError(_diag(filename, pat.line, pat.col, f"variant pattern requires enum subject, got {expected_ty}"))
+                if pat.enum_name != expected_ty:
+                    raise SemanticError(_diag(filename, pat.line, pat.col, f"expected enum {expected_ty} in pattern, got {pat.enum_name}"))
+                decl = enums[expected_ty]
+                for vname, payload in decl.variants:
+                    if vname != pat.variant:
+                        continue
+                    if len(payload) != len(pat.args):
+                        raise SemanticError(_diag(filename, pat.line, pat.col, f"variant {expected_ty}.{vname} expects {len(payload)} pattern args, got {len(pat.args)}"))
+                    for sub_pat, sub_ty in zip(pat.args, payload):
+                        _check_pattern(sub_pat, sub_ty, bind_scope, bind_fixed)
+                    return {vname}
+                raise SemanticError(_diag(filename, pat.line, pat.col, f"unknown variant {expected_ty}.{pat.variant}"))
+            pty = _infer(pat, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+            if expected_ty != "Any":
+                _require_type(filename, st.line, st.col, expected_ty, pty, "match pattern")
+            return set()
+
+        for idx, (pat, body) in enumerate(st.arms):
+            if seen_wildcard:
+                raise SemanticError(_diag(filename, st.line, st.col, "unreachable match arm after wildcard"))
+            arm_pat, guard = _unwrap_guard(pat)
+            if isinstance(arm_pat, WildcardPattern):
                 if seen_wildcard:
-                    raise SemanticError(_diag(filename, pat.line, pat.col, "duplicate wildcard match arm"))
+                    raise SemanticError(_diag(filename, arm_pat.line, arm_pat.col, "duplicate wildcard match arm"))
                 if idx != len(st.arms) - 1:
-                    raise SemanticError(_diag(filename, pat.line, pat.col, "wildcard match arm must be last"))
+                    raise SemanticError(_diag(filename, arm_pat.line, arm_pat.col, "wildcard match arm must be last"))
                 seen_wildcard = True
-                pty = subject_ty
+                matched_variants = set()
             else:
-                pty = _infer(pat, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
-                if subject_ty != "Any":
-                    _require_type(filename, st.line, st.col, subject_ty, pty, "match pattern")
-                if isinstance(pat, BoolLit):
-                    if pat.value in seen_bool:
-                        value_text = "true" if pat.value else "false"
-                        raise SemanticError(_diag(filename, pat.line, pat.col, f"duplicate Bool match arm for {value_text}"))
-                    seen_bool.add(pat.value)
+                bind_scope: dict[str, str] = {}
+                bind_fixed: dict[str, bool] = {}
+                matched_variants = _check_pattern(arm_pat, subject_ty, bind_scope, bind_fixed)
+                if isinstance(arm_pat, BoolLit):
+                    if arm_pat.value in seen_bool and guard is None:
+                        value_text = "true" if arm_pat.value else "false"
+                        raise SemanticError(_diag(filename, arm_pat.line, arm_pat.col, f"duplicate Bool match arm for {value_text}"))
+                    if guard is None:
+                        seen_bool.add(arm_pat.value)
+                if subject_ty in enums and matched_variants:
+                    vname = next(iter(matched_variants))
+                    if vname in seen_enum_variants and guard is None:
+                        raise SemanticError(_diag(filename, arm_pat.line, arm_pat.col, f"unreachable duplicate enum match arm for {subject_ty}.{vname}"))
+                    if guard is None:
+                        seen_enum_variants.add(vname)
             arm_scopes = scopes + [{}]
             arm_fixed_scopes = fixed_scopes + [{}]
+            if not isinstance(arm_pat, WildcardPattern):
+                arm_scopes[-1].update(bind_scope)
+                arm_fixed_scopes[-1].update(bind_fixed)
             arm_borrow_scopes = borrow_scopes + [set()]
             arm_move_scopes = move_scopes + [{}]
+            if guard is not None:
+                guard_ty = _infer(guard, arm_scopes, arm_fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+                _require_type(filename, guard.line, guard.col, "Bool", guard_ty, "match guard")
             _check_block(
                 body,
                 arm_scopes,
@@ -1539,6 +1702,11 @@ def _check_stmt(
             )
         if subject_ty == "Bool" and not seen_wildcard and seen_bool != {True, False}:
             raise SemanticError(_diag(filename, st.line, st.col, "non-exhaustive match for Bool"))
+        if subject_ty in enums and not seen_wildcard:
+            all_variants = {v for v, _ in enums[subject_ty].variants}
+            if seen_enum_variants != all_variants:
+                missing = ", ".join(sorted(all_variants - seen_enum_variants))
+                raise SemanticError(_diag(filename, st.line, st.col, f"non-exhaustive match for {subject_ty}; missing: {missing}"))
         return
     if isinstance(st, ExprStmt):
         _infer(st.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
@@ -1579,6 +1747,8 @@ def _infer(
 ):
     if isinstance(e, WildcardPattern):
         raise SemanticError(_diag(filename, e.line, e.col, "wildcard pattern `_` is only valid in match arms"))
+    if isinstance(e, (BindPattern, VariantPattern, GuardPattern)):
+        raise SemanticError(_diag(filename, e.line, e.col, "pattern is only valid in match arms"))
     if isinstance(e, BoolLit):
         return _typed(e, "Bool")
     if isinstance(e, NilLit):
@@ -1775,13 +1945,26 @@ def _infer(
             return _typed(e, _vec_inner(base_ty))
         return _typed(e, "Any")
     if isinstance(e, FieldExpr):
-        obj_ty = _infer(e.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
-        # Strip reference types to get the underlying struct type
-        base_ty = _strip_ref(obj_ty)
+        base_ty: str
+        namespace_access = False
+        if isinstance(e.obj, Name) and _lookup(e.obj.value, scopes) is None and (e.obj.value in structs or e.obj.value in enums):
+            base_ty = e.obj.value
+            namespace_access = True
+        else:
+            obj_ty = _infer(e.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+            # Strip reference types to get the underlying struct/enum type.
+            base_ty = _strip_ref(obj_ty)
         if base_ty in structs:
             for fname, fty in structs[base_ty].fields:
                 if fname == e.field:
                     return _typed(e, fty)
+        if namespace_access and base_ty in enums:
+            for vname, vtypes in enums[base_ty].variants:
+                if vname != e.field:
+                    continue
+                if not vtypes:
+                    return _typed(e, base_ty)
+                return _typed(e, _fn_type([(f"v{i}", vty) for i, vty in enumerate(vtypes)], base_ty))
         return _typed(e, "Any")
     if isinstance(e, ArrayLit):
         if not e.elements:
@@ -1877,7 +2060,7 @@ def _infer_call(
             worker_unsafe = False
             if isinstance(worker, Name) and worker.value in fn_groups:
                 known_types = set(PRIMITIVES) | set(structs.keys()) | set(enums.keys())
-                worker_decl = _choose_impl(worker.value, fn_groups[worker.value], arg_types[1:], known_types, filename, e.line, e.col)
+                worker_decl = _choose_impl(worker.value, fn_groups[worker.value], arg_types[1:], known_types, structs, filename, e.line, e.col)
                 worker_param_tys = [pty for _, pty in worker_decl.params]
                 worker_ret_ty = worker_decl.ret
                 worker_unsafe = bool(getattr(worker_decl, "unsafe", False))
@@ -1979,20 +2162,22 @@ def _infer_call(
             return "Int"
         if name in fn_groups:
             known_types = set(PRIMITIVES) | set(structs.keys()) | set(enums.keys())
-            decl = _choose_impl(name, fn_groups[name], arg_types, known_types, filename, e.line, e.col)
+            decl = _choose_impl(name, fn_groups[name], arg_types, known_types, structs, filename, e.line, e.col)
+            bindings = _bind_decl_typevars(decl, arg_types, known_types) or {}
             if getattr(decl, "unsafe", False):
                 _require_unsafe_context(name, e.line, e.col)
             if len(e.args) != len(decl.params):
                 raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects {len(decl.params)} args, got {len(e.args)}"))
             for i, ((_, pty), arg) in enumerate(zip(decl.params, e.args)):
                 aty = arg_types[i]
+                expected_pty = _apply_type_bindings(pty, bindings)
                 if not _is_typevar(pty, known_types):
-                    _require_type(filename, arg.line, arg.col, pty, aty, f"arg {i} for {name}")
-                if not _is_ref_type(pty) and pty != "Any" and not _is_typevar(pty, known_types):
+                    _require_type(filename, arg.line, arg.col, expected_pty, aty, f"arg {i} for {name}")
+                if not _is_ref_type(expected_pty) and expected_pty != "Any" and not _is_typevar(pty, known_types):
                     _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
             if isinstance(decl, FnDecl):
                 e.resolved_name = decl.symbol or decl.name
-            return decl.ret
+            return _apply_type_bindings(decl.ret, bindings)
         local = _lookup(name, scopes)
         if local is not None:
             setattr(e.fn, "inferred_type", local)
@@ -2032,16 +2217,37 @@ def _infer_call(
         raise SemanticError(_diag(filename, e.line, e.col, f"undefined function {name}"))
     if isinstance(e.fn, FieldExpr):
         obj_ty = _infer(e.fn.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
-        if e.fn.field == "get":
+        base_ty = _strip_ref(_canonical_type(obj_ty))
+        if isinstance(e.fn.obj, Name):
+            mod_ty = _lookup(e.fn.obj.value, scopes)
+            if isinstance(mod_ty, str) and mod_ty.startswith("module:"):
+                mfn = e.fn.field
+                if mfn in fn_groups:
+                    known_types = set(PRIMITIVES) | set(structs.keys()) | set(enums.keys())
+                    decl = _choose_impl(mfn, fn_groups[mfn], arg_types, known_types, structs, filename, e.line, e.col)
+                    bindings = _bind_decl_typevars(decl, arg_types, known_types) or {}
+                    if getattr(decl, "unsafe", False):
+                        _require_unsafe_context(mfn, e.line, e.col)
+                    if len(e.args) != len(decl.params):
+                        raise SemanticError(_diag(filename, e.line, e.col, f"{mfn} expects {len(decl.params)} args, got {len(e.args)}"))
+                    for i, ((_, pty), arg) in enumerate(zip(decl.params, e.args)):
+                        aty = arg_types[i]
+                        expected_pty = _apply_type_bindings(pty, bindings)
+                        if not _is_typevar(pty, known_types):
+                            _require_type(filename, arg.line, arg.col, expected_pty, aty, f"arg {i} for {mfn}")
+                        if not _is_ref_type(expected_pty) and expected_pty != "Any" and not _is_typevar(pty, known_types):
+                            _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
+                    if isinstance(decl, FnDecl):
+                        e.resolved_name = decl.symbol or decl.name
+                    return _apply_type_bindings(decl.ret, bindings)
+        if e.fn.field == "get" and (_is_slice_type(base_ty) or _is_vec_type(base_ty)):
             if len(e.args) != 1:
                 raise SemanticError(_diag(filename, e.line, e.col, "get expects 1 arg"))
             _require_type(filename, e.args[0].line, e.args[0].col, "Int", arg_types[0], "arg 0 for get")
-            base_ty = _strip_ref(_canonical_type(obj_ty))
             if _is_slice_type(base_ty):
                 return f"Option<{_slice_inner(base_ty)}>"
             if _is_vec_type(base_ty):
                 return f"Option<{_vec_inner(base_ty)}>"
-        return "Any"
     callee_ty = _infer(e.fn, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
     setattr(e.fn, "inferred_type", callee_ty)
     parsed = _parse_fn_type(callee_ty)
@@ -2052,10 +2258,12 @@ def _infer_call(
         _require_unsafe_context("<unsafe fn>", e.line, e.col)
     if len(param_tys) != len(e.args):
         raise SemanticError(_diag(filename, e.line, e.col, f"callee expects {len(param_tys)} args, got {len(e.args)}"))
+    known_types = set(PRIMITIVES) | set(structs.keys()) | set(enums.keys())
     for i, (expected, arg) in enumerate(zip(param_tys, e.args)):
         aty = arg_types[i]
-        _require_type(filename, arg.line, arg.col, expected, aty, f"arg {i} for function pointer call")
-        if not _is_ref_type(expected) and expected != "Any":
+        if not _is_typevar(expected, known_types):
+            _require_type(filename, arg.line, arg.col, expected, aty, f"arg {i} for function pointer call")
+        if not _is_ref_type(expected) and expected != "Any" and not _is_typevar(expected, known_types):
             _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
     return ret_ty
 

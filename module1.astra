@@ -1,0 +1,15 @@
+// Module 1 for parallel compilation test
+
+pub fn sum_to_100() -> Int {
+    let mut sum = 0;
+    let mut i = 0;
+    while i < 100 {
+        sum = sum + i;
+        i = i + 1;
+    }
+    return sum;
+}
+
+fn helper(x: Int) -> Int {
+    return x * 2;
+}

@@ -1,0 +1,137 @@
+/// std.crypto.otp – one-time pad helpers over `Bytes`.
+///
+/// Security requirements for perfect secrecy:
+/// 1) key bytes must be truly random,
+/// 2) key length must equal message length,
+/// 3) key must never be reused,
+/// 4) key must remain secret.
+///
+/// Reusing a key catastrophically breaks OTP security.
+/// This module does not solve key distribution.
+/// For most applications use modern authenticated encryption (AEAD) instead.
+
+import std.core;
+
+enum OtpError {
+  LengthMismatch(Int, Int),
+  KeyReuse,
+  InvalidLength,
+  Utf8Error,
+  RandomError,
+}
+
+fn secure_bytes(n: Int) -> Bytes {
+  return __secure_bytes(n);
+}
+
+struct OtpKey {
+  bytes Bytes,
+  used Bool,
+}
+
+fn unit() -> Void { return; }
+
+fn zeroize(buf: Bytes) -> Int {
+  let n = vec_len(buf);
+  let mut i = 0;
+  while i < n {
+    drop vec_set(buf, i, 0u8);
+    i += 1;
+  }
+  return n;
+}
+
+fn xor_bytes(msg: Bytes, key: Bytes) -> Result {
+  let n_msg = vec_len(msg);
+  let n_key = vec_len(key);
+  if n_msg != n_key {
+    return Result.Err(OtpError.LengthMismatch(n_msg, n_key));
+  }
+  let out = vec_from(msg);
+  let mut i = 0;
+  while i < n_msg {
+    let m: Option<u8> = vec_get(msg, i);
+    let k: Option<u8> = vec_get(key, i);
+    drop vec_set(out, i, (m ?? 0u8) ^ (k ?? 0u8));
+    i += 1;
+  }
+  return Result.Ok(out);
+}
+
+fn xor_in_place(buf: &mut Bytes, key: Bytes) -> Result {
+  let n_buf = vec_len(*buf);
+  let n_key = vec_len(key);
+  if n_buf != n_key {
+    return Result.Err(OtpError.LengthMismatch(n_buf, n_key));
+  }
+  let mut i = 0;
+  while i < n_buf {
+    let b: Option<u8> = vec_get(*buf, i);
+    let k: Option<u8> = vec_get(key, i);
+    drop vec_set(*buf, i, (b ?? 0u8) ^ (k ?? 0u8));
+    i += 1;
+  }
+  return Result.Ok(unit());
+}
+
+fn new_random(len: Int) -> Result {
+  if len <= 0 {
+    return Result.Err(OtpError.InvalidLength);
+  }
+  let key_bytes = secure_bytes(len);
+  return Result.Ok(OtpKey(key_bytes, false));
+}
+
+fn from_bytes(key: Bytes) -> Result {
+  let n = vec_len(key);
+  if n <= 0 {
+    return Result.Err(OtpError.InvalidLength);
+  }
+  return Result.Ok(OtpKey(vec_from(key), false));
+}
+
+fn key_len(key: OtpKey) -> Int {
+  return vec_len(key.bytes);
+}
+
+fn encrypt(key: &mut OtpKey, plaintext: Bytes) -> Result {
+  if key.used {
+    return Result.Err(OtpError.KeyReuse);
+  }
+  match xor_bytes(plaintext, key.bytes) {
+    Result.Ok(ct) => {
+      key.used = true;
+      drop zeroize(key.bytes);
+      return Result.Ok(ct);
+    }
+    Result.Err(err) => {
+      return Result.Err(err);
+    }
+  }
+  return Result.Err(OtpError.RandomError);
+}
+
+fn decrypt(key: &mut OtpKey, ciphertext: Bytes) -> Result {
+  return encrypt(key, ciphertext);
+}
+
+fn encrypt_utf8(key: &mut OtpKey, plaintext: String) -> Result {
+  let data = __utf8_encode(plaintext);
+  return encrypt(key, data);
+}
+
+fn decrypt_utf8(key: &mut OtpKey, ciphertext: Bytes) -> Result {
+  match decrypt(key, ciphertext) {
+    Result.Ok(data) => {
+      let text_opt: Option<String> = __utf8_decode(data);
+      if text_opt == none {
+        return Result.Err(OtpError.Utf8Error);
+      }
+      return Result.Ok(text_opt ?? "");
+    }
+    Result.Err(err) => {
+      return Result.Err(err);
+    }
+  }
+  return Result.Err(OtpError.Utf8Error);
+}

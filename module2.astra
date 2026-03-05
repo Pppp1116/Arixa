@@ -1,0 +1,18 @@
+// Module 2 for parallel compilation test
+
+pub fn compute() -> Int {
+    let mut product = 1;
+    let mut i = 1;
+    while i <= 10 {
+        product = product * i;
+        i = i + 1;
+    }
+    return product;
+}
+
+pub fn factorial(n: Int) -> Int {
+    if n <= 1 {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}

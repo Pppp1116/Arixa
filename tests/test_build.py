@@ -692,3 +692,189 @@ def test_build_cache_key_includes_profile_and_overflow(tmp_path: Path):
     assert st3 == "built"
     assert st4 == "cached"
     assert st5 == "built"
+
+
+def test_build_dce_prunes_unreachable_functions_and_imported_module_items(tmp_path: Path):
+    src = tmp_path / "main.astra"
+    dep = tmp_path / "helper.astra"
+    out = tmp_path / "main.py"
+    dep.write_text(
+        """
+fn used_from_dep() -> Int { return 7; }
+fn unused_from_dep() -> Int { return 99; }
+"""
+    )
+    src.write_text(
+        """
+import helper;
+fn used_local() -> Int { return used_from_dep(); }
+fn unused_local() -> Int { return 13; }
+fn main() -> Int { return used_local(); }
+"""
+    )
+    st = build(str(src), str(out), "py")
+    assert st in {"built", "cached"}
+    py = out.read_text()
+    assert "def used_local(" in py
+    assert "def used_from_dep(" in py
+    assert "def unused_local(" not in py
+    assert "def unused_from_dep(" not in py
+
+
+def test_build_without_std_usage_does_not_emit_std_module_functions(tmp_path: Path):
+    src = tmp_path / "main.astra"
+    out = tmp_path / "main.py"
+    src.write_text('fn main() -> Int { print("hi"); return 0; }')
+    st = build(str(src), str(out), "py")
+    assert st in {"built", "cached"}
+    py = out.read_text()
+    assert "def digest_pair(" not in py
+
+
+def test_build_dce_keeps_only_used_std_functions(tmp_path: Path):
+    src = tmp_path / "main.astra"
+    out = tmp_path / "main.py"
+    src.write_text(
+        """
+import std.math;
+fn main() -> Int { return abs_int(-9); }
+"""
+    )
+    st = build(str(src), str(out), "py")
+    assert st in {"built", "cached"}
+    py = out.read_text()
+    assert "def abs_int(" in py
+    assert "def min_int(" not in py
+    assert "def max_int(" not in py
+    assert "def clamp_int(" not in py
+
+
+def test_build_dce_dynamic_calls_keep_types_used_by_now_reachable_functions(tmp_path: Path):
+    src = tmp_path / "main.astra"
+    out = tmp_path / "main.py"
+    src.write_text(
+        """
+struct S { v Int }
+struct Wrap { call fn() -> Int }
+fn helper() -> Int { let s = S(3); return s.v; }
+fn main() -> Int {
+  let w = Wrap(helper);
+  return w.call();
+}
+"""
+    )
+    st = build(str(src), str(out), "py")
+    assert st in {"built", "cached"}
+    py = out.read_text()
+    assert "class S:" in py
+
+
+def test_build_rejects_conflicting_layout_profile_modes(tmp_path: Path):
+    src = tmp_path / "main.astra"
+    out = tmp_path / "main.exe"
+    src.write_text("fn main() -> Int { return 0; }")
+    with pytest.raises(RuntimeError) as excinfo:
+        build(str(src), str(out), "llvm", profile_layout=True, opt_layout=True)
+    assert "mutually exclusive" in str(excinfo.value)
+
+
+def test_build_rejects_conflicting_value_profile_modes(tmp_path: Path):
+    src = tmp_path / "main.astra"
+    out = tmp_path / "main.exe"
+    src.write_text("fn main() -> Int { return 0; }")
+    with pytest.raises(RuntimeError) as excinfo:
+        build(str(src), str(out), "llvm", profile_values=True, opt_value_profile=True)
+    assert "mutually exclusive" in str(excinfo.value)
+
+
+def test_cached_build_still_emits_missing_profile_templates(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    src = tmp_path / "main.astra"
+    out = tmp_path / "main.exe"
+    src.write_text("fn main() -> Int { return 0; }")
+
+    st1 = build(str(src), str(out), "llvm", profile_layout=True, profile_values=True)
+    assert st1 in {"built", "cached"}
+
+    layout_path = tmp_path / ".build" / "astra-profile.json"
+    value_path = tmp_path / ".build" / "value_profile.json"
+    if layout_path.exists():
+        layout_path.unlink()
+    if value_path.exists():
+        value_path.unlink()
+
+    st2 = build(str(src), str(out), "llvm", profile_layout=True, profile_values=True)
+    assert st2 == "cached"
+    assert layout_path.exists()
+    assert value_path.exists()
+
+
+def test_build_rejects_cpu_target_without_dispatch(tmp_path: Path):
+    src = tmp_path / "main.astra"
+    out = tmp_path / "main.exe"
+    src.write_text("fn main() -> Int { return 0; }")
+    with pytest.raises(RuntimeError) as excinfo:
+        build(str(src), str(out), "llvm", cpu_target="avx2")
+    assert "--cpu-target requires --cpu-dispatch" in str(excinfo.value)
+
+
+@pytest.mark.skipif(
+    shutil.which("clang") is None,
+    reason="native target requires clang",
+)
+def test_cached_native_build_profile_layout_does_not_read_binary_as_text(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    src = tmp_path / "main.astra"
+    out = tmp_path / "main.exe"
+    src.write_text("fn main() -> Int { return 0; }")
+    st1 = build(str(src), str(out), "native", profile_layout=True)
+    assert st1 in {"built", "cached"}
+    profile = tmp_path / ".build" / "astra-profile.json"
+    if profile.exists():
+        profile.unlink()
+    st2 = build(str(src), str(out), "native", profile_layout=True)
+    assert st2 == "cached"
+    assert profile.exists()
+
+
+@pytest.mark.skipif(
+    shutil.which("clang") is None,
+    reason="native target requires clang",
+)
+def test_cached_layout_profile_respects_opt_value_profile(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+    src = tmp_path / "main.astra"
+    out = tmp_path / "main.exe"
+    src.write_text("""
+fn f(x: Int) -> Int {
+  match x {
+    0 => { return 1; }
+    1 => { return 2; }
+    _ => { return 3; }
+  }
+}
+fn main() -> Int { return f(7); }
+""")
+    (tmp_path / '.build').mkdir(exist_ok=True)
+    (tmp_path / '.build' / 'value_profile.json').write_text('{"switch_cases": {"f:x": {"0": 1, "1": 999}}, "indirect_calls": {}, "array_lengths": {}, "common_integers": {}}')
+
+    st1 = build(str(src), str(out), 'native', profile_layout=True, opt_value_profile=True)
+    assert st1 in {'built', 'cached'}
+
+    calls = {'n': 0}
+    import astra.build as build_mod
+    orig = build_mod.apply_value_specialization
+
+    def wrapped(prog, profile):
+        calls['n'] += 1
+        return orig(prog, profile)
+
+    monkeypatch.setattr(build_mod, 'apply_value_specialization', wrapped)
+    layout = tmp_path / '.build' / 'astra-profile.json'
+    if layout.exists():
+        layout.unlink()
+
+    st2 = build(str(src), str(out), 'native', profile_layout=True, opt_value_profile=True)
+    assert st2 == 'cached'
+    assert calls['n'] >= 1
+    assert layout.exists()

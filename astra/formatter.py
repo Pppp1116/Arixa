@@ -51,6 +51,14 @@ def _fmt_expr(e) -> str:
         return e.value
     if isinstance(e, WildcardPattern):
         return "_"
+    if isinstance(e, BindPattern):
+        return e.name
+    if isinstance(e, VariantPattern):
+        if e.args:
+            return f"{e.enum_name}.{e.variant}({', '.join(_fmt_expr(a) for a in e.args)})"
+        return f"{e.enum_name}.{e.variant}"
+    if isinstance(e, GuardPattern):
+        return f"{_fmt_expr(e.pattern)} if {_fmt_expr(e.cond)}"
     if isinstance(e, AwaitExpr):
         return f"await {_fmt_expr_with_prec(e.expr, _PREC_UNARY)}"
     if isinstance(e, Unary):
@@ -247,7 +255,11 @@ def _fmt_item(item) -> list[str]:
         async_kw = "async " if item.async_fn else ""
         unsafe_kw = "unsafe " if item.unsafe else ""
         sig = ", ".join(f"{n} {type_text(t)}" for n, t in item.params)
-        out.append(f"{pub}{impl_kw}{async_kw}{unsafe_kw}fn {item.name}({sig}) -> {type_text(item.ret)} {{")
+        where = ""
+        if item.where:
+            parts = [f"{tv}: {' + '.join(traits)}" for tv, traits in item.where.items()]
+            where = f" where {', '.join(parts)}"
+        out.append(f"{pub}{impl_kw}{async_kw}{unsafe_kw}fn {item.name}({sig}) -> {type_text(item.ret)}{where} {{")
         for st in item.body:
             out.extend(_fmt_stmt(st, 1))
         out.append("}")

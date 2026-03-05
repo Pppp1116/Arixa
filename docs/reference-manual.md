@@ -1,7 +1,7 @@
 # Astra Reference Manual
 
 ## CLI
-- `astra build <in> -o <out> [--target py|llvm|native] [--emit-ir out.ll] [--strict] [--freestanding] [--profile debug|release] [--overflow trap|wrap|debug] [--triple <llvm-triple>]`
+- `astra build <in> -o <out> [--target py|llvm|native] [--emit-ir out.ll] [--strict] [--freestanding] [--profile debug|release] [--overflow trap|wrap|debug] [--triple <llvm-triple>] [--opt-size] [--profile-layout] [--opt-layout] [--profile-values] [--opt-value-profile] [--cpu-dispatch] [--cpu-target baseline|avx2|native]`
 - `astra check <in> [--freestanding] [--overflow trap|wrap|debug] [--json]`
 - `astra check --files <f1> <f2> ... [--freestanding] [--overflow ...] [--json]`
 - `astra check --stdin [--stdin-filename name] [--freestanding] [--overflow ...] [--json]`
@@ -11,6 +11,21 @@
 - `astra doc <in> -o <out>`
 - `astra selfhost` (currently unavailable: placeholder only, no real self-hosting pipeline)
 - `--target native` requires `clang` in `PATH` and links against bundled runtime source (override with `ASTRA_RUNTIME_C_PATH`).
+- `--opt-size` enables size-oriented build tuning (aggressive reachability pruning, native `-Oz/-flto/-s` when applicable).
+- layout profiling / post-link layout tuning:
+  - `--profile-layout` emits `.build/astra-profile.json` with function counters, CFG-edge counters, and indirect-call counter slots
+  - `--opt-layout` reads `.build/astra-profile.json` and applies profile-guided function + basic-block reordering before final link
+- value profiling / specialization:
+  - `--profile-values` emits `.build/value_profile.json` templates for match/switch cases, indirect-call sites, common integer values, and array-length buckets
+  - `--opt-value-profile` reads `.build/value_profile.json` and enables value-specialization (hot-value fast paths and profile-guided indirect-call specialization hooks) before LLVM codegen
+- CPU multiversioning:
+  - annotate hot loop-heavy functions with `@multiversion`
+  - `--cpu-dispatch` toggles emission of a runtime dispatcher; it does not by itself force all variants to be built
+  - `--cpu-target baseline|avx2|native` selects which variants are compiled:
+    - `baseline` → `{baseline}`
+    - `avx2` → `{baseline, sse4, avx2}`
+    - `native` → `{baseline, sse4, avx2, avx512}`
+  - when `--cpu-dispatch` is also set, dispatcher selection is emitted over the variant set produced by `--cpu-target`
 - `--freestanding` enforces runtime-free semantics/codegen for LLVM/native outputs:
   - hosted/runtime builtins are rejected in semantic analysis
   - emitted LLVM IR cannot reference `astra_*` runtime symbols or non-LLVM external host symbols
@@ -35,6 +50,7 @@
   - `import "relative/path";` (relative to importing source file)
 - non-stdlib module imports resolve from nearest package root containing `Astra.toml`; if none exists, they resolve relative to the importing file directory.
 - stdlib lookup order: `ASTRA_STDLIB_PATH` -> repo `stdlib/` (dev checkout) -> bundled `astra/stdlib` (installed package)
+- Reachability-based dead-code elimination runs before codegen, so only stdlib symbols reachable from the entrypoint are emitted.
 - syntax guide: `docs/language-syntax-book.md`
 
 ## Language conveniences
@@ -47,6 +63,7 @@
 - expression statements may discard values of any type
 - typed params/fields accept `name Type` and `name: Type` (canonical style is `name: Type`)
 - specialization impls: `impl fn name(...) -> ... { ... }`
+- generic constraints on function impls: `where T: Copy + Send` (currently supported constraints: `Copy`, `Send`, `Sync`)
 - compile-time execution: `comptime { ... }` (pure/deterministic subset with control flow and function-typed call support)
 - text/buffer core types: `String`/`Vec<T>` (stdlib owned types), `str`/`[T]` (unsized DSTs behind references), `Bytes = Vec<u8>`
 - `[T]` is valid in practice as `&[T]` / `&mut [T]` (or other pointer-backed DST positions), not as a standalone sized value
@@ -67,6 +84,7 @@
 - `spawn` safety checks:
   - arguments must satisfy Send-like checks
   - shared references captured by `spawn` require Sync-like pointee types
+- `match` supports literal arms, wildcard `_`, bind patterns, enum variant patterns (`Enum.Variant`, `Enum.Variant(x, ...)`), and optional guards (`if cond`)
 - integer type syntax supports `iN`/`uN` where `N` is `1..128` (for example `u4`, `i127`)
 - integer literals support suffix typing like `15u4` and `3i7`
 - signed `i1` is rejected with a diagnostic hint (`did you mean u1?`)

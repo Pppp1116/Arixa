@@ -72,6 +72,9 @@ class _ModuleCtx:
     fn_sigs: dict[str, _FnSig]
     fn_map: dict[str, ir.Function]
     string_globals: dict[str, ir.GlobalVariable]
+    cpu_dispatch: bool = False
+    cpu_target: str = "baseline"
+    multiversion_variants: dict[str, list[str]] = field(default_factory=dict)
 
 
 _FREESTANDING_HEAP_BYTES = 8 * 1024 * 1024
@@ -787,6 +790,12 @@ def _declare_runtime(ctx: _ModuleCtx, name: str) -> ir.Function:
         fnty = ir.FunctionType(i64, [])
     elif name == "astra_sleep_ms":
         fnty = ir.FunctionType(i64, [i64])
+    elif name == "astra_secure_bytes":
+        fnty = ir.FunctionType(i8p, [i64])
+    elif name == "astra_utf8_encode":
+        fnty = ir.FunctionType(i8p, [i8p])
+    elif name == "astra_utf8_decode":
+        fnty = ir.FunctionType(i8p, [i8p])
     elif name == "astra_alloc":
         fnty = ir.FunctionType(i64, [i64, i64])
     elif name == "astra_free":
@@ -1599,6 +1608,30 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
         out = b.call(fn, [_as_i64(ms, call.args[0])])
         return _Value(out, "Int")
 
+    if base == "secure_bytes":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "secure_bytes expects 1 argument"))
+        n = _compile_expr(ctx, state, call.args[0], overflow_mode=overflow_mode)
+        fn = _declare_runtime(ctx, "astra_secure_bytes")
+        out = b.call(fn, [_as_i64(n, call.args[0])])
+        return _Value(out, "Bytes")
+
+    if base == "utf8_encode":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "utf8_encode expects 1 argument"))
+        src = _compile_expr(ctx, state, call.args[0], overflow_mode=overflow_mode)
+        fn = _declare_runtime(ctx, "astra_utf8_encode")
+        out = b.call(fn, [_as_string_ptr(src, call.args[0])])
+        return _Value(out, "Bytes")
+
+    if base == "utf8_decode":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "utf8_decode expects 1 argument"))
+        src = _compile_expr(ctx, state, call.args[0], overflow_mode=overflow_mode)
+        fn = _declare_runtime(ctx, "astra_utf8_decode")
+        out = b.call(fn, [_as_i8_ptr(state, src.value, call.args[0])])
+        return _Value(out, "Option<String>")
+
     if base == "panic":
         if len(call.args) != 1:
             raise CodegenError(_diag(call, "panic expects 1 argument"))
@@ -1692,42 +1725,45 @@ def _compile_struct_init(
 
 def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: str) -> _Value:
     if isinstance(call.fn, FieldExpr) and call.fn.field == "get":
-        if len(call.args) != 1:
-            raise CodegenError(_diag(call, "get expects 1 argument"))
-        elem_ty, _, idx64, ln, data_ptr = _compile_index_base(
-            ctx,
-            state,
-            call.fn.obj,
-            call.args[0],
-            overflow_mode,
-            call,
-        )
-        b = state.builder
-        fn_ir = state.fn_ir
-        zero = ir.Constant(ir.IntType(64), 0)
-        nonneg = b.icmp_signed(">=", idx64, zero)
-        lt = b.icmp_signed("<", idx64, ln)
-        in_bounds = b.and_(nonneg, lt)
-        some_block = fn_ir.append_basic_block("get_some")
-        none_block = fn_ir.append_basic_block("get_none")
-        end_block = fn_ir.append_basic_block("get_end")
-        b.cbranch(in_bounds, some_block, none_block)
+        recv_ty = _strip_ref_type(_expr_type(state, call.fn.obj))
+        if _is_vec_type(recv_ty) or _is_slice_type(recv_ty):
+            if len(call.args) != 1:
+                raise CodegenError(_diag(call, "get expects 1 argument"))
+            elem_ty, _, idx64, ln, data_ptr = _compile_index_base(
+                ctx,
+                state,
+                call.fn.obj,
+                call.args[0],
+                overflow_mode,
+                call,
+            )
+            b = state.builder
+            fn_ir = state.fn_ir
+            zero = ir.Constant(ir.IntType(64), 0)
+            nonneg = b.icmp_signed(">=", idx64, zero)
+            lt = b.icmp_signed("<", idx64, ln)
+            in_bounds = b.and_(nonneg, lt)
+            some_block = fn_ir.append_basic_block("get_some")
+            none_block = fn_ir.append_basic_block("get_none")
+            end_block = fn_ir.append_basic_block("get_end")
+            b.cbranch(in_bounds, some_block, none_block)
 
-        b.position_at_end(some_block)
-        elem_ptr = b.gep(data_ptr, [idx64])
-        some_val = _as_i8_ptr(state, elem_ptr, call)
-        b.branch(end_block)
-        some_block = b.block
+            b.position_at_end(some_block)
+            elem_ptr = b.gep(data_ptr, [idx64])
+            some_val = _as_i8_ptr(state, elem_ptr, call)
+            b.branch(end_block)
+            some_block = b.block
 
-        b.position_at_end(none_block)
-        b.branch(end_block)
-        none_block = b.block
+            b.position_at_end(none_block)
+            b.branch(end_block)
+            none_block = b.block
 
-        b.position_at_end(end_block)
-        out = b.phi(ir.IntType(8).as_pointer())
-        out.add_incoming(some_val, some_block)
-        out.add_incoming(ir.Constant(ir.IntType(8).as_pointer(), None), none_block)
-        return _Value(out, f"Option<{elem_ty}>")
+            b.position_at_end(end_block)
+            out = b.phi(ir.IntType(8).as_pointer())
+            out.add_incoming(some_val, some_block)
+            out.add_incoming(ir.Constant(ir.IntType(8).as_pointer(), None), none_block)
+            return _Value(out, f"Option<{elem_ty}>")
+
 
     if isinstance(call.fn, Name):
         name = call.fn.value
@@ -1777,6 +1813,9 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
             "now_unix",
             "monotonic_ms",
             "sleep_ms",
+            "secure_bytes",
+            "utf8_encode",
+            "utf8_decode",
             "countOnes",
             "leadingZeros",
             "trailingZeros",
@@ -1828,6 +1867,9 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
             "__now_unix",
             "__monotonic_ms",
             "__sleep_ms",
+            "__secure_bytes",
+            "__utf8_encode",
+            "__utf8_decode",
             "__countOnes",
             "__leadingZeros",
             "__trailingZeros",
@@ -1888,6 +1930,8 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
     b = state.builder
     if isinstance(e, WildcardPattern):
         raise CodegenError(_diag(e, "wildcard pattern `_` is only valid in match arms"))
+    if isinstance(e, (BindPattern, VariantPattern, GuardPattern)):
+        raise CodegenError(_diag(e, "pattern is only valid in match arms"))
     if isinstance(e, BoolLit):
         return _Value(ir.Constant(ir.IntType(1), 1 if e.value else 0), "Bool")
     if isinstance(e, NilLit):
@@ -2719,16 +2763,30 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
         for i, (pat, body) in enumerate(st.arms):
             state.builder.position_at_end(cur_check)
             arm_block = fn.append_basic_block(f"match_arm_{i}")
-            if isinstance(pat, WildcardPattern):
-                state.builder.branch(arm_block)
+            raw_pat = pat.pattern if isinstance(pat, GuardPattern) else pat
+            guard = pat.cond if isinstance(pat, GuardPattern) else None
+            if isinstance(raw_pat, VariantPattern):
+                raise CodegenError(_diag(raw_pat, "enum variant match patterns are currently only supported on Python backend"))
+            if isinstance(raw_pat, (WildcardPattern, BindPattern)):
+                if guard is None:
+                    state.builder.branch(arm_block)
+                else:
+                    next_block = fn.append_basic_block(f"match_next_{i}")
+                    gv = _compile_expr(ctx, state, guard, overflow_mode=overflow_mode)
+                    gb = _coerce_value(ctx, state, gv.value, gv.ty, "Bool", guard)
+                    state.builder.cbranch(gb, arm_block, next_block)
             else:
                 next_block = fn.append_basic_block(f"match_next_{i}")
-                pv = _compile_expr(ctx, state, pat, overflow_mode=overflow_mode)
-                pvv = _coerce_value(ctx, state, pv.value, pv.ty, subj.ty, pat)
+                pv = _compile_expr(ctx, state, raw_pat, overflow_mode=overflow_mode)
+                pvv = _coerce_value(ctx, state, pv.value, pv.ty, subj.ty, raw_pat)
                 if isinstance(subj.value.type, (ir.FloatType, ir.DoubleType)):
                     cmpv = state.builder.fcmp_ordered("==", subj.value, pvv)
                 else:
                     cmpv = state.builder.icmp_unsigned("==", subj.value, pvv)
+                if guard is not None:
+                    gv = _compile_expr(ctx, state, guard, overflow_mode=overflow_mode)
+                    gb = _coerce_value(ctx, state, gv.value, gv.ty, "Bool", guard)
+                    cmpv = state.builder.and_(cmpv, gb)
                 state.builder.cbranch(cmpv, arm_block, next_block)
 
             state.builder.position_at_end(arm_block)
@@ -2738,7 +2796,7 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
                     break
             if not _is_terminated(state):
                 state.builder.branch(end_block)
-            if isinstance(pat, WildcardPattern):
+            if isinstance(raw_pat, (WildcardPattern, BindPattern)):
                 cur_check = None
                 break
             cur_check = next_block
@@ -2824,6 +2882,109 @@ def _build_structs(ctx: _ModuleCtx, prog: Program) -> None:
         sinfo.field_index = {fname: i for i, (fname, _) in enumerate(item.fields)}
 
 
+
+
+def _has_loop(stmts: list[Any]) -> bool:
+    for st in stmts:
+        if isinstance(st, (ForStmt, WhileStmt)):
+            return True
+        if isinstance(st, IfStmt):
+            if _has_loop(st.then_body) or _has_loop(st.else_body):
+                return True
+        if isinstance(st, MatchStmt):
+            for _, arm_body in st.arms:
+                if _has_loop(arm_body):
+                    return True
+        if hasattr(st, "body") and isinstance(st.body, list):
+            if _has_loop(st.body):
+                return True
+    return False
+
+
+def _is_multiversion_candidate(item: FnDecl) -> bool:
+    if item.name in {"main", "_start"}:
+        return False
+    return _has_loop(item.body)
+
+
+def _variant_suffixes(cpu_target: str) -> list[str]:
+    if cpu_target == "baseline":
+        return ["baseline"]
+    if cpu_target == "avx2":
+        return ["baseline", "sse4", "avx2"]
+    if cpu_target == "avx512":
+        return ["baseline", "sse4", "avx2", "avx512"]
+    raise ValueError(f"unsupported cpu target '{cpu_target}', expected one of: baseline, avx2, avx512")
+
+
+def _variant_features(suffix: str) -> str | None:
+    return {
+        "baseline": None,
+        "sse4": "+sse4.2",
+        "avx2": "+avx2",
+        "avx512": "+avx512f",
+    }.get(suffix)
+
+
+def _set_variant_attrs(fn: ir.Function, suffix: str) -> None:
+    feat = _variant_features(suffix)
+    if feat is None:
+        return
+    # llvmlite does not expose generic key/value target-feature attributes here;
+    # keep this as a no-op marker hook to avoid changing optimization semantics.
+    _ = fn
+
+
+def _declare_cpu_probe(ctx: _ModuleCtx, name: str) -> ir.Function:
+    f = ctx.fn_map.get(name)
+    if isinstance(f, ir.Function):
+        return f
+    f = ir.Function(ctx.module, ir.FunctionType(ir.IntType(32), []), name=name)
+    ctx.fn_map[name] = f
+    return f
+
+
+def _compile_multiversion_dispatcher(ctx: _ModuleCtx, item: FnDecl) -> None:
+    key = item.symbol or item.name
+    fn_ir = ctx.fn_map[key]
+    sig = ctx.fn_sigs[key]
+    entry = fn_ir.append_basic_block("entry")
+    b = ir.IRBuilder(entry)
+    args = list(fn_ir.args)
+    variants = ctx.multiversion_variants.get(key, [])
+    ordered = [v for v in ["avx512", "avx2", "sse4", "baseline"] if v in variants]
+
+    for idx, variant in enumerate(ordered):
+        if variant == "baseline":
+            target = ctx.fn_map[f"{key}__mv_baseline"]
+            out = b.call(target, args)
+            if _canonical_type(sig.ret) in {"Void", "Never"}:
+                b.ret_void()
+            else:
+                b.ret(out)
+            return
+        probe = _declare_cpu_probe(ctx, f"astra_cpu_has_{variant}")
+        probe_val = b.call(probe, [])
+        cond = b.icmp_unsigned("!=", probe_val, ir.Constant(ir.IntType(32), 0))
+        then_bb = fn_ir.append_basic_block(f"mv_{variant}")
+        else_bb = fn_ir.append_basic_block(f"mv_next_{idx}")
+        b.cbranch(cond, then_bb, else_bb)
+        b.position_at_end(then_bb)
+        target = ctx.fn_map[f"{key}__mv_{variant}"]
+        out = b.call(target, args)
+        if _canonical_type(sig.ret) in {"Void", "Never"}:
+            b.ret_void()
+        else:
+            b.ret(out)
+        b.position_at_end(else_bb)
+    # Fallback
+    target = ctx.fn_map[f"{key}__mv_baseline"]
+    out = b.call(target, args)
+    if _canonical_type(sig.ret) in {"Void", "Never"}:
+        b.ret_void()
+    else:
+        b.ret(out)
+
 def _declare_functions(ctx: _ModuleCtx, prog: Program, freestanding: bool) -> tuple[list[FnDecl], str | None]:
     user_fns: list[FnDecl] = []
     user_main_key: str | None = None
@@ -2843,14 +3004,21 @@ def _declare_functions(ctx: _ModuleCtx, prog: Program, freestanding: bool) -> tu
                 user_main_key = key
             fnty = ir.FunctionType(_llvm_type(ctx, sig.ret), [_llvm_type(ctx, t) for t in sig.params])
             ctx.fn_map[key] = ir.Function(ctx.module, fnty, name=llvm_name)
+            if item.multiversion and ctx.cpu_dispatch and _is_multiversion_candidate(item):
+                suffixes = _variant_suffixes("avx512" if ctx.cpu_target == "native" else ctx.cpu_target)
+                ctx.multiversion_variants[key] = suffixes
+                for suf in suffixes:
+                    vkey = f"{key}__mv_{suf}"
+                    vfn = ir.Function(ctx.module, fnty, name=f"{llvm_name}_{suf}")
+                    _set_variant_attrs(vfn, suf)
+                    ctx.fn_map[vkey] = vfn
             user_fns.append(item)
 
     return user_fns, user_main_key
 
-
-def _compile_function(ctx: _ModuleCtx, item: FnDecl, overflow_mode: str) -> None:
-    key = item.symbol or item.name
-    sig = ctx.fn_sigs[key]
+def _compile_function(ctx: _ModuleCtx, item: FnDecl, overflow_mode: str, *, fn_key: str | None = None) -> None:
+    key = fn_key or (item.symbol or item.name)
+    sig = ctx.fn_sigs[item.symbol or item.name]
     fn_ir = ctx.fn_map[key]
     entry = fn_ir.append_basic_block("entry")
     epilogue = fn_ir.append_basic_block("epilogue")
@@ -2947,6 +3115,8 @@ def to_llvm_ir(
     overflow_mode: str = "trap",
     triple: str | None = None,
     profile: str = "debug",
+    cpu_dispatch: bool = False,
+    cpu_target: str = "baseline",
 ) -> str:
     _init_llvm_once()
 
@@ -2976,13 +3146,21 @@ def to_llvm_ir(
         fn_sigs=_collect_fn_sigs(prog),
         fn_map={},
         string_globals={},
+        cpu_dispatch=cpu_dispatch,
+        cpu_target=cpu_target,
     )
 
     _build_structs(ctx, prog)
     user_fns, user_main_key = _declare_functions(ctx, prog, freestanding=freestanding)
 
     for fn in user_fns:
-        _compile_function(ctx, fn, overflow_mode)
+        base_key = fn.symbol or fn.name
+        if base_key in ctx.multiversion_variants:
+            for suf in ctx.multiversion_variants[base_key]:
+                _compile_function(ctx, fn, overflow_mode, fn_key=f"{base_key}__mv_{suf}")
+            _compile_multiversion_dispatcher(ctx, fn)
+        else:
+            _compile_function(ctx, fn, overflow_mode)
 
     if not freestanding:
         _emit_hosted_main_wrapper(ctx, user_main_key)

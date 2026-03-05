@@ -143,14 +143,14 @@ def _optimize_stmt(st: Any, env: dict[str, Any], mutable_names: set[str]) -> tup
         target = _literal_value(st.expr)
         if target is not _NO_LITERAL:
             for pat, body in st.arms:
-                folded_pat = _fold_ast_expr(pat, env, mutable_names)
+                folded_pat = _fold_match_pattern(pat, env, mutable_names)
                 if _literal_value(folded_pat) == target:
                     arm_out, arm_env = _optimize_stmts(body, dict(env), mutable_names)
                     return arm_out, arm_env, _stmts_terminate(arm_out)
         new_arms: list[tuple[Any, list[Any]]] = []
         merged_env: dict[str, Any] | None = None
         for pat, body in st.arms:
-            folded_pat = _fold_ast_expr(pat, env, mutable_names)
+            folded_pat = _fold_match_pattern(pat, env, mutable_names)
             arm_out, arm_env = _optimize_stmts(body, dict(env), mutable_names)
             new_arms.append((folded_pat, arm_out))
             merged_env = arm_env if merged_env is None else _merge_env(merged_env, arm_env)
@@ -202,6 +202,20 @@ def _fold_target_expr(target: Any, env: dict[str, Any], mutable_names: set[str])
         return target
     return target
 
+
+
+
+def _fold_match_pattern(pat: Any, env: dict[str, Any], mutable_names: set[str]) -> Any:
+    if isinstance(pat, GuardPattern):
+        pat.pattern = _fold_match_pattern(pat.pattern, env, mutable_names)
+        pat.cond = _fold_ast_expr(pat.cond, env, mutable_names)
+        return pat
+    if isinstance(pat, VariantPattern):
+        pat.args = [_fold_match_pattern(a, env, mutable_names) for a in pat.args]
+        return pat
+    if isinstance(pat, (WildcardPattern, BindPattern)):
+        return pat
+    return _fold_ast_expr(pat, env, mutable_names)
 
 def _fold_ast_expr(expr: Any, env: dict[str, Any], mutable_names: set[str]) -> Any:
     if isinstance(expr, Name):
@@ -882,7 +896,7 @@ def _dse_stmts(stmts: list[Any], live_out: set[str]) -> tuple[list[Any], set[str
             for pat, body in st.arms:
                 body_out, arm_live = _dse_stmts(body, set(live))
                 new_arms.append((pat, body_out))
-                arm_lives.append(arm_live | _used_names_expr(pat))
+                arm_lives.append(arm_live | _used_names_pattern(pat))
             st.arms = new_arms
             out_rev.append(st)
             cond_live = _used_names_expr(st.expr)
@@ -948,6 +962,19 @@ def _dse_stmts(stmts: list[Any], live_out: set[str]) -> tuple[list[Any], set[str
         out_rev.append(st)
     out_rev.reverse()
     return out_rev, live
+
+
+def _used_names_pattern(pat: Any) -> set[str]:
+    if isinstance(pat, GuardPattern):
+        return _used_names_pattern(pat.pattern) | _used_names_expr(pat.cond)
+    if isinstance(pat, VariantPattern):
+        out: set[str] = set()
+        for sub in pat.args:
+            out |= _used_names_pattern(sub)
+        return out
+    if isinstance(pat, (WildcardPattern, BindPattern)):
+        return set()
+    return _used_names_expr(pat)
 
 
 def _used_names_expr(expr: Any) -> set[str]:
