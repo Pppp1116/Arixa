@@ -5,6 +5,7 @@ This extension provides:
 - syntax highlighting and snippets
 - diagnostics, hover, completion, and go-to-definition via Astra LSP
 - bundled language server for plug-and-play usage (no repo checkout required)
+- marketplace/file icon at `images/astra.png`
 
 ## Plug-and-play install
 
@@ -48,6 +49,7 @@ npm install
 - `astra.languageServer.pythonPath`: optional Python path override for bundled mode
 - `astra.languageServer.args`: extra CLI args for external mode
 - `astra.trace.server`: LSP trace level (`off`, `messages`, `verbose`)
+- editor defaults are scoped to `[astra]` (tabs/spaces/ruler/wrap/whitespace/ligatures)
 
 Use `Astra: Restart Language Server` after changing server settings.
 Use `Astra: Show Language Server Status` or `Astra: Open Extension Log` for troubleshooting.

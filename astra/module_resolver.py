@@ -1,3 +1,5 @@
+"""Import resolution logic for stdlib, package, and file-path modules."""
+
 from __future__ import annotations
 
 import os
@@ -13,16 +15,36 @@ _REPO_ROOT = _PACKAGE_ROOT.parent
 
 
 class ModuleResolutionError(ValueError):
+    """Error type raised by the module_resolver subsystem.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
     pass
 
 
 def import_label(decl: ImportDecl) -> str:
+    """Execute the `import_label` routine.
+    
+    Parameters:
+        decl: Input value used by this routine.
+    
+    Returns:
+        Value described by the function return annotation.
+    """
     if decl.source is not None:
         return f'"{decl.source}"'
     return ".".join(decl.path)
 
 
 def find_project_root(filename: str) -> Path | None:
+    """Find and return the result for `find_project_root`.
+    
+    Parameters:
+        filename: Filename context used for diagnostics or path resolution.
+    
+    Returns:
+        Value described by the function return annotation.
+    """
     if filename == "<input>":
         return None
     start = Path(filename).resolve()
@@ -34,6 +56,14 @@ def find_project_root(filename: str) -> Path | None:
 
 
 def stdlib_root_path() -> Path | None:
+    """Execute the `stdlib_root_path` routine.
+    
+    Parameters:
+        none
+    
+    Returns:
+        Value described by the function return annotation.
+    """
     candidates: list[Path] = []
     env = os.environ.get(_STDLIB_ENV)
     if env:
@@ -47,6 +77,14 @@ def stdlib_root_path() -> Path | None:
 
 
 def runtime_source_path() -> Path | None:
+    """Execute the `runtime_source_path` routine.
+    
+    Parameters:
+        none
+    
+    Returns:
+        Value described by the function return annotation.
+    """
     candidates: list[Path] = []
     env = os.environ.get(_RUNTIME_ENV)
     if env:
@@ -60,6 +98,15 @@ def runtime_source_path() -> Path | None:
 
 
 def resolve_import_path(decl: ImportDecl, from_filename: str) -> Path:
+    """Resolve an import declaration into an absolute filesystem path.
+    
+    Parameters:
+        decl: Input value used by this routine.
+        from_filename: Filename context used for diagnostics or path resolution.
+    
+    Returns:
+        Value described by the function return annotation.
+    """
     label = import_label(decl)
     if decl.source is not None:
         target = _resolve_string_import(decl.source, from_filename)

@@ -1,3 +1,5 @@
+"""Lexer for converting Astra source text into tokens."""
+
 from dataclasses import dataclass
 
 from astra.int_types import INT_WIDTH_MAX, parse_prefixed_int_type, prefixed_int_width_error
@@ -66,6 +68,10 @@ SINGLE_TOKENS = set("{}()<>;,=+-*/%!?[]:.&|^~@")
 
 @dataclass
 class Token:
+    """Data container used by lexer.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
     kind: str
     text: str
     pos: int
@@ -115,6 +121,15 @@ def _scan_digits_with_separators(src: str, i: int, *, base: int) -> tuple[int, b
 
 
 def lex(src: str, filename: str = "<input>") -> list[Token]:
+    """Tokenize source text into Astra lexer tokens.
+    
+    Parameters:
+        src: Astra source text to process.
+        filename: Filename context used for diagnostics or path resolution.
+    
+    Returns:
+        Value described by the function return annotation.
+    """
     out: list[Token] = []
     i = 0
     line = 1

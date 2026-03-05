@@ -1,3 +1,5 @@
+"""Python backend code generation from analyzed Astra AST programs."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -9,6 +11,10 @@ from astra.layout import LayoutError, layout_of_type
 
 
 class CodegenError(Exception):
+    """Error type raised by the codegen subsystem.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
     pass
 
 
@@ -33,7 +39,24 @@ def _canonical_type(typ: str) -> str:
     return t
 
 
-def to_python(prog: Program, freestanding: bool = False, overflow_mode: str = "trap") -> str:
+def to_python(
+    prog: Program,
+    freestanding: bool = False,
+    overflow_mode: str = "trap",
+    *,
+    emit_entrypoint: bool = True,
+) -> str:
+    """Lower an analyzed AST program into executable Python source code.
+    
+    Parameters:
+        prog: Program AST to read or mutate.
+        freestanding: Whether hosted-runtime features are disallowed.
+        overflow_mode: Integer overflow behavior mode requested by the caller.
+        emit_entrypoint: Input value used by this routine.
+    
+    Returns:
+        Value described by the function return annotation.
+    """
     global _PY_STRUCTS
     lower_for_loops(prog)
     _PY_STRUCTS = {item.name: item for item in prog.items if isinstance(item, StructDecl)}
@@ -282,7 +305,7 @@ def to_python(prog: Program, freestanding: bool = False, overflow_mode: str = "t
         lines.append("    finally:")
         lines.append("        for _d in reversed(_astra_defer_stack):")
         lines.append("            _d()")
-    if not freestanding:
+    if emit_entrypoint and not freestanding:
         lines.append("if __name__ == '__main__':")
         lines.append(f"    _main_out = {main_entry}()")
         lines.append("    if inspect.isawaitable(_main_out):")

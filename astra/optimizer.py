@@ -1,3 +1,5 @@
+"""AST optimizer passes including folding and dead code elimination."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -8,6 +10,14 @@ from astra.int_types import parse_int_type_name
 
 
 def optimize_program(prog: Program) -> Program:
+    """Apply optimization passes to function bodies in a program AST.
+    
+    Parameters:
+        prog: Program AST to read or mutate.
+    
+    Returns:
+        Value described by the function return annotation.
+    """
     lower_for_loops(prog)
     for item in prog.items:
         if isinstance(item, FnDecl):

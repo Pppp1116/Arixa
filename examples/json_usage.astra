@@ -1,0 +1,9 @@
+import std.serde;
+
+fn main() -> Int {
+    let payload = "{\\\"lang\\\":\\\"astra\\\",\\\"year\\\":2026}";
+    let value = from_json(payload);
+    let out = to_json(value);
+    print(out);
+    return 0;
+}

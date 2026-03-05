@@ -1,3 +1,5 @@
+"""LLVM IR backend code generation for Astra programs."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -2900,6 +2902,18 @@ def to_llvm_ir(
     triple: str | None = None,
     profile: str = "debug",
 ) -> str:
+    """Lower an analyzed AST program into LLVM IR text.
+    
+    Parameters:
+        prog: Program AST to read or mutate.
+        freestanding: Whether hosted-runtime features are disallowed.
+        overflow_mode: Integer overflow behavior mode requested by the caller.
+        triple: Input value used by this routine.
+        profile: Build profile selector, typically `debug` or `release`.
+    
+    Returns:
+        Value described by the function return annotation.
+    """
     _init_llvm_once()
 
     # Ensure semantic annotations (symbols/inferred types) are present for direct backend use.

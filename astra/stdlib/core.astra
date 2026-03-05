@@ -1,81 +1,124 @@
-pub enum Option<T> {
-  None,
-  Some(T),
+/// std.core - fundamental shared language types and checked arithmetic helpers.
+
+/// Optional value container.
+///
+/// `Option<T>` is represented as either `None` or `Some(T)`.
+pub enum Option {
+    None,
+    Some(T),
 }
 
-pub enum Result<T, E> {
-  Ok(T),
-  Err(E),
+/// Result value container.
+///
+/// `Result<T, E>` is represented as either `Ok(T)` or `Err(E)`.
+pub enum Result {
+    Ok(T),
+    Err(E),
 }
 
+/// Byte-buffer alias used by APIs that exchange raw bytes.
 type Bytes = Vec<u8>;
 
-fn add_checked(a: Int, b: Int) -> Int? {
-  let r = a + b;
-  if b > 0 && r < a {
-    return none;
-  }
-  if b < 0 && r > a {
-    return none;
-  }
-  return r;
+/// Add two integers with overflow detection.
+///
+/// Returns `none` when signed overflow is detected.
+fn add_checked(a Int, b Int) -> Option<Int> {
+    let r = a + b;
+    if b > 0 && r < a {
+        return none;
+    }
+    else {}
+    if b < 0 && r > a {
+        return none;
+    }
+    else {}
+    return r;
 }
 
-fn sub_checked(a: Int, b: Int) -> Int? {
-  let r = a - b;
-  if b > 0 && r > a {
-    return none;
-  }
-  if b < 0 && r < a {
-    return none;
-  }
-  return r;
+/// Subtract two integers with overflow detection.
+///
+/// Returns `none` when signed overflow is detected.
+fn sub_checked(a Int, b Int) -> Option<Int> {
+    let r = a - b;
+    if b > 0 && r > a {
+        return none;
+    }
+    else {}
+    if b < 0 && r < a {
+        return none;
+    }
+    else {}
+    return r;
 }
 
-fn mul_checked(a: Int, b: Int) -> Int? {
-  if a == 0 || b == 0 {
-    return 0;
-  }
-  if (a == minVal(Int) && b == -1) || (b == minVal(Int) && a == -1) {
-    return none;
-  }
-  let r = a * b;
-  if r / b != a {
-    return none;
-  }
-  return r;
+/// Multiply two integers with overflow detection.
+///
+/// Returns `none` on overflow.
+fn mul_checked(a Int, b Int) -> Option<Int> {
+    if a == 0 || b == 0 {
+        return 0;
+    }
+    else {}
+    if a == minVal(Int) && b == -1 || b == minVal(Int) && a == -1 {
+        return none;
+    }
+    else {}
+    let r = a * b;
+    if r / b != a {
+        return none;
+    }
+    else {}
+    return r;
 }
 
-fn div_checked(a: Int, b: Int) -> Int? {
-  if b == 0 {
-    return none;
-  }
-  if a == minVal(Int) && b == -1 {
-    return none;
-  }
-  return a / b;
+/// Divide two integers with safety checks.
+///
+/// Returns `none` on division by zero or signed overflow (`MIN / -1`).
+fn div_checked(a Int, b Int) -> Option<Int> {
+    if b == 0 {
+        return none;
+    }
+    else {}
+    if a == minVal(Int) && b == -1 {
+        return none;
+    }
+    else {}
+    return a / b;
 }
 
-fn rem_checked(a: Int, b: Int) -> Int? {
-  if b == 0 {
-    return none;
-  }
-  if a == minVal(Int) && b == -1 {
-    return none;
-  }
-  return a % b;
+/// Compute integer remainder with safety checks.
+///
+/// Returns `none` on division by zero or signed overflow (`MIN % -1`).
+fn rem_checked(a Int, b Int) -> Option<Int> {
+    if b == 0 {
+        return none;
+    }
+    else {}
+    if a == minVal(Int) && b == -1 {
+        return none;
+    }
+    else {}
+    return a % b;
 }
 
-fn shl_checked(a: Int, n: Int) -> Int? {
-  if n < 0 || n >= bitSizeOf(Int) {
-    return none;
-  }
-  return a << n;
+/// Shift left with bounds checks on shift amount.
+///
+/// Returns `none` when `n` is negative or outside `[0, bitSizeOf(Int))`.
+fn shl_checked(a Int, n Int) -> Option<Int> {
+    if n < 0 || n >= bitSizeOf(Int) {
+        return none;
+    }
+    else {}
+    return a << n;
 }
 
-fn shr_checked(a: Int, n: Int) -> Int? {
-  if n < 0 || n >= bitSizeOf(Int) {
-    return none;
-  }
-  return a >> n;
+/// Shift right with bounds checks on shift amount.
+///
+/// Returns `none` when `n` is negative or outside `[0, bitSizeOf(Int))`.
+fn shr_checked(a Int, n Int) -> Option<Int> {
+    if n < 0 || n >= bitSizeOf(Int) {
+        return none;
+    }
+    else {}
+    return a >> n;
 }

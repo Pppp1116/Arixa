@@ -1,3 +1,5 @@
+"""Bootstrap script for launching the bundled Astra LSP server copy."""
+
 from __future__ import annotations
 
 import os

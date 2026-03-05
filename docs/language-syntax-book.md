@@ -33,9 +33,15 @@ type Bytes = Vec<u8>;
 
 unsafe extern "libc.so.6" fn c_abs(x: Int) -> Int;
 
-impl fn id<T>(x: T) -> T { return x; }
-pub async fn worker(n: Int) -> Int { return n; }
-fn main() -> Int { return 0; }
+impl fn id<T>(x: T) -> T {
+    return x;
+}
+pub async fn worker(n: Int) -> Int {
+    return n;
+}
+fn main() -> Int {
+    return 0;
+}
 ```
 
 Notes:
@@ -44,16 +50,31 @@ Notes:
 - `@packed` is currently supported only on `struct` declarations.
 - `Vec<T>` is a built-in owned growable buffer type used by `Bytes = Vec<u8>`.
 - Legacy module separator `::` is still accepted (`import stdlib::io as io;`).
+- `fn main()` may omit an explicit return type; it defaults to `Int`:
+  - `fn main() { return 0; }` is equivalent to `fn main() -> Int { return 0; }`
+  - this omission is only valid for top-level `main` with zero params (not `impl fn main`)
 
 ## 2. Functions and types
 
 ```astra
-fn add(a: Int, b: Int) -> Int { return a + b; }
-fn wrap(f: fn(Int) -> Int, v: Int) -> Int { return f(v); }
-fn takes_ref(x: &Int, y: &mut Int) -> Int { return 0; }
-fn vec_sum(xs: &[Int]) -> Int { return 0; }
-fn vec_sum_mut(xs: &mut [Int]) -> Int { return 0; }
-fn text_len(s: &str) -> Int { return len(s); }
+fn add(a: Int, b: Int) -> Int {
+    return a + b;
+}
+fn wrap(f: fn(Int) -> Int, v: Int) -> Int {
+    return f(v);
+}
+fn takes_ref(x: &Int, y: &mut Int) -> Int {
+    return 0;
+}
+fn vec_sum(xs: &[Int]) -> Int {
+    return 0;
+}
+fn vec_sum_mut(xs: &mut [Int]) -> Int {
+    return 0;
+}
+fn text_len(s: &str) -> Int {
+    return len(s);
+}
 ```
 
 Type forms:

@@ -1,3 +1,5 @@
+"""Compile-time evaluator for `comptime` blocks and constant execution."""
+
 from __future__ import annotations
 
 import copy
@@ -10,6 +12,10 @@ from astra.layout import LayoutError, canonical_type, layout_of_type
 
 
 class ComptimeError(Exception):
+    """Error type raised by the comptime subsystem.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
     pass
 
 
@@ -764,6 +770,16 @@ def _collect_runtime_name_uses(stmts: list[Any]) -> set[str]:
 
 
 def run_comptime(prog: Program, filename: str = "<input>", overflow_mode: str = "trap") -> dict[str, object]:
+    """Evaluate compile-time blocks and rewrite AST values with results.
+    
+    Parameters:
+        prog: Program AST to read or mutate.
+        filename: Filename context used for diagnostics or path resolution.
+        overflow_mode: Integer overflow behavior mode requested by the caller.
+    
+    Returns:
+        Value described by the function return annotation.
+    """
     fn_map = {item.name: item for item in prog.items if isinstance(item, FnDecl)}
     structs = {item.name: item for item in prog.items if isinstance(item, StructDecl)}
     evaluator = _Evaluator(fn_map, structs, filename=filename, overflow_mode=overflow_mode)

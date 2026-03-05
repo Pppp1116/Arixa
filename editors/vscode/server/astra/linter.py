@@ -1,3 +1,5 @@
+"""Linting helpers for style issues plus semantic lint integration."""
+
 import argparse
 import json
 from pathlib import Path
@@ -8,6 +10,14 @@ from astra.semantic import SemanticError, analyze
 
 
 def lint_text(src: str):
+    """Run lint checks and return collected diagnostics.
+    
+    Parameters:
+        src: Astra source text to process.
+    
+    Returns:
+        Value produced by the routine, if any.
+    """
     errs = []
     for i, l in enumerate(src.splitlines(), 1):
         if "\t" in l:
@@ -18,6 +28,15 @@ def lint_text(src: str):
 
 
 def lint_semantic(src: str, filename: str):
+    """Run lint checks and return collected diagnostics.
+    
+    Parameters:
+        src: Astra source text to process.
+        filename: Filename context used for diagnostics or path resolution.
+    
+    Returns:
+        Value produced by the routine, if any.
+    """
     try:
         prog = parse(src, filename=filename)
         run_comptime(prog, filename=filename)
@@ -28,6 +47,14 @@ def lint_semantic(src: str, filename: str):
 
 
 def main(argv=None):
+    """CLI-style entrypoint for this module.
+    
+    Parameters:
+        argv: Optional CLI arguments passed instead of process argv.
+    
+    Returns:
+        Value produced by the routine, if any.
+    """
     p = argparse.ArgumentParser()
     p.add_argument("file")
     p.add_argument("--json", action="store_true")

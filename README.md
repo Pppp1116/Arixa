@@ -1,70 +1,72 @@
-# Astra Language Ecosystem
+# Astra
 
-Astra is a compact language ecosystem with deterministic builds, Python and LLVM backends, package tooling, formatting/linting, docs generation, LSP, debugging/profiling, and a batteries-included stdlib.
+Astra is a compact programming language ecosystem with a full compiler pipeline, CLI tooling, language server support, and a batteries-included standard library.
 
-## Quick start
+## Main Features
+
+- Deterministic builds with content-based caching.
+- Multiple build targets: Python, LLVM IR, and native executables via `clang`.
+- Static checking pipeline with parse, compile-time, and semantic diagnostics.
+- Built-in tooling: formatter (`astfmt`), linter (`astlint`), doc generator (`astdoc`), package helper (`astpm`), LSP server (`astlsp`), debugger (`astdbg`), and profiler (`astprof`).
+- Hosted and freestanding compilation modes.
+- Standard library modules for core types, collections, I/O, networking, process control, serialization, crypto, and time.
+- Runtime-backed builtin APIs that mirror stdlib entry points used by the current semantic/codegen pipeline.
+
+## Installation
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev]"
-astra build examples/hello.astra -o build/hello.py
+```
+
+Requirements:
+
+- Python 3.11+
+- `clang` for `--target native`
+- `llvmlite` (installed via project dependencies) for LLVM backend
+
+## Quick Example
+
+`examples/hello_world.astra`:
+
+```astra
+fn main() -> Int {
+    print("hello, astra");
+    return 0;
+}
+```
+
+Build and run:
+
+```bash
+astra check examples/hello_world.astra
+astra build examples/hello_world.astra -o build/hello.py
 python build/hello.py
 ```
 
-## Commands
-- `astra`: build/run/check/test/fmt/doc (`selfhost` is currently an unavailable placeholder command)
-- `astpm`: package manager
-- `astfmt`: formatter
-- `astlint`: linter
-- `astdoc`: documentation generator
-- `astlsp`: stdio LSP server
-- `astdbg`: debugger (break/step/inspect)
-- `astprof`: profiler
-
 ## Documentation
-- `docs/TOUR.md`: quick language walkthrough
-- `docs/SPEC_COMPLIANCE.md`: SPEC-to-implementation/test mapping
-- `docs/DIAGNOSTICS.md`: stable `astra check --json` diagnostic codes
-- `editors/vscode`: VS Code extension (syntax + LSP client for `astlsp`)
 
-## Build options
-- `astra build <in> -o <out> [--target py|llvm|native] [--emit-ir path.ll] [--strict] [--freestanding] [--profile debug|release] [--overflow trap|wrap|debug] [--triple <llvm-triple>]`
-- `astra check <in> [--freestanding] [--overflow trap|wrap|debug] [--json]`
-- `astra check --files <f1> <f2> ... [--freestanding] [--overflow ...] [--json]`
-- `astra check --stdin [--stdin-filename name] [--freestanding] [--overflow ...] [--json]`
-- `astra test [--kind unit|integration|e2e]`
-- `astra fmt <files...> [--check]`
-- `astra doc <in> -o <out>`
-- `--target native` compiles/links LLVM IR into an executable via `clang` and a bundled portable runtime source (override path with `ASTRA_RUNTIME_C_PATH`).
-- `--freestanding` enforces runtime-free semantics/codegen for LLVM/native outputs:
-  - hosted/runtime builtins are rejected during semantic analysis
-  - LLVM IR cannot reference `astra_*` runtime symbols or other external host symbols
-  - `--target native --freestanding` requires `fn _start()`
-  - freestanding container API is `vec_new`, `vec_from`, `vec_len`, `vec_get`, `vec_set`, `vec_push` (no hosted runtime shims)
-- Native regression sweep: `pytest tests/test_build.py -k native` (requires `clang`).
-- LSP diagnostics are produced by the same check pipeline used by `astra check` (stable codes/spans).
+- Full docs index: `docs/README.md`
+- Language reference: `docs/language/`
+- Standard library reference: `docs/stdlib/`
+- Tooling and CLI docs: `docs/tooling/`
+- Compiler internals: `docs/compiler/`
+- Contributor/development docs: `docs/development/`
 
-## Syntax notes
-- Immutable locals use `fixed`, mutable/inferred locals use `let`.
-- Preferred typed style is `name: Type` (legacy `name Type` still parses for params/fields).
-- Module imports support both `import std.io;` and legacy `import stdlib::io;`.
-- Path imports use string form: `import "relative/path";` (resolved relative to the importing file).
-- Non-stdlib module imports resolve from nearest package root (`Astra.toml`) when present; otherwise from the importing file directory.
-- Integer types support dynamic widths: `iN`/`uN` where `N` is `1..128` (`Int`/`isize`/`usize` still map to 64-bit).
-- Integer literals support width suffixes (for example `15u4`, `3i7`).
-- Optional values use `Option<T>` + `none` (with `T?` sugar); `Nil` is not a type.
-- `Never` is coercible to any type; `return;` is valid only in `-> Void` functions.
-- Explicit cast syntax: `expr as Type`.
-- Layout/type queries: `sizeof(Type)`, `alignof(Type)`, `size_of(expr)`, `align_of(expr)`, `bitSizeOf(Type)`, `maxVal(Type)`, `minVal(Type)`.
-- Width-aware integer bit builtins: `countOnes(x)`, `leadingZeros(x)`, `trailingZeros(x)`.
-- Packed structs are supported via `@packed struct Name { ... }` (packed fields support integer widths up to language maximum `128`, plus `Bool`).
-- Freestanding builds avoid hosted entrypoint assumptions and are suitable for kernels/runtime stubs.
-- `defer expr;` runs cleanup logic at function exit.
-- `a ?? b` coalesces `Option<T>` values (`a: Option<T>`, `b: T`).
-- `for` loops use only `for <ident> in <iterable-expr> { ... }`:
-  - ranges: `start..end`, `start..=end`
-  - `Vec<T>`, slice refs (`&[T]`/`&mut [T]`), and `Bytes`
-- `match` supports wildcard arm `_` (must be the last arm).
-- Expression statements may discard values of any type; `drop expr;` remains available for explicit immediate destruction-style intent.
-- LLVM backend emits validated LLVM IR through `llvmlite` and native builds are performed by `clang`.
-- `i128/u128` helper runtime symbols remain available in the portable runtime for trap/wrap hard-op behavior.
+Current compiler behavior note:
+
+- import paths are resolved and validated by semantic analysis.
+- most callable stdlib-facing functions are currently surfaced through builtin names.
+
+Top-level project docs:
+
+- `ARCHITECTURE.md`
+- `COMPILER_OVERVIEW.md`
+- `BUILD_SYSTEM.md`
+- `TESTING.md`
+- `FORMATTING.md`
+- `EDITOR_SETUP.md`
+- `CONTRIBUTING.md`
+- `SECURITY.md`
+- `ROADMAP.md`

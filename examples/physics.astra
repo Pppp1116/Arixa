@@ -1,33 +1,37 @@
-struct Vec2 { x Float, y Float }
+struct Vec2 {
+    x Float,
+    y Float,
+}
 
 fn dot(a Vec2, b Vec2) -> Float {
-  return a.x * b.x + a.y * b.y;
+    return a.x * b.x + a.y * b.y;
 }
 
 fn len2(v Vec2) -> Float {
-  return dot(v, v);
+    return dot(v, v);
 }
 
-// simple “classification” using match on Bool
 fn classify_speed(v2 Float) -> Int {
-  let fast = v2 > 25.0; // > 5.0^2
-  match fast {
-    true => { return 2; }
-    _ => { return 1; }
-  }
+    let fast = v2 > 25.0;
+    match fast {
+        true => {
+            return 2;
+        }
+        _ => {
+            return 1;
+        }
+    }
 }
 
 fn main() -> Int {
-  let pts = [Vec2(3.0, 4.0), Vec2(1.0, 2.0), Vec2(10.0, 0.0)];
-  let mut i = 0;
-  let mut acc = 0.0;
-
-  while i < len(pts) {
-    let v2 = len2(pts[i]);      // bounds-checked indexing
-    acc = acc + v2;
-    i += 1;
-  }
-
-  print(acc);                  // prints Float
-  return classify_speed(acc);  // return Int exit code
+    let pts = [Vec2(3.0, 4.0), Vec2(1.0, 2.0), Vec2(10.0, 0.0)];
+    let mut i = 0;
+    let mut acc = 0.0;
+    while i < len(pts) {
+        let v2 = len2(pts[i]);
+        acc = acc + v2;
+        i += 1;
+    }
+    print(acc);
+    return classify_speed(acc);
 }

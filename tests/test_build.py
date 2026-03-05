@@ -271,8 +271,36 @@ def test_build_native_freestanding_requires_start_symbol(tmp_path: Path):
     src = tmp_path / "bad_start.astra"
     out = tmp_path / "bad_start.exe"
     src.write_text("fn kernel() -> Int { return 0; }")
-    with pytest.raises(RuntimeError, match=r"freestanding native target requires fn _start\(\)"):
+    with pytest.raises(SemanticError, match=r"missing _start\(\)"):
         build(str(src), str(out), "native", freestanding=True)
+
+
+def test_build_exe_requires_main_for_hosted_targets(tmp_path: Path):
+    src = tmp_path / "mod.astra"
+    out = tmp_path / "mod.py"
+    src.write_text("fn helper() -> Int { return 1; }")
+    with pytest.raises(SemanticError, match=r"missing main\(\)"):
+        build(str(src), str(out), "py", kind="exe")
+
+
+def test_build_kind_lib_allows_missing_main_and_skips_python_entrypoint(tmp_path: Path):
+    src = tmp_path / "lib.astra"
+    out = tmp_path / "lib.py"
+    src.write_text("fn helper() -> Int { return 1; }")
+    st = build(str(src), str(out), "py", kind="lib")
+    assert st in {"built", "cached"}
+    text = out.read_text()
+    assert "if __name__ == '__main__':" not in text
+    assert "def helper(" in text
+
+
+def test_build_kind_lib_freestanding_allows_missing_start(tmp_path: Path):
+    src = tmp_path / "lib_fs.astra"
+    out = tmp_path / "lib_fs.ll"
+    src.write_text("fn helper() -> Int { return 1; }")
+    st = build(str(src), str(out), "llvm", kind="lib", freestanding=True)
+    assert st in {"built", "cached"}
+    assert out.exists()
 
 
 def test_build_freestanding_rejects_external_host_symbols(tmp_path: Path):

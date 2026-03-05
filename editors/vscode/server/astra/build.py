@@ -1,3 +1,5 @@
+"""Build orchestration for parsing, analysis, optimization, and backend emission."""
+
 import hashlib
 import json
 import re
@@ -151,6 +153,7 @@ def _collect_input_files(src_file: Path) -> list[Path]:
 def _build_fingerprint(
     src_file: Path,
     target: str,
+    kind: str,
     emit_ir: str | None,
     strict: bool,
     freestanding: bool,
@@ -165,6 +168,7 @@ def _build_fingerprint(
     payload = {
         "src": src_file.resolve().as_posix(),
         "target": target,
+        "kind": kind,
         "emit_ir": bool(emit_ir),
         "strict": bool(strict),
         "freestanding": bool(freestanding),
@@ -370,7 +374,16 @@ def _strict_validate_program(prog: Program, src_file: Path) -> None:
         raise RuntimeError(f"CODEGEN {src_file}:1:1: strict mode rejected backend lowering: {details}")
 
 
-def _build_native_llvm(ir_text: str, out_path: str, src_file: Path, *, profile: str, triple: str | None, freestanding: bool):
+def _build_native_llvm(
+    ir_text: str,
+    out_path: str,
+    src_file: Path,
+    *,
+    profile: str,
+    triple: str | None,
+    freestanding: bool,
+    kind: str,
+):
     clang = shutil.which("clang")
     if clang is None:
         raise RuntimeError(f"CODEGEN {src_file}:1:1: native target requires `clang` in PATH")
@@ -380,7 +393,17 @@ def _build_native_llvm(ir_text: str, out_path: str, src_file: Path, *, profile: 
     with tempfile.TemporaryDirectory(prefix="astra-native-") as td:
         ll_path = Path(td) / "module.ll"
         ll_path.write_text(ir_text)
-        if freestanding:
+        if kind == "lib":
+            cmd = [clang, opt_flag, "-shared", "-fPIC", str(ll_path), "-o", str(out)]
+            if not freestanding:
+                runtime_c = runtime_source_path()
+                if runtime_c is None:
+                    raise RuntimeError(
+                        f"CODEGEN {src_file}:1:1: missing runtime source; set ASTRA_RUNTIME_C_PATH or install bundled runtime"
+                    )
+                cmd.insert(-2, str(runtime_c))
+                cmd.insert(-2, "-lm")
+        elif freestanding:
             cmd = [
                 clang,
                 opt_flag,
@@ -404,7 +427,8 @@ def _build_native_llvm(ir_text: str, out_path: str, src_file: Path, *, profile: 
         if cp.returncode != 0:
             detail = (cp.stderr or cp.stdout or "").strip()
             raise RuntimeError(f"CODEGEN {src_file}:1:1: clang link failed{': ' + detail if detail else ''}")
-    out.chmod(out.stat().st_mode | 0o111)
+    if kind == "exe":
+        out.chmod(out.stat().st_mode | 0o111)
 
 
 def _require_runtime_free_freestanding(ir_text: str, src_file: Path) -> None:
@@ -435,6 +459,7 @@ def build(
     src_path: str,
     out_path: str,
     target: str = 'py',
+    kind: str = "exe",
     emit_ir: str | None = None,
     strict: bool = False,
     freestanding: bool = False,
@@ -442,13 +467,32 @@ def build(
     overflow: str = "debug",
     triple: str | None = None,
 ):
+    """Compile an Astra source file into Python, LLVM IR, or native output.
+    
+    Parameters:
+        src_path: Filesystem path input used by this routine.
+        out_path: Filesystem path input used by this routine.
+        target: Input value used by this routine.
+        kind: Input value used by this routine.
+        emit_ir: Input value used by this routine.
+        strict: Input value used by this routine.
+        freestanding: Whether hosted-runtime features are disallowed.
+        profile: Build profile selector, typically `debug` or `release`.
+        overflow: Integer overflow behavior mode requested by the caller.
+        triple: Input value used by this routine.
+    
+    Returns:
+        Value produced by the routine, if any.
+    """
     src_file = Path(src_path)
+    if kind not in {"exe", "lib"}:
+        raise RuntimeError(f"BUILD {src_file}:1:1: unsupported build kind {kind}")
     if profile not in {"debug", "release"}:
         raise RuntimeError(f"BUILD {src_file}:1:1: unsupported profile {profile}")
     overflow_mode = _resolve_overflow_mode(profile, overflow, check=False)
-    digest = _build_fingerprint(src_file, target, emit_ir, strict, freestanding, profile, overflow_mode, triple)
+    digest = _build_fingerprint(src_file, target, kind, emit_ir, strict, freestanding, profile, overflow_mode, triple)
     cache_key = (
-        f"{src_file.resolve().as_posix()}::{target}::{int(bool(strict))}::{int(bool(freestanding))}::"
+        f"{src_file.resolve().as_posix()}::{target}::{kind}::{int(bool(strict))}::{int(bool(freestanding))}::"
         f"{int(bool(emit_ir))}::{profile}::{overflow_mode}::{triple or ''}"
     )
     cache = json.loads(CACHE.read_text()) if CACHE.exists() else {}
@@ -456,12 +500,14 @@ def build(
         return 'cached'
     src = src_file.read_text()
     prog = parse(src, filename=str(src_file))
-    if freestanding and target == "native":
-        has_start = any(isinstance(item, FnDecl) and item.name == "_start" for item in prog.items)
-        if not has_start:
-            raise RuntimeError(f"BUILD {src_file}:1:1: freestanding native target requires fn _start()")
+    required_entrypoint = None if kind == "lib" else ("_start" if freestanding else "main")
     run_comptime(prog, filename=str(src_file), overflow_mode=overflow_mode)
-    analyze(prog, filename=str(src_file), freestanding=freestanding)
+    analyze(
+        prog,
+        filename=str(src_file),
+        freestanding=freestanding,
+        require_entrypoint=required_entrypoint,
+    )
     lower_for_loops(prog)
     optimize_program(prog)
     if strict:
@@ -483,7 +529,7 @@ def build(
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(llvm_ir)
     if target == "py":
-        out = to_python(prog, freestanding=freestanding, overflow_mode=overflow_mode)
+        out = to_python(prog, freestanding=freestanding, overflow_mode=overflow_mode, emit_entrypoint=(kind == "exe"))
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         Path(out_path).write_text(out)
     elif target == "llvm":
@@ -493,7 +539,15 @@ def build(
         Path(out_path).write_text(out)
     elif target == "native":
         assert llvm_ir is not None
-        _build_native_llvm(llvm_ir, out_path, src_file, profile=profile, triple=triple, freestanding=freestanding)
+        _build_native_llvm(
+            llvm_ir,
+            out_path,
+            src_file,
+            profile=profile,
+            triple=triple,
+            freestanding=freestanding,
+            kind=kind,
+        )
     else:
         raise RuntimeError(f"BUILD {src_file}:1:1: unsupported target {target}")
     cache[cache_key] = digest

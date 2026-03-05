@@ -1,3 +1,5 @@
+"""Lowering pass that rewrites high-level `for` loops into core constructs."""
+
 from __future__ import annotations
 
 from astra.ast import (
@@ -25,6 +27,14 @@ from astra.ast import (
 
 
 def lower_for_loops(prog: Program) -> Program:
+    """Execute the `lower_for_loops` routine.
+    
+    Parameters:
+        prog: Program AST to read or mutate.
+    
+    Returns:
+        Value described by the function return annotation.
+    """
     if getattr(prog, "_for_lowered", False):
         return prog
     counter = {"n": 0}

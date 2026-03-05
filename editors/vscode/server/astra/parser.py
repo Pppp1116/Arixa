@@ -1,3 +1,5 @@
+"""Recursive-descent parser that turns tokens into AST declarations/statements."""
+
 from __future__ import annotations
 
 from astra.ast import *
@@ -6,6 +8,10 @@ from astra.lexer import Token, lex
 
 
 class ParseError(SyntaxError):
+    """Error type raised by the parser subsystem.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
     pass
 
 
@@ -52,6 +58,10 @@ def _parse_float_literal(text: str) -> float:
 
 
 class Parser:
+    """Data container used by parser.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
     def __init__(self, src: str, filename: str = "<input>"):
         self.filename = filename
         self.toks = lex(src, filename=filename)
@@ -62,9 +72,25 @@ class Parser:
                 self.errors.append(_diag("LEX", self.filename, tok.line, tok.col, tok.text))
 
     def cur(self) -> Token:
+        """Return the current token without advancing.
+        
+        Parameters:
+            none
+        
+        Returns:
+            Value described by the function return annotation.
+        """
         return self.toks[self.i]
 
     def peek(self, n: int = 1) -> Token:
+        """Return a lookahead token relative to the current cursor.
+        
+        Parameters:
+            n: Input value used by this routine.
+        
+        Returns:
+            Value described by the function return annotation.
+        """
         idx = min(self.i + n, len(self.toks) - 1)
         return self.toks[idx]
 
@@ -73,6 +99,14 @@ class Parser:
         self.errors.append(_diag("PARSE", self.filename, t.line, t.col, msg))
 
     def eat(self, kind: str) -> Token:
+        """Consume and return the expected token kind or raise ParseError.
+        
+        Parameters:
+            kind: Input value used by this routine.
+        
+        Returns:
+            Value described by the function return annotation.
+        """
         t = self.cur()
         if t.kind != kind:
             self._err(f"expected {kind}, got {t.kind}", t)
@@ -81,6 +115,14 @@ class Parser:
         return t
 
     def opt(self, kind: str) -> Token | None:
+        """Consume and return a token when the expected kind is present.
+        
+        Parameters:
+            kind: Input value used by this routine.
+        
+        Returns:
+            Value described by the function return annotation.
+        """
         if self.cur().kind == kind:
             tok = self.cur()
             self.i += 1
@@ -95,6 +137,14 @@ class Parser:
         return "\n".join(lines)
 
     def recover(self) -> None:
+        """Advance the parser to the next synchronization point after an error.
+        
+        Parameters:
+            none
+        
+        Returns:
+            Value described by the function return annotation.
+        """
         sync = {";", "}", "fn", "impl", "struct", "enum", "type", "import", "extern", "pub", "async", "unsafe", "comptime", "EOF"}
         start = self.i
         while self.cur().kind not in sync:
@@ -106,6 +156,14 @@ class Parser:
             self.i += 1
 
     def parse_program(self) -> Program:
+        """Parse the `program` grammar production from the token stream.
+        
+        Parameters:
+            none
+        
+        Returns:
+            Value described by the function return annotation.
+        """
         items: list[Any] = []
         while self.cur().kind != "EOF":
             doc = self._consume_doc_comments()
@@ -125,6 +183,14 @@ class Parser:
         return Program(items)
 
     def parse_top_level(self, doc: str):
+        """Parse the `top_level` grammar production from the token stream.
+        
+        Parameters:
+            doc: Input value used by this routine.
+        
+        Returns:
+            Value produced by the routine, if any.
+        """
         is_pub = False
         is_unsafe = False
         is_async = False
@@ -197,6 +263,14 @@ class Parser:
         raise ParseError(self.errors[-1])
 
     def parse_import(self) -> ImportDecl:
+        """Parse the `import` grammar production from the token stream.
+        
+        Parameters:
+            none
+        
+        Returns:
+            Value described by the function return annotation.
+        """
         tok = self.eat("import")
         path: list[str] = []
         source: str | None = None
@@ -247,6 +321,16 @@ class Parser:
         return name, typ
 
     def parse_extern_fn(self, is_pub: bool, is_unsafe: bool, doc: str) -> ExternFnDecl:
+        """Parse the `extern_fn` grammar production from the token stream.
+        
+        Parameters:
+            is_pub: Input value used by this routine.
+            is_unsafe: Input value used by this routine.
+            doc: Input value used by this routine.
+        
+        Returns:
+            Value described by the function return annotation.
+        """
         tok = self.eat("extern")
         lib_tok = self.cur()
         if lib_tok.kind == "STR":
@@ -285,12 +369,29 @@ class Parser:
         is_impl: bool = False,
         is_unsafe: bool = False,
     ) -> FnDecl:
+        """Parse the `fn` grammar production from the token stream.
+        
+        Parameters:
+            is_pub: Input value used by this routine.
+            is_async: Input value used by this routine.
+            doc: Input value used by this routine.
+            is_impl: Input value used by this routine.
+            is_unsafe: Input value used by this routine.
+        
+        Returns:
+            Value described by the function return annotation.
+        """
         fn_tok = self.eat("fn")
         name = self.eat("IDENT").text
         generics = self._parse_generics()
         params = self._parse_params()
-        self.eat("->")
-        ret = self.parse_type()
+        if self.opt("->"):
+            ret = self.parse_type()
+        elif name == "main" and not is_impl and not params and not generics:
+            ret = "Int"
+        else:
+            self._err("expected -> return type", self.cur())
+            raise ParseError(self.errors[-1])
         body = self.parse_block()
         return FnDecl(
             name,
@@ -309,6 +410,16 @@ class Parser:
         )
 
     def parse_struct(self, is_pub: bool = False, doc: str = "", packed: bool = False) -> StructDecl:
+        """Parse the `struct` grammar production from the token stream.
+        
+        Parameters:
+            is_pub: Input value used by this routine.
+            doc: Input value used by this routine.
+            packed: Input value used by this routine.
+        
+        Returns:
+            Value described by the function return annotation.
+        """
         tok = self.eat("struct")
         name = self.eat("IDENT").text
         generics = self._parse_generics()
@@ -321,6 +432,15 @@ class Parser:
         return StructDecl(name, generics, fields, [], pub=is_pub, packed=packed, doc=doc, pos=tok.pos, line=tok.line, col=tok.col)
 
     def parse_enum(self, is_pub: bool = False, doc: str = "") -> EnumDecl:
+        """Parse the `enum` grammar production from the token stream.
+        
+        Parameters:
+            is_pub: Input value used by this routine.
+            doc: Input value used by this routine.
+        
+        Returns:
+            Value described by the function return annotation.
+        """
         tok = self.eat("enum")
         name = self.eat("IDENT").text
         generics = self._parse_generics()
@@ -341,6 +461,14 @@ class Parser:
         return EnumDecl(name, generics, variants, pub=is_pub, doc=doc, pos=tok.pos, line=tok.line, col=tok.col)
 
     def parse_type_alias(self) -> TypeAliasDecl:
+        """Parse the `type_alias` grammar production from the token stream.
+        
+        Parameters:
+            none
+        
+        Returns:
+            Value described by the function return annotation.
+        """
         tok = self.eat("type")
         name = self.eat("IDENT").text
         generics = self._parse_generics()
@@ -350,6 +478,14 @@ class Parser:
         return TypeAliasDecl(name, generics, target, tok.pos, tok.line, tok.col)
 
     def parse_type(self):
+        """Parse the `type` grammar production from the token stream.
+        
+        Parameters:
+            none
+        
+        Returns:
+            Value produced by the routine, if any.
+        """
         typ: str
         if self.opt("&"):
             mut = "mut " if self.opt("mut") else ""
@@ -396,6 +532,14 @@ class Parser:
         return typ
 
     def parse_block(self) -> list[Any]:
+        """Parse the `block` grammar production from the token stream.
+        
+        Parameters:
+            none
+        
+        Returns:
+            Value described by the function return annotation.
+        """
         self.eat("{")
         body: list[Any] = []
         while self.cur().kind != "}":
@@ -413,6 +557,14 @@ class Parser:
         return body
 
     def parse_stmt(self):
+        """Parse the `stmt` grammar production from the token stream.
+        
+        Parameters:
+            none
+        
+        Returns:
+            Value produced by the routine, if any.
+        """
         tok = self.cur()
         if self.cur().kind in {"let", "fixed"}:
             is_fixed = self.eat(self.cur().kind).kind == "fixed"
@@ -480,6 +632,14 @@ class Parser:
         return ExprStmt(lhs, tok.pos, tok.line, tok.col)
 
     def parse_for(self, tok: Token) -> ForStmt:
+        """Parse the `for` grammar production from the token stream.
+        
+        Parameters:
+            tok: Input value used by this routine.
+        
+        Returns:
+            Value described by the function return annotation.
+        """
         if self.cur().kind != "IDENT" or self.peek().kind != "in":
             self._err("for expects `for <ident> in <expr> { ... }`")
             raise ParseError(self.errors[-1])
@@ -496,6 +656,14 @@ class Parser:
         return ForStmt(ident.text, iterable, body, tok.pos, tok.line, tok.col)
 
     def parse_match(self, tok: Token) -> MatchStmt:
+        """Parse the `match` grammar production from the token stream.
+        
+        Parameters:
+            tok: Input value used by this routine.
+        
+        Returns:
+            Value described by the function return annotation.
+        """
         expr = self.parse_expr()
         self.eat("{")
         arms: list[tuple[Any, list[Any]]] = []
@@ -513,6 +681,14 @@ class Parser:
         return MatchStmt(expr, arms, tok.pos, tok.line, tok.col)
 
     def parse_expr(self, min_prec: int = 1):
+        """Parse the `expr` grammar production from the token stream.
+        
+        Parameters:
+            min_prec: Input value used by this routine.
+        
+        Returns:
+            Value produced by the routine, if any.
+        """
         left = self.parse_cast()
         while self.cur().kind in BIN_PREC and BIN_PREC[self.cur().kind] >= min_prec:
             op_tok = self.eat(self.cur().kind)
@@ -522,6 +698,14 @@ class Parser:
         return left
 
     def parse_cast(self):
+        """Parse the `cast` grammar production from the token stream.
+        
+        Parameters:
+            none
+        
+        Returns:
+            Value produced by the routine, if any.
+        """
         expr = self.parse_unary()
         while self.opt("as"):
             tok = self.toks[self.i - 1]
@@ -529,6 +713,14 @@ class Parser:
         return expr
 
     def parse_unary(self):
+        """Parse the `unary` grammar production from the token stream.
+        
+        Parameters:
+            none
+        
+        Returns:
+            Value produced by the routine, if any.
+        """
         if self.opt("await"):
             tok = self.toks[self.i - 1]
             return AwaitExpr(self.parse_unary(), tok.pos, tok.line, tok.col)
@@ -542,6 +734,14 @@ class Parser:
         return self.parse_postfix()
 
     def parse_postfix(self):
+        """Parse the `postfix` grammar production from the token stream.
+        
+        Parameters:
+            none
+        
+        Returns:
+            Value produced by the routine, if any.
+        """
         expr = self.parse_atom()
         while True:
             if self.opt("."):
@@ -566,6 +766,14 @@ class Parser:
         return expr
 
     def parse_atom(self):
+        """Parse the `atom` grammar production from the token stream.
+        
+        Parameters:
+            none
+        
+        Returns:
+            Value produced by the routine, if any.
+        """
         tok = self.cur()
         if self.opt("sizeof"):
             self.eat("(")
@@ -631,4 +839,13 @@ class Parser:
 
 
 def parse(src: str, filename: str = "<input>"):
+    """Execute the `parse` routine.
+    
+    Parameters:
+        src: Astra source text to process.
+        filename: Filename context used for diagnostics or path resolution.
+    
+    Returns:
+        Value produced by the routine, if any.
+    """
     return Parser(src, filename=filename).parse_program()

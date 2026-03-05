@@ -1,29 +1,21 @@
-// examples/mega_demo.astra
-// Stable hosted demo that exercises universal for-in loops.
-
 fn main() -> Int {
-  let mut v: Vec<Int> = vec_new() as Vec<Int>;
-  for i in 1..=5 {
-    drop vec_push(v, i);
-  }
-
-  let mut sum_v = 0;
-  for x in v {
-    sum_v += x;
-  }
-
-  let bs: Bytes = vec_from([1u8, 2u8, 3u8, 4u8]);
-  let mut sum_b = 0;
-  for b in bs {
-    sum_b += b as Int;
-  }
-
-  let total = sum_v + sum_b;
-  let payload = "{\"tool\":\"mega_demo\",\"total\":" + __to_json(total) + "}";
-
-  // Write both report names used by integration tests.
-  drop write_file("report_py.json", payload);
-  drop write_file("report_native.json", payload);
-  print(payload);
-  return 0;
+    let mut v: Vec<Int> = vec_new() as Vec<Int>;
+    for i in 1..=5 {
+        drop vec_push(v, i);
+    }
+    let mut sum_v = 0;
+    for x in v {
+        sum_v += x;
+    }
+    let bs: Bytes = vec_from([1 as u8, 2 as u8, 3 as u8, 4 as u8]);
+    let mut sum_b = 0;
+    for b in bs {
+        sum_b += b as Int;
+    }
+    let total = sum_v + sum_b;
+    let payload = "{\"tool\":\"mega_demo\",\"total\":" + __to_json(total) + "}";
+    drop write_file("report_py.json", payload);
+    drop write_file("report_native.json", payload);
+    print(payload);
+    return 0;
 }

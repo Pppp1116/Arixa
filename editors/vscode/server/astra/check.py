@@ -1,3 +1,5 @@
+"""Static checking pipeline that reports normalized diagnostics for Astra sources."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,6 +13,10 @@ from astra.semantic import SemanticError, analyze
 
 @dataclass(frozen=True)
 class DiagSpan:
+    """Source span metadata used for diagnostics and editor features.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
     filename: str
     line: int
     col: int
@@ -20,12 +26,20 @@ class DiagSpan:
 
 @dataclass(frozen=True)
 class DiagNote:
+    """Data container used by check.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
     message: str
     span: DiagSpan | None = None
 
 
 @dataclass(frozen=True)
 class Diagnostic:
+    """Data container used by check.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
     phase: str
     code: str
     message: str
@@ -36,6 +50,10 @@ class Diagnostic:
 
 @dataclass(frozen=True)
 class CheckResult:
+    """Structured result payload returned by compiler tooling helpers.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
     ok: bool
     diagnostics: tuple[Diagnostic, ...] = ()
     files_checked: tuple[str, ...] = ()
@@ -52,6 +70,18 @@ def run_check_source(
     overflow: str = "trap",
     collect_errors: bool = True,
 ) -> CheckResult:
+    """Run parse/comptime/semantic checks for one source text input.
+    
+    Parameters:
+        source: Astra source text to process.
+        filename: Filename context used for diagnostics or path resolution.
+        freestanding: Whether hosted-runtime features are disallowed.
+        overflow: Integer overflow behavior mode requested by the caller.
+        collect_errors: Input value used by this routine.
+    
+    Returns:
+        Value described by the function return annotation.
+    """
     overflow_mode = "trap" if overflow == "debug" else overflow
     diagnostics: list[Diagnostic] = []
     try:
@@ -79,6 +109,17 @@ def run_check_paths(
     overflow: str = "trap",
     collect_errors: bool = True,
 ) -> CheckResult:
+    """Run compiler checks for a list of source file paths.
+    
+    Parameters:
+        paths: Filesystem path input used by this routine.
+        freestanding: Whether hosted-runtime features are disallowed.
+        overflow: Integer overflow behavior mode requested by the caller.
+        collect_errors: Input value used by this routine.
+    
+    Returns:
+        Value described by the function return annotation.
+    """
     diagnostics: list[Diagnostic] = []
     files: list[str] = []
     for path in paths:
@@ -96,6 +137,14 @@ def run_check_paths(
 
 
 def diagnostics_to_json_list(diags: list[Diagnostic] | tuple[Diagnostic, ...]) -> list[dict]:
+    """Convert diagnostics to a JSON-serializable list of dictionaries.
+    
+    Parameters:
+        diags: Input value used by this routine.
+    
+    Returns:
+        Value described by the function return annotation.
+    """
     out: list[dict] = []
     for d in diags:
         out.append(
@@ -132,6 +181,14 @@ def diagnostics_to_json_list(diags: list[Diagnostic] | tuple[Diagnostic, ...]) -
 
 
 def format_diagnostic(d: Diagnostic) -> str:
+    """Render one normalized diagnostic in human-readable text form.
+    
+    Parameters:
+        d: Input value used by this routine.
+    
+    Returns:
+        Value described by the function return annotation.
+    """
     return f"{d.phase}[{d.code}] {d.span.filename}:{d.span.line}:{d.span.col}: {d.message}"
 
 
@@ -234,7 +291,7 @@ def _code_for(phase: str, message: str) -> str:
             return "ASTRA-NAME-0001"
         if "undefined function" in m:
             return "ASTRA-NAME-0002"
-        if "missing main()" in m:
+        if "missing main()" in m or "missing _start()" in m:
             return "ASTRA-ENTRY-0001"
         if "outside loop" in m:
             return "ASTRA-CFG-0001"

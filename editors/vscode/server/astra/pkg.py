@@ -1,3 +1,5 @@
+"""Package-manager style helpers for Astra.toml and Astra.lock workflows."""
+
 import argparse
 import json
 import tomllib
@@ -41,10 +43,26 @@ def _write_manifest(data: dict):
 
 
 def resolve(deps: dict[str, str]) -> dict[str, str]:
+    """Execute the `resolve` routine.
+    
+    Parameters:
+        deps: Input value used by this routine.
+    
+    Returns:
+        Value described by the function return annotation.
+    """
     return dict(sorted(deps.items()))
 
 
 def main(argv=None):
+    """CLI-style entrypoint for this module.
+    
+    Parameters:
+        argv: Optional CLI arguments passed instead of process argv.
+    
+    Returns:
+        Value produced by the routine, if any.
+    """
     p = argparse.ArgumentParser()
     sp = p.add_subparsers(dest="cmd", required=True)
     i = sp.add_parser("init")

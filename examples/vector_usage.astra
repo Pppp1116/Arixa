@@ -1,0 +1,14 @@
+import std.vec;
+
+fn main() -> Int {
+    let v: Vec<Int> = vec_new() as Vec<Int>;
+    drop vec_push(v, 3);
+    drop vec_push(v, 4);
+    drop vec_push(v, 5);
+
+    let n = vec_len(v);
+    let first: Option<Int> = vec_get(v, 0);
+    let total = (first ?? 0) + n;
+    print(total);
+    return 0;
+}

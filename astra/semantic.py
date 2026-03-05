@@ -1,3 +1,5 @@
+"""Semantic analysis, typing, and safety checks for Astra programs."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,6 +12,10 @@ from astra.module_resolver import ModuleResolutionError, resolve_import_path
 
 
 class SemanticError(Exception):
+    """Error type raised by the semantic subsystem.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
     pass
 
 
@@ -138,18 +144,36 @@ def _validate_decl_type(typ: Any, filename: str, line: int, col: int) -> None:
 
 @dataclass
 class BuiltinSig:
+    """Data container used by semantic.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
     args: list[str] | None
     ret: str
 
 
 @dataclass(frozen=True)
 class Span:
+    """Source span metadata used for diagnostics and editor features.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
     filename: str
     line: int
     col: int
 
     @classmethod
     def at(cls, filename: str, line: int, col: int) -> "Span":
+        """Execute the `at` routine.
+        
+        Parameters:
+            filename: Filename context used for diagnostics or path resolution.
+            line: Input value used by this routine.
+            col: Input value used by this routine.
+        
+        Returns:
+            Value described by the function return annotation.
+        """
         return cls(filename=filename, line=line, col=col)
 
 
@@ -968,8 +992,21 @@ def analyze(
     filename: str = "<input>",
     freestanding: bool = False,
     *,
+    require_entrypoint: str | None = None,
     collect_errors: bool = False,
 ):
+    """Run semantic analysis and type/safety checks for a program AST.
+    
+    Parameters:
+        prog: Program AST to read or mutate.
+        filename: Filename context used for diagnostics or path resolution.
+        freestanding: Whether hosted-runtime features are disallowed.
+        require_entrypoint: Input value used by this routine.
+        collect_errors: Input value used by this routine.
+    
+    Returns:
+        Value produced by the routine, if any.
+    """
     _FREESTANDING_MODE_STACK.append(freestanding)
     try:
         errors: list[str] = []
@@ -1036,15 +1073,29 @@ def analyze(
                 if isinstance(d, FnDecl):
                     d.symbol = f"{name}__impl{i}"
 
-        if not freestanding:
+        if require_entrypoint:
             try:
-                mains = [d for d in fn_groups.get("main", []) if isinstance(d, FnDecl)]
-                if not mains:
+                entries = [d for d in fn_groups.get(require_entrypoint, []) if isinstance(d, FnDecl)]
+                if not entries:
+                    if require_entrypoint == "_start":
+                        raise SemanticError(_diag(filename, 1, 1, "missing _start()"))
                     raise SemanticError(_diag(filename, 1, 1, "missing main()"))
-                if len(mains) != 1:
-                    raise SemanticError(_diag(filename, mains[0].line, mains[0].col, "main() must have a single unambiguous impl"))
-                if mains[0].is_impl:
-                    raise SemanticError(_diag(filename, mains[0].line, mains[0].col, "main() cannot be declared with impl"))
+                if len(entries) != 1:
+                    raise SemanticError(
+                        _diag(
+                            filename,
+                            entries[0].line,
+                            entries[0].col,
+                            f"{require_entrypoint}() must have a single unambiguous impl",
+                        )
+                    )
+                entry = entries[0]
+                if entry.is_impl:
+                    raise SemanticError(_diag(filename, entry.line, entry.col, f"{require_entrypoint}() cannot be declared with impl"))
+                if entry.params:
+                    raise SemanticError(_diag(filename, entry.line, entry.col, f"{require_entrypoint}() must not take parameters"))
+                if require_entrypoint == "main" and _canonical_type(entry.ret) != "Int":
+                    raise SemanticError(_diag(filename, entry.line, entry.col, "main() must return Int"))
             except SemanticError as err:
                 _record(err)
 
@@ -1105,7 +1156,34 @@ def _analyze_fn(
         0,
         fn.unsafe,
     )
+    if _canonical_type(fn.ret) not in {"Void", "Never"} and not _has_value_return(fn.body):
+        raise SemanticError(_diag(filename, fn.line, fn.col, f"function {fn.name} must return {fn.ret}"))
     owned.check_no_live_leaks(fn.name, filename, fn.line, fn.col)
+
+
+def _has_value_return(body: list[Any]) -> bool:
+    for st in body:
+        if isinstance(st, ReturnStmt):
+            if st.expr is not None:
+                return True
+            continue
+        if isinstance(st, IfStmt):
+            if _has_value_return(st.then_body) or _has_value_return(st.else_body):
+                return True
+            continue
+        if isinstance(st, WhileStmt) and _has_value_return(st.body):
+            return True
+        if isinstance(st, ForStmt) and _has_value_return(st.body):
+            return True
+        if isinstance(st, ComptimeStmt) and _has_value_return(st.body):
+            return True
+        if isinstance(st, UnsafeStmt) and _has_value_return(st.body):
+            return True
+        if isinstance(st, MatchStmt):
+            for _, arm in st.arms:
+                if _has_value_return(arm):
+                    return True
+    return False
 
 
 def _check_block(

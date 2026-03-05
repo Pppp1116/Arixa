@@ -1,3 +1,5 @@
+"""Command line interface implementation for the `astra` executable."""
+
 import argparse
 import json
 import subprocess
@@ -7,14 +9,23 @@ from pathlib import Path
 from astra.build import build
 from astra.check import diagnostics_to_json_list, format_diagnostic, run_check_paths, run_check_source
 from astra.docgen import main as doc_main
-from astra.formatter import fmt
+from astra.formatter import fmt, resolve_format_config
 
 
 def cmd_build(a):
+    """Handle the `astra build` subcommand.
+    
+    Parameters:
+        a: Input value used by this routine.
+    
+    Returns:
+        None. May raise `SystemExit` for CLI exit handling.
+    """
     state = build(
         a.input,
         a.output,
         a.target,
+        kind=a.kind,
         emit_ir=a.emit_ir,
         strict=a.strict,
         freestanding=a.freestanding,
@@ -26,6 +37,14 @@ def cmd_build(a):
 
 
 def cmd_check(a):
+    """Handle the `astra check` subcommand.
+    
+    Parameters:
+        a: Input value used by this routine.
+    
+    Returns:
+        None. May raise `SystemExit` for CLI exit handling.
+    """
     modes = int(bool(a.stdin)) + int(bool(a.files)) + int(bool(a.input))
     if modes != 1:
         raise ValueError("check requires exactly one input mode: <input>, --files, or --stdin")
@@ -83,12 +102,28 @@ def cmd_check(a):
 
 
 def cmd_run(a):
+    """Handle the `astra run` subcommand.
+    
+    Parameters:
+        a: Input value used by this routine.
+    
+    Returns:
+        None. May raise `SystemExit` for CLI exit handling.
+    """
     out = Path(".astra-build") / (Path(a.input).stem + ".py")
     build(a.input, str(out), "py")
     raise SystemExit(subprocess.call([sys.executable, str(out)] + a.args))
 
 
 def cmd_test(a):
+    """Handle the `astra test` subcommand.
+    
+    Parameters:
+        a: Input value used by this routine.
+    
+    Returns:
+        None. May raise `SystemExit` for CLI exit handling.
+    """
     args = [sys.executable, "-m", "pytest", "-q"]
     if a.kind == "unit":
         args += ["-k", "not integration and not e2e"]
@@ -100,11 +135,19 @@ def cmd_test(a):
 
 
 def cmd_fmt(a):
+    """Handle the `astra fmt` subcommand.
+    
+    Parameters:
+        a: Input value used by this routine.
+    
+    Returns:
+        None. May raise `SystemExit` for CLI exit handling.
+    """
     bad: list[str] = []
     for path in a.files:
         fp = Path(path)
         src = fp.read_text()
-        out = fmt(src)
+        out = fmt(src, config=resolve_format_config(fp))
         if a.check:
             if out != src:
                 bad.append(path)
@@ -121,11 +164,27 @@ def cmd_fmt(a):
 
 
 def cmd_doc(a):
+    """Handle the `astra doc` subcommand.
+    
+    Parameters:
+        a: Input value used by this routine.
+    
+    Returns:
+        None. May raise `SystemExit` for CLI exit handling.
+    """
     args = [a.input, "-o", a.output]
     doc_main(args)
 
 
 def cmd_selfhost(a):
+    """Handle the `astra selfhost` subcommand.
+    
+    Parameters:
+        a: Input value used by this routine.
+    
+    Returns:
+        None. May raise `SystemExit` for CLI exit handling.
+    """
     print(
         "selfhost-unavailable: selfhost/compiler.astra is a placeholder file copier, "
         "not a real self-hosted compiler",
@@ -135,6 +194,14 @@ def cmd_selfhost(a):
 
 
 def main(argv=None):
+    """CLI-style entrypoint for this module.
+    
+    Parameters:
+        argv: Optional CLI arguments passed instead of process argv.
+    
+    Returns:
+        Value produced by the routine, if any.
+    """
     p = argparse.ArgumentParser()
     sp = p.add_subparsers(dest="cmd", required=True)
 
@@ -142,6 +209,7 @@ def main(argv=None):
     b.add_argument("input")
     b.add_argument("-o", "--output", required=True)
     b.add_argument("--target", choices=["py", "llvm", "native"], default="py")
+    b.add_argument("--kind", choices=["exe", "lib"], default="exe")
     b.add_argument("--emit-ir")
     b.add_argument("--strict", action="store_true")
     b.add_argument("--freestanding", action="store_true")

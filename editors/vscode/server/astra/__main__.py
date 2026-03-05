@@ -1,3 +1,5 @@
+"""Module entrypoint for running Astra via `python -m astra`."""
+
 from astra.cli import main
 
 

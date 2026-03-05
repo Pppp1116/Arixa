@@ -2,7 +2,8 @@
   "name": "astra-language",
   "displayName": "Astra Language",
   "description": "VS Code support for Astra via the astlsp language server.",
-  "version": "0.2.0",
+  "version": "0.4.0",
+  "icon": "images/astra.png",
   "publisher": "astra-lang",
   "engines": {
     "vscode": "^1.88.0"
@@ -27,6 +28,7 @@
     "syntaxes/**",
     "snippets/**",
     "server/**",
+    "images/**",
     "README.md",
     "LICENSE",
     "package.json"
@@ -43,6 +45,10 @@
         "extensions": [
           ".astra"
         ],
+        "icon": {
+          "light": "images/astra.png",
+          "dark": "images/astra.png"
+        },
         "configuration": "./language-configuration.json"
       }
     ],
@@ -113,6 +119,22 @@
           "default": "off",
           "description": "Trace level for language server protocol logs."
         }
+      }
+    },
+    "configurationDefaults": {
+      "[astra]": {
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true,
+        "editor.detectIndentation": false,
+        "editor.rulers": [
+          100
+        ],
+        "editor.wordWrap": "on",
+        "editor.renderWhitespace": "boundary",
+        "editor.guides.indentation": true,
+        "editor.bracketPairColorization.enabled": true,
+        "editor.minimap.enabled": false,
+        "editor.fontLigatures": false
       }
     }
   },

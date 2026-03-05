@@ -1,3 +1,5 @@
+"""API documentation generator for Astra source declarations."""
+
 import argparse
 from pathlib import Path
 
@@ -12,6 +14,14 @@ def _doc_block(text: str) -> list[str]:
 
 
 def main(argv=None):
+    """CLI-style entrypoint for this module.
+    
+    Parameters:
+        argv: Optional CLI arguments passed instead of process argv.
+    
+    Returns:
+        Value produced by the routine, if any.
+    """
     p = argparse.ArgumentParser()
     p.add_argument("input")
     p.add_argument("-o", "--output", required=True)

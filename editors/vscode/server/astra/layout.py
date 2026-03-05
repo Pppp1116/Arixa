@@ -1,3 +1,5 @@
+"""Type and struct layout computation used by semantics and code generation."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,11 +10,19 @@ from astra.int_types import int_storage_align, int_storage_size, parse_int_type_
 
 
 class LayoutError(Exception):
+    """Error type raised by the layout subsystem.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
     pass
 
 
 @dataclass(frozen=True)
 class TypeLayout:
+    """Data container used by layout.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
     size: int
     align: int
     kind: str
@@ -24,6 +34,10 @@ class TypeLayout:
 
 @dataclass(frozen=True)
 class StructLayout:
+    """Data container used by layout.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
     size: int
     align: int
     field_offsets: dict[str, int]
@@ -45,6 +59,15 @@ _SCALAR_LAYOUTS: dict[str, TypeLayout] = {
 
 
 def align_to(value: int, align: int) -> int:
+    """Execute the `align_to` routine.
+    
+    Parameters:
+        value: Input value used by this routine.
+        align: Input value used by this routine.
+    
+    Returns:
+        Value described by the function return annotation.
+    """
     if align <= 1:
         return value
     rem = value % align
@@ -52,6 +75,14 @@ def align_to(value: int, align: int) -> int:
 
 
 def canonical_type(typ: str) -> str:
+    """Execute the `canonical_type` routine.
+    
+    Parameters:
+        typ: Input value used by this routine.
+    
+    Returns:
+        Value described by the function return annotation.
+    """
     t = type_text(typ).strip()
     if t == "Bytes":
         return "Vec<u8>"
@@ -97,6 +128,18 @@ def layout_of_type(
     _cache: dict[str, StructLayout] | None = None,
     _stack: set[str] | None = None,
 ) -> TypeLayout:
+    """Execute the `layout_of_type` routine.
+    
+    Parameters:
+        typ: Input value used by this routine.
+        structs: Input value used by this routine.
+        mode: Input value used by this routine.
+        _cache: Input value used by this routine.
+        _stack: Input value used by this routine.
+    
+    Returns:
+        Value described by the function return annotation.
+    """
     c = canonical_type(typ)
     if c in _SCALAR_LAYOUTS:
         return _SCALAR_LAYOUTS[c]
@@ -133,6 +176,18 @@ def layout_of_struct(
     _cache: dict[str, StructLayout] | None = None,
     _stack: set[str] | None = None,
 ) -> StructLayout:
+    """Execute the `layout_of_struct` routine.
+    
+    Parameters:
+        name: Input value used by this routine.
+        structs: Input value used by this routine.
+        mode: Input value used by this routine.
+        _cache: Input value used by this routine.
+        _stack: Input value used by this routine.
+    
+    Returns:
+        Value described by the function return annotation.
+    """
     cache = _cache if _cache is not None else {}
     if name in cache:
         return cache[name]

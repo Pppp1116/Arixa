@@ -1,33 +1,44 @@
 # Code of Conduct
 
-This project follows the Contributor Covenant Code of Conduct.
+This project follows the Contributor Covenant Code of Conduct (v2.1).
 
-## Our pledge
+## Our Pledge
 
-We pledge to make participation in our community a harassment-free experience for everyone, regardless of age, body size, visible or invisible disability, ethnicity, sex characteristics, gender identity and expression, level of experience, education, socio-economic status, nationality, personal appearance, race, religion, or sexual identity and orientation.
+We commit to a harassment-free experience for all participants regardless of age, disability, ethnicity, gender identity and expression, level of experience, nationality, personal appearance, race, religion, or sexual identity and orientation.
 
-## Our standards
+## Standards
 
-Examples of behavior that contributes to a positive environment include:
+Positive behavior includes:
 
-- Being respectful and considerate
-- Giving and gracefully accepting constructive feedback
-- Focusing on what is best for the community
+- respectful, professional communication
+- constructive technical feedback
+- willingness to learn and collaborate
 
-Examples of unacceptable behavior include:
+Unacceptable behavior includes:
 
-- Harassment, insults, or derogatory comments
-- Trolling or personal attacks
-- Publishing others' private information
+- harassment, intimidation, or discrimination
+- personal attacks, trolling, or deliberate disruption
+- publishing private information without permission
+
+## Scope
+
+This policy applies to project spaces, issues, pull requests, discussions, and other community interactions representing this project.
+
+## Reporting
+
+Report incidents privately to project maintainers. If private reporting is not possible, open a public issue with minimal sensitive detail and request maintainer follow-up.
+
+Include:
+
+- what happened
+- when and where it happened
+- involved accounts
+- relevant links or screenshots
 
 ## Enforcement
 
-Project maintainers are responsible for clarifying and enforcing standards of acceptable behavior.
-
-If you experience or witness unacceptable behavior, report it by opening a private report to the maintainers (for example via email listed in the repository profile), or by opening an issue if privacy is not required.
-
-Maintainers may remove, edit, or reject contributions that violate this Code of Conduct.
+Maintainers may warn, edit/remove content, reject contributions, or ban participants who violate this Code of Conduct.
 
 ## Attribution
 
-This Code of Conduct is adapted from the Contributor Covenant, version 2.1.
+Adapted from the Contributor Covenant, version 2.1.

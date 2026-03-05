@@ -1,21 +1,22 @@
-fn ms() -> Int { return __monotonic_ms(); }
+fn ms() -> Int {
+    return __monotonic_ms();
+}
 
 fn main() -> Int {
-  let t0 = ms();
-
-  // mixed float/int workload
-  let mut i = 0;
-  let mut x = 0.0;
-  while i < 20000000 {
-    x = x * 1.0000001 + 0.5;
-    if x > 1000000.0 { x = x / 2.0; }
-    i += 1;
-  }
-
-  let t1 = ms();
-  let dt = t1 - t0;
-
-  print(dt);
-  print(x);
-  return 0;
+    let t0 = ms();
+    let mut i = 0;
+    let mut x = 0.0;
+    while i < 20000000 {
+        x = x * 1.0000001 + 0.5;
+        if x > 1000000.0 {
+            x = x / 2.0;
+        }
+        else {}
+        i += 1;
+    }
+    let t1 = ms();
+    let dt = t1 - t0;
+    print(dt);
+    print(x);
+    return 0;
 }

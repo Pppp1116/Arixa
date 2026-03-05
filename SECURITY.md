@@ -1,15 +1,29 @@
 # Security Policy
 
-## Reporting a vulnerability
+## Reporting a Vulnerability
 
-If you believe you have found a security issue, please avoid filing a public issue.
+Do not open public issues for security reports.
 
-Instead, contact the maintainers privately (for example via the email listed on the repository owner profile) and include:
+Contact maintainers privately and include:
 
-- Affected version/commit
-- Reproduction steps or proof-of-concept
-- Impact assessment
+- affected commit/version
+- reproduction steps or proof-of-concept
+- expected impact
+- mitigation ideas (if available)
 
-## Supported versions
+## Scope
+
+Security issues include (non-exhaustive):
+
+- unsafe code generation vulnerabilities
+- runtime memory safety violations in generated artifacts
+- dependency or packaging integrity risks
+- command execution or path traversal vulnerabilities in tooling
+
+## Supported Versions
 
 Only the latest `main` branch is actively supported.
+
+## Response Expectations
+
+Maintainers will acknowledge reports, triage severity, and coordinate fixes before public disclosure whenever feasible.

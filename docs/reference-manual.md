@@ -1,7 +1,7 @@
 # Astra Reference Manual
 
 ## CLI
-- `astra build <in> -o <out> [--target py|llvm|native] [--emit-ir out.ll] [--strict] [--freestanding] [--profile debug|release] [--overflow trap|wrap|debug] [--triple <llvm-triple>]`
+- `astra build <in> -o <out> [--target py|llvm|native] [--kind exe|lib] [--emit-ir out.ll] [--strict] [--freestanding] [--profile debug|release] [--overflow trap|wrap|debug] [--triple <llvm-triple>]`
 - `astra check <in> [--freestanding] [--overflow trap|wrap|debug] [--json]`
 - `astra check --files <f1> <f2> ... [--freestanding] [--overflow ...] [--json]`
 - `astra check --stdin [--stdin-filename name] [--freestanding] [--overflow ...] [--json]`
@@ -11,10 +11,14 @@
 - `astra doc <in> -o <out>`
 - `astra selfhost` (currently unavailable: placeholder only, no real self-hosting pipeline)
 - `--target native` requires `clang` in `PATH` and links against bundled runtime source (override with `ASTRA_RUNTIME_C_PATH`).
+- `--kind exe` (default) requires an entrypoint:
+  - hosted mode: `fn main() -> Int`
+  - freestanding mode: `fn _start()`
+  - convenience: top-level `fn main()` with zero params may omit `-> Int`; it defaults to `Int`
+- `--kind lib` does not require an entrypoint.
 - `--freestanding` enforces runtime-free semantics/codegen for LLVM/native outputs:
   - hosted/runtime builtins are rejected in semantic analysis
   - emitted LLVM IR cannot reference `astra_*` runtime symbols or non-LLVM external host symbols
-  - `native --freestanding` requires `fn _start()`
   - freestanding vectors use builtins: `vec_new`, `vec_from`, `vec_len`, `vec_get`, `vec_set`, `vec_push`
 
 ## Tooling

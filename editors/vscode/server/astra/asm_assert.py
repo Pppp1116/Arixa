@@ -1,3 +1,5 @@
+"""Helpers that validate generated LLVM IR during tests and build checks."""
+
 from __future__ import annotations
 
 import shutil
@@ -30,6 +32,16 @@ def _init_llvm_once() -> None:
 
 
 def assert_valid_llvm_ir(ir_text: str, *, triple: str | None = None, workdir: Path | None = None) -> None:
+    """Assert that generated LLVM IR parses and verifies successfully.
+    
+    Parameters:
+        ir_text: Input value used by this routine.
+        triple: Input value used by this routine.
+        workdir: Input value used by this routine.
+    
+    Returns:
+        Value described by the function return annotation.
+    """
     text = ir_text.strip()
     assert text, "LLVM IR output is empty"
     assert "TODO" not in text

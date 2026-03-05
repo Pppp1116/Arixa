@@ -343,13 +343,9 @@ def test_join_of_unknown_tid_allowed_semantically():
     analyze(prog)
 
 
-def test_missing_main_is_semantic_error():
+def test_semantic_allows_module_without_main():
     prog = parse("fn helper() -> Int { return 1; }")
-    try:
-        analyze(prog)
-        assert False
-    except SemanticError as e:
-        assert "missing main()" in str(e)
+    analyze(prog)
 
 
 def test_selfhost_source_compiles_to_python(tmp_path: Path):

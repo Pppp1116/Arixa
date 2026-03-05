@@ -61,6 +61,13 @@ def test_cli_check_freestanding_without_main(tmp_path: Path):
     assert rc == 0
 
 
+def test_cli_check_hosted_without_main_is_allowed(tmp_path: Path):
+    src = tmp_path / "lib.astra"
+    src.write_text("fn helper() -> Int { return 0; }")
+    rc = subprocess.call([sys.executable, "-m", "astra.cli", "check", str(src)])
+    assert rc == 0
+
+
 def test_cli_check_accepts_overflow_flag(tmp_path: Path):
     src = tmp_path / "ok.astra"
     src.write_text("fn main() -> Int { return 0; }")
@@ -76,6 +83,15 @@ def test_cli_build_freestanding_llvm(tmp_path: Path):
     assert rc == 0
     mod = out.read_text()
     assert "define i64 @_start()" in mod
+
+
+def test_cli_build_kind_lib_allows_no_entrypoint(tmp_path: Path):
+    src = tmp_path / "lib.astra"
+    out = tmp_path / "lib.py"
+    src.write_text("fn helper() -> Int { return 1; }")
+    rc = subprocess.call([sys.executable, "-m", "astra.cli", "build", str(src), "-o", str(out), "--kind", "lib"])
+    assert rc == 0
+    assert "if __name__ == '__main__':" not in out.read_text()
 
 
 @pytest.mark.skipif(

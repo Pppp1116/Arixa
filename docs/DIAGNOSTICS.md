@@ -29,7 +29,7 @@ This table documents the stable codes emitted by `astra check --json`.
 | `ASTRA-MOD-0001` | Import/module resolution failure |
 | `ASTRA-NAME-0001` | Undefined name |
 | `ASTRA-NAME-0002` | Undefined function |
-| `ASTRA-ENTRY-0001` | Missing entrypoint (`main`) |
+| `ASTRA-ENTRY-0001` | Missing entrypoint (`main` or `_start`, depending on build mode) |
 | `ASTRA-CFG-0001` | Control-flow misuse (for example `break`/`continue` outside loops) |
 | `ASTRA-COMPTIME-0001` | Compile-time execution error |
 | `ASTRA-SEM-9999` | Other semantic diagnostic |
