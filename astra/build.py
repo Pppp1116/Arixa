@@ -569,6 +569,7 @@ def build(
     cpu_dispatch: bool = False,
     cpu_target: str = "baseline",
 ):
+    """Compile an ASTRA program to the selected backend target."""
     src_file = Path(src_path)
     print(f"Building {src_file} -> {out_path} (target: {target})")
     

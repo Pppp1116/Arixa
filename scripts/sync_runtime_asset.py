@@ -4,6 +4,7 @@ import shutil
 
 
 def main() -> int:
+    """Sync the canonical runtime C source into the packaged asset location."""
     repo_root = Path(__file__).resolve().parent.parent
     repo_runtime = repo_root / 'runtime/llvm_runtime.c'
     bundled_runtime = repo_root / 'astra/assets/runtime/llvm_runtime.c'

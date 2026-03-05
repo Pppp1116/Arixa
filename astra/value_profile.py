@@ -12,6 +12,7 @@ VALUE_PROFILE_PATH = Path('.build') / 'value_profile.json'
 
 
 def write_value_profile_template(prog: Program) -> dict[str, dict[str, Any]]:
+    """Write a zero-initialized value-profile template for the analyzed program."""
     payload: dict[str, dict[str, Any]] = {
         'switch_cases': {},
         'indirect_calls': {},
@@ -29,6 +30,7 @@ def write_value_profile_template(prog: Program) -> dict[str, dict[str, Any]]:
 
 
 def load_value_profile() -> dict[str, dict[str, Any]]:
+    """Load value-profile data from disk with empty defaults when unavailable."""
     if not VALUE_PROFILE_PATH.exists():
         return {'switch_cases': {}, 'indirect_calls': {}, 'array_lengths': {}, 'common_integers': {}}
     data = json.loads(VALUE_PROFILE_PATH.read_text())
@@ -41,12 +43,14 @@ def load_value_profile() -> dict[str, dict[str, Any]]:
 
 
 def apply_value_specialization(prog: Program, profile: dict[str, dict[str, Any]]) -> None:
+    """Rewrite match-heavy code with profile-guided hot-value fast paths."""
     for item in prog.items:
         if isinstance(item, FnDecl):
             item.body = _rewrite_stmts(item.body, item.symbol or item.name, profile)
 
 
 def _collect_stmt_profiles(stmts: list[Any], fn_name: str, out: dict[str, dict[str, Any]]) -> None:
+    """Collect statement-level profiling buckets for a function body."""
     for stmt in stmts:
         if isinstance(stmt, MatchStmt):
             key = _switch_key(fn_name, stmt)
@@ -85,6 +89,7 @@ def _collect_stmt_profiles(stmts: list[Any], fn_name: str, out: dict[str, dict[s
 
 
 def _collect_expr_profiles(expr: Any, fn_name: str, out: dict[str, dict[str, Any]]) -> None:
+    """Collect expression-level profiling buckets (literals, arrays, calls)."""
     if isinstance(expr, ArrayLit):
         key = f'{fn_name}:array_literal'
         b = out['array_lengths'].setdefault(key, {})
@@ -107,6 +112,7 @@ def _collect_expr_profiles(expr: Any, fn_name: str, out: dict[str, dict[str, Any
 
 
 def _rewrite_stmts(stmts: list[Any], fn_name: str, profile: dict[str, dict[str, Any]]) -> list[Any]:
+    """Apply profile-guided rewrites recursively across a statement list."""
     out: list[Any] = []
     for stmt in stmts:
         if isinstance(stmt, MatchStmt) and not getattr(stmt, '_value_specialized', False):
@@ -131,6 +137,7 @@ def _rewrite_stmts(stmts: list[Any], fn_name: str, profile: dict[str, dict[str, 
 
 
 def _specialize_match_stmt(stmt: MatchStmt, fn_name: str, profile: dict[str, dict[str, Any]]) -> Any:
+    """Specialize one match statement when a dominant profiled value exists."""
     key = _switch_key(fn_name, stmt)
     legacy_key = _switch_key_legacy(fn_name, stmt)
     case_counts: dict[str, Any] = {}
@@ -152,6 +159,7 @@ def _specialize_match_stmt(stmt: MatchStmt, fn_name: str, profile: dict[str, dic
 
 
 def _find_hot_arm(arms: list[tuple[Any, list[Any]]], hot_value: str) -> tuple[Any | None, list[Any] | None]:
+    """Locate the match arm corresponding to the selected hot literal value."""
     for p, body in arms:
         if _literal_key(p) == hot_value:
             return p, body
@@ -159,6 +167,7 @@ def _find_hot_arm(arms: list[tuple[Any, list[Any]]], hot_value: str) -> tuple[An
 
 
 def _dominant_value(counts: dict[str, Any]) -> str | None:
+    """Return a dominant key when one value contributes at least 90% of counts."""
     if not counts:
         return None
     total = sum(int(v) for v in counts.values())
@@ -171,6 +180,7 @@ def _dominant_value(counts: dict[str, Any]) -> str | None:
 
 
 def _switch_key(fn_name: str, stmt: MatchStmt) -> str:
+    """Build a site-unique key for a match profile bucket."""
     site_id = f"{stmt.line}:{stmt.col}:{stmt.pos}"
     if isinstance(stmt.expr, Name):
         return f'{fn_name}:{stmt.expr.value}:{site_id}'
@@ -178,16 +188,19 @@ def _switch_key(fn_name: str, stmt: MatchStmt) -> str:
 
 
 def _switch_key_legacy(fn_name: str, stmt: MatchStmt) -> str:
+    """Build the pre-site-id key used for backward profile compatibility."""
     if isinstance(stmt.expr, Name):
         return f'{fn_name}:{stmt.expr.value}'
     return f'{fn_name}:match@{stmt.line}:{stmt.col}'
 
 
 def _call_key(fn_name: str, call: Call) -> str:
+    """Build a stable profile key for an indirect call site."""
     return f'{fn_name}:indirect@{call.line}:{call.col}'
 
 
 def _literal_key(pat: Any) -> str | None:
+    """Convert a literal-like pattern node into a serializable profile key."""
     if isinstance(pat, Literal):
         return str(pat.value)
     if isinstance(pat, BoolLit):

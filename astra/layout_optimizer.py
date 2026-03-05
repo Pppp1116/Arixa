@@ -9,6 +9,7 @@ PROFILE_PATH = Path(".build") / "astra-profile.json"
 
 
 def write_profile_template(functions: list[str], llvm_ir: str | None) -> dict[str, dict[str, int]]:
+    """Write a zero-initialized layout profile template from known functions and IR CFG edges."""
     edges: dict[str, int] = {}
     all_functions: set[str] = set(functions)
     if llvm_ir:
@@ -29,6 +30,7 @@ def write_profile_template(functions: list[str], llvm_ir: str | None) -> dict[st
 
 
 def load_profile() -> dict[str, dict[str, int]]:
+    """Load layout profile data from disk, returning empty defaults when missing."""
     if not PROFILE_PATH.exists():
         return {"functions": {}, "edges": {}, "indirect_calls": {}}
     data = json.loads(PROFILE_PATH.read_text())
@@ -40,6 +42,7 @@ def load_profile() -> dict[str, dict[str, int]]:
 
 
 def optimize_llvm_layout(llvm_ir: str, profile: dict[str, dict[str, int]]) -> str:
+    """Reorder functions and basic blocks in LLVM IR using profile hotness data."""
     parts: list[str] = []
     functions: list[tuple[str, list[str]]] = []
     lines = llvm_ir.splitlines()
@@ -67,6 +70,7 @@ def optimize_llvm_layout(llvm_ir: str, profile: dict[str, dict[str, int]]) -> st
 
 
 def _function_name(header: str) -> str:
+    """Extract an LLVM function name from a define header (quoted or unquoted)."""
     m = re.search(r'@"([^"]+)"\(|@([A-Za-z_][\w\.]*)\(', header)
     if not m:
         return "<anon>"
@@ -79,6 +83,7 @@ def _function_name(header: str) -> str:
 
 
 def _extract_functions(ir: str) -> list[tuple[str, dict[str, list[str]]]]:
+    """Split module IR into per-function block dictionaries keyed by function name."""
     out: list[tuple[str, dict[str, list[str]]]] = []
     lines = ir.splitlines()
     i = 0
@@ -100,6 +105,7 @@ def _extract_functions(ir: str) -> list[tuple[str, dict[str, list[str]]]]:
 
 
 def _split_blocks(fn_lines: list[str]) -> dict[str, list[str]]:
+    """Split a function body into labeled basic-block line groups."""
     blocks: dict[str, list[str]] = {}
     current = "entry"
     blocks[current] = [fn_lines[0]]
@@ -114,6 +120,7 @@ def _split_blocks(fn_lines: list[str]) -> dict[str, list[str]]:
 
 
 def _build_successors(blocks: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Build a simple successor map by scanning terminator labels in each block."""
     succ: dict[str, list[str]] = {k: [] for k in blocks.keys()}
     for name, lines in blocks.items():
         tail = " ".join(lines[-2:])
@@ -123,6 +130,7 @@ def _build_successors(blocks: dict[str, list[str]]) -> dict[str, list[str]]:
 
 
 def _reorder_blocks(fn_name: str, fn_lines: list[str], edge_weights: dict[str, int]) -> list[str]:
+    """Reorder blocks to bias fallthrough along the hottest discovered path."""
     blocks = _split_blocks(fn_lines)
     if len(blocks) <= 2:
         return fn_lines
@@ -152,6 +160,7 @@ def _reorder_blocks(fn_name: str, fn_lines: list[str], edge_weights: dict[str, i
 
 
 def _block_weight(fn_name: str, block: str, edge_weights: dict[str, int]) -> int:
+    """Compute aggregate incoming/outgoing edge weight for a block."""
     total = 0
     for k, w in edge_weights.items():
         if not k.startswith(f"{fn_name}:"):
