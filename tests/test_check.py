@@ -115,3 +115,26 @@ def test_check_formats_diagnostic_in_rust_like_style():
     assert rendered.startswith("error[E0301]: expected `;`")
     assert "  --> mem://fmt.astra:1:" in rendered
     assert "   = help: add `;` at the end of the statement" in rendered
+
+
+def test_check_reports_non_exhaustive_enum_match_with_suggestion():
+    src = """
+enum Color {
+  Red,
+  Green,
+  Blue,
+}
+fn main() -> Int {
+  let c: Color = Color.Red;
+  match c {
+    Color.Red => { return 1; }
+    Color.Green => { return 2; }
+  }
+  return 0;
+}
+"""
+    res = run_check_source(src, filename="mem://enum_match.astra")
+    assert not res.ok
+    first = res.diagnostics[0]
+    assert "non-exhaustive `match` for enum `Color`" in first.message
+    assert any("remaining enum variants" in s.message for s in first.suggestions)

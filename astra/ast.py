@@ -451,6 +451,18 @@ class AwaitExpr:
 
 
 @dataclass
+class TryExpr:
+    """AST node representing try expr.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
+    expr: Any
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
 class IndexExpr:
     """AST node representing index expr.
     

@@ -97,7 +97,7 @@ def _expr_prec(e) -> int:
         return _PREC_CAST
     if isinstance(e, (AwaitExpr, Unary)):
         return _PREC_UNARY
-    if isinstance(e, (Call, IndexExpr, FieldExpr)):
+    if isinstance(e, (Call, IndexExpr, FieldExpr, TryExpr)):
         return _PREC_POSTFIX
     return _PREC_ATOM
 
@@ -138,6 +138,8 @@ def _fmt_expr(e, cfg: FormatConfig, *, indent: int = 0) -> str:
         return "_"
     if isinstance(e, AwaitExpr):
         return f"await {_fmt_expr_with_prec(e.expr, cfg, _PREC_UNARY)}"
+    if isinstance(e, TryExpr):
+        return f"{_fmt_expr_with_prec(e.expr, cfg, _PREC_POSTFIX)}?"
     if isinstance(e, Unary):
         return f"{e.op}{_fmt_expr_with_prec(e.expr, cfg, _PREC_UNARY)}"
     if isinstance(e, CastExpr):

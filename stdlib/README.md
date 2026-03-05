@@ -18,6 +18,10 @@ Each module is either **freestanding-safe** (can be analyzed/used with
 | `io.astra`       | Hosted file I/O (`read`, `write`, `read_or`, etc.) and printing helpers (`print_int`, `print_bool`, `print_float`, `print_str`, `print_any`). | ❌ |
 | `str.astra`      | Hosted string utilities (`length`, `is_empty`, `to_string_*`, `parse_int`). | ❌ |
 | `net.astra`      | Hosted TCP helpers (`tcp_connect`, `tcp_send`, `tcp_send_line`, `tcp_recv`, `tcp_close`). | ❌ |
+| `thread.astra`   | Hosted task wrappers (`spawn0`, `spawn1`, `join`, `yield_now`). | ❌ |
+| `sync.astra`     | Cooperative mutex wrappers over hosted primitives. | ❌ |
+| `channel.astra`  | Cooperative FIFO channel (`channel_new`, `channel_send`, `channel_recv`, `channel_close`). | ❌ |
+| `atomic.astra`   | Compatibility atomic API (`AtomicInt`, load/store/fetch_add/cas). | ✅ |
 | `process.astra`  | Hosted process/environment helpers (`exit`, `env_or`, `cwd`, `run_ok`, `eprintln`). | ❌ |
 | `crypto.astra`   | Hosted cryptographic helpers (`sha256`, `hmac_sha256`, `digest_pair`). | ❌ |
 | `serde.astra`    | Hosted JSON helpers (`to_json`, `from_json`).    | ❌ |
@@ -25,4 +29,3 @@ Each module is either **freestanding-safe** (can be analyzed/used with
 
 Freestanding analysis is validated in `tests/test_stdlib_modules.py` and
 runtime behavior is exercised throughout the end-to-end and integration tests.
-

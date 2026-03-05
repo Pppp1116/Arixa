@@ -166,6 +166,9 @@ Option rules:
 - `none` is only valid where `Option<T>` is expected.
 - `??` requires left operand `Option<T>` and right operand `T`.
 - `??` is short-circuiting; rhs is evaluated only when lhs is `none`.
+- `a?` supports:
+  - `Option<T>` only in functions returning `Option<_>`; it propagates `none`.
+  - `Result<T, E>` only in functions returning `Result<_, E>`; it propagates `Err(E)`.
 - Use `Option<T>` for presence/absence; use `Result<T, E>` for recoverable failures with error detail.
 
 Integer utility rules:
@@ -254,7 +257,7 @@ Current x86-64 backend contract (System V ABI oriented):
   - First-class function pointers are supported (`fn(T...) -> R` values).
   - Calls through function pointers lower to indirect machine calls.
 - Additional native-lowered constructs:
-  - `async` declarations and `await` expressions lower to direct native control flow.
+  - `async`/`await` lower through direct native control flow/runtime helper paths; no full scheduler contract is guaranteed yet.
   - Aggregate and dynamic values lower as opaque pointer-sized handles at the ABI boundary.
   - `match`, struct field access/assignment, and array/slice indexing/get are lowered directly.
   - `@packed struct` field accesses/updates lower through shift/mask read-modify-write paths (packed integer fields are supported up to language maximum width `128`).
@@ -295,7 +298,7 @@ add_expr     = mul_expr { ("+" | "-") mul_expr } ;
 mul_expr     = unary_expr { ("*" | "/" | "%") unary_expr } ;
 unary_expr   = ["await"] ( ("-" | "!" | "~" | "*" | "&" ["mut"]) unary_expr | cast_expr ) ;
 cast_expr    = postfix_expr { "as" type } ;
-postfix_expr = atom { "." ident | "[" expr "]" | "(" [expr {"," expr}] ")" } ;
+postfix_expr = atom { "." ident | "[" expr "]" | "(" [expr {"," expr}] ")" | "?" } ;
 atom         = int | float | string | typed_int | "none" | ident | "(" expr ")" | layout_query | type_query ;
 typed_int    = int int_type_tok ;
 int_type_tok = ("i" | "u") nonzero_digit {digit} ;

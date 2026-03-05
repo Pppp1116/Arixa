@@ -1,0 +1,45 @@
+/// std.channel - simple MPSC-style queue channel (cooperative hosted runtime).
+
+struct Channel {
+    queue Any,
+    head Int,
+    closed Bool,
+}
+
+/// Create a new channel.
+fn channel_new() -> Channel {
+    return Channel(__list_new(), 0, false);
+}
+
+/// Close channel; subsequent sends fail.
+fn channel_close(ch &mut Channel) -> Int {
+    ch.closed = true;
+    return 0;
+}
+
+/// Send one value into the channel.
+///
+/// Returns:
+/// - `0` on success
+/// - `1` when channel is closed
+fn channel_send(ch &mut Channel, value Any) -> Int {
+    if ch.closed {
+        return 1;
+    }
+    else {}
+    return __list_push(ch.queue, value);
+}
+
+/// Receive one value from channel.
+///
+/// Returns `none` when queue is currently empty.
+fn channel_recv(ch &mut Channel) -> Option<Any> {
+    let n = __list_len(ch.queue);
+    if ch.head < n {
+        let out = __list_get(ch.queue, ch.head);
+        ch.head += 1;
+        return out;
+    }
+    else {}
+    return none;
+}

@@ -320,6 +320,9 @@ def _fold_ast_expr(expr: Any, env: dict[str, Any], mutable_names: set[str]) -> A
     if isinstance(expr, AwaitExpr):
         expr.expr = _fold_ast_expr(expr.expr, env, mutable_names)
         return expr
+    if isinstance(expr, TryExpr):
+        expr.expr = _fold_ast_expr(expr.expr, env, mutable_names)
+        return expr
     if isinstance(expr, IndexExpr):
         expr.obj = _fold_ast_expr(expr.obj, env, mutable_names)
         expr.index = _fold_ast_expr(expr.index, env, mutable_names)
@@ -378,6 +381,8 @@ def _is_pure_expr(expr: Any) -> bool:
         return _is_pure_expr(expr.expr)
     if isinstance(expr, Binary):
         return _is_pure_expr(expr.left) and _is_pure_expr(expr.right)
+    if isinstance(expr, TryExpr):
+        return False
     if isinstance(expr, ArrayLit):
         return all(_is_pure_expr(e) for e in expr.elements)
     if isinstance(expr, StructLit):
@@ -402,6 +407,8 @@ def _may_trap_expr(expr: Any) -> bool:
         return False
     if isinstance(expr, Unary):
         return _may_trap_expr(expr.expr)
+    if isinstance(expr, TryExpr):
+        return True
     if isinstance(expr, Binary):
         if _may_trap_expr(expr.left) or _may_trap_expr(expr.right):
             return True
@@ -724,6 +731,8 @@ def _cse_expr(expr: Any, avail: dict[Any, tuple[str, set[str]]]) -> Any:
         expr.args = [_cse_expr(arg, avail) for arg in expr.args]
     elif isinstance(expr, AwaitExpr):
         expr.expr = _cse_expr(expr.expr, avail)
+    elif isinstance(expr, TryExpr):
+        expr.expr = _cse_expr(expr.expr, avail)
     elif isinstance(expr, IndexExpr):
         expr.obj = _cse_expr(expr.obj, avail)
         expr.index = _cse_expr(expr.index, avail)
@@ -977,6 +986,8 @@ def _used_names_expr(expr: Any) -> set[str]:
             out |= _used_names_expr(arg)
         return out
     if isinstance(expr, AwaitExpr):
+        return _used_names_expr(expr.expr)
+    if isinstance(expr, TryExpr):
         return _used_names_expr(expr.expr)
     if isinstance(expr, IndexExpr):
         return _used_names_expr(expr.obj) | _used_names_expr(expr.index)

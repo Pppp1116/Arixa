@@ -7,6 +7,7 @@ Module groups:
 - Core types and checked arithmetic: `core`
 - Data containers: `vec`, `collections`, `mem`
 - Hosted utilities: `io`, `net`, `process`, `time`, `crypto`, `serde`, `str`
+- Concurrency/synchronization (experimental): `thread`, `sync`, `channel`, `atomic`
 - Math helpers: `math`
 
 Import with `import std.<module>;`.
@@ -15,3 +16,4 @@ Current implementation note:
 
 - stdlib source modules document stable API shapes.
 - semantic/codegen paths currently expose most callable stdlib-facing APIs as builtins with matching names.
+- module docs now include status tags (`stable` / `experimental`) and backend support notes.

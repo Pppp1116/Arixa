@@ -41,6 +41,40 @@ def _option_inner(typ: Any) -> str:
     return t[7:-1]
 
 
+def _parse_parametric_type(typ: Any) -> tuple[str, list[str]] | None:
+    t = type_text(typ).strip()
+    if "<" not in t or not t.endswith(">"):
+        return None
+    lt = t.find("<")
+    base = t[:lt].strip()
+    inner = t[lt + 1 : -1].strip()
+    if not base or not inner:
+        return None
+    args = _split_top_level(inner, ",")
+    if not args:
+        return None
+    return base, args
+
+
+def _is_result_type(typ: Any) -> bool:
+    parsed = _parse_parametric_type(typ)
+    return parsed is not None and parsed[0] == "Result" and len(parsed[1]) == 2
+
+
+def _result_ok_inner(typ: Any) -> str:
+    parsed = _parse_parametric_type(typ)
+    if parsed is None or parsed[0] != "Result" or len(parsed[1]) != 2:
+        return "Any"
+    return parsed[1][0]
+
+
+def _result_err_inner(typ: Any) -> str:
+    parsed = _parse_parametric_type(typ)
+    if parsed is None or parsed[0] != "Result" or len(parsed[1]) != 2:
+        return "Any"
+    return parsed[1][1]
+
+
 def _is_vec_type(typ: Any) -> bool:
     t = type_text(typ)
     return t.startswith("Vec<") and t.endswith(">")
@@ -84,6 +118,8 @@ def _canonical_type(typ: Any) -> str:
         return "Vec<u8>"
     if _is_option_type(t):
         return f"Option<{_canonical_type(_option_inner(t))}>"
+    if _is_result_type(t):
+        return f"Result<{_canonical_type(_result_ok_inner(t))}, {_canonical_type(_result_err_inner(t))}>"
     if t.startswith("&mut "):
         return f"&mut {_canonical_type(t[5:])}"
     if t.startswith("&"):
@@ -92,6 +128,10 @@ def _canonical_type(typ: Any) -> str:
         return f"[{_canonical_type(_slice_inner(t))}]"
     if _is_vec_type(t):
         return f"Vec<{_canonical_type(_vec_inner(t))}>"
+    parsed = _parse_parametric_type(t)
+    if parsed is not None:
+        base, args = parsed
+        return f"{base}<{', '.join(_canonical_type(a) for a in args)}>"
     return t
 
 
@@ -482,10 +522,12 @@ class _BorrowState:
 class _MoveState:
     def __init__(self):
         self.moved: dict[str, bool] = {}
+        self.fn_ret: str | None = None
 
     def copy(self):
         nxt = _MoveState()
         nxt.moved = self.moved.copy()
+        nxt.fn_ret = self.fn_ret
         return nxt
 
     def merge(self, left: "_MoveState", right: "_MoveState"):
@@ -493,6 +535,7 @@ class _MoveState:
         for name in set(left.moved) | set(right.moved):
             merged[name] = left.moved.get(name, False) or right.moved.get(name, False)
         self.moved = merged
+        self.fn_ret = left.fn_ret or right.fn_ret
 
     def release_scope(self, scope_prev: dict[str, bool | None]):
         for name, prev in scope_prev.items():
@@ -542,6 +585,13 @@ def _same_type(expected: str, actual: str) -> bool:
         return _same_type(_option_inner(expected), _option_inner(actual))
     if _is_option_type(expected) and not _is_option_type(actual):
         return _same_type(_option_inner(expected), actual)
+    exp_param = _parse_parametric_type(expected)
+    act_param = _parse_parametric_type(actual)
+    if exp_param is not None and act_param is not None:
+        exp_base, exp_args = exp_param
+        act_base, act_args = act_param
+        if exp_base == act_base and len(exp_args) == len(act_args):
+            return all(_same_type(ea, aa) for ea, aa in zip(exp_args, act_args))
     if {expected, actual} == {"String", "str"}:
         return True
     if expected == "&str" and actual in {"String", "str", "&str"}:
@@ -1251,6 +1301,7 @@ def _analyze_fn(
     owned = _OwnedState()
     borrow = _BorrowState()
     move = _MoveState()
+    move.fn_ret = _canonical_type(fn.ret)
     for n, _ in fn.params:
         move.declare(n)
     borrow_scopes: list[set[str]] = [set()]
@@ -1672,6 +1723,15 @@ def _check_stmt(
     if isinstance(st, MatchStmt):
         subject_ty = _infer(st.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         seen_bool: set[bool] = set()
+        seen_enum_variants: set[str] = set()
+        subject_enum_decl: EnumDecl | None = None
+        subject_canon = _canonical_type(subject_ty)
+        if subject_canon in enums:
+            subject_enum_decl = enums[subject_canon]
+        else:
+            parsed_subject = _parse_parametric_type(subject_canon)
+            if parsed_subject is not None and parsed_subject[0] in enums:
+                subject_enum_decl = enums[parsed_subject[0]]
         seen_wildcard = False
         for idx, (pat, body) in enumerate(st.arms):
             if isinstance(pat, WildcardPattern):
@@ -1690,6 +1750,29 @@ def _check_stmt(
                         value_text = "true" if pat.value else "false"
                         raise SemanticError(_diag(filename, pat.line, pat.col, f"duplicate Bool match arm for {value_text}"))
                     seen_bool.add(pat.value)
+                if subject_enum_decl is not None:
+                    enum_name = subject_enum_decl.name
+                    variant_name: str | None = None
+                    if isinstance(pat, FieldExpr) and isinstance(pat.obj, Name) and pat.obj.value == enum_name:
+                        variant_name = pat.field
+                    elif (
+                        isinstance(pat, Call)
+                        and isinstance(pat.fn, FieldExpr)
+                        and isinstance(pat.fn.obj, Name)
+                        and pat.fn.obj.value == enum_name
+                    ):
+                        variant_name = pat.fn.field
+                    if variant_name is not None:
+                        known = {name for name, _ in subject_enum_decl.variants}
+                        if variant_name not in known:
+                            raise SemanticError(
+                                _diag(filename, pat.line, pat.col, f"unknown enum variant {enum_name}.{variant_name}")
+                            )
+                        if variant_name in seen_enum_variants:
+                            raise SemanticError(
+                                _diag(filename, pat.line, pat.col, f"duplicate enum match arm for {enum_name}.{variant_name}")
+                            )
+                        seen_enum_variants.add(variant_name)
             arm_scopes = scopes + [{}]
             arm_fixed_scopes = fixed_scopes + [{}]
             arm_borrow_scopes = borrow_scopes + [set()]
@@ -1715,6 +1798,10 @@ def _check_stmt(
             )
         if subject_ty == "Bool" and not seen_wildcard and seen_bool != {True, False}:
             raise SemanticError(_diag(filename, st.line, st.col, "non-exhaustive match for Bool"))
+        if subject_enum_decl is not None and not seen_wildcard:
+            all_variants = {name for name, _ in subject_enum_decl.variants}
+            if seen_enum_variants != all_variants:
+                raise SemanticError(_diag(filename, st.line, st.col, f"non-exhaustive match for enum {subject_enum_decl.name}"))
         return
     if isinstance(st, ExprStmt):
         _infer(st.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
@@ -1843,6 +1930,24 @@ def _infer(
         return _typed(e, "Int")
     if isinstance(e, AwaitExpr):
         return _typed(e, _infer(e.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok))
+    if isinstance(e, TryExpr):
+        src_ty = _infer(e.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        fn_ret = _canonical_type(getattr(move, "fn_ret", ""))
+        src_c = _canonical_type(src_ty)
+        if _is_option_type(src_c):
+            if not _is_option_type(fn_ret):
+                raise SemanticError(_diag(filename, e.line, e.col, f"`?` on Option<T> requires function return Option<U>, got {fn_ret or '<unknown>'}"))
+            _require_type(filename, e.line, e.col, fn_ret, src_c, "? operand")
+            setattr(e, "try_kind", "option")
+            return _typed(e, _option_inner(src_c))
+        if _is_result_type(src_c):
+            if not _is_result_type(fn_ret):
+                raise SemanticError(_diag(filename, e.line, e.col, f"`?` on Result<T, E> requires function return Result<U, E>, got {fn_ret or '<unknown>'}"))
+            _require_type(filename, e.line, e.col, _result_err_inner(fn_ret), _result_err_inner(src_c), "result error type")
+            setattr(e, "try_kind", "result")
+            setattr(e, "try_error_type", _result_err_inner(src_c))
+            return _typed(e, _result_ok_inner(src_c))
+        raise SemanticError(_diag(filename, e.line, e.col, f"`?` expects Option<T> or Result<T, E> operand, got {src_ty}"))
     if isinstance(e, Unary):
         if e.op in {"&", "&mut"}:
             if not isinstance(e.expr, Name):
@@ -1951,6 +2056,21 @@ def _infer(
             return _typed(e, _vec_inner(base_ty))
         return _typed(e, "Any")
     if isinstance(e, FieldExpr):
+        if isinstance(e.obj, Name) and _lookup(e.obj.value, scopes) is None and e.obj.value in enums:
+            enum_decl = enums[e.obj.value]
+            variant = next((v for v, _ in enum_decl.variants if v == e.field), None)
+            if variant is None:
+                raise SemanticError(_diag(filename, e.line, e.col, f"unknown enum variant {e.obj.value}.{e.field}"))
+            payload = next(vtypes for vname, vtypes in enum_decl.variants if vname == e.field)
+            if payload:
+                ret = enum_decl.name
+                if enum_decl.generics:
+                    ret = f"{enum_decl.name}<{', '.join('Any' for _ in enum_decl.generics)}>"
+                return _typed(e, f"fn({', '.join(payload)}) -> {ret}")
+            ret = enum_decl.name
+            if enum_decl.generics:
+                ret = f"{enum_decl.name}<{', '.join('Any' for _ in enum_decl.generics)}>"
+            return _typed(e, ret)
         obj_ty = _infer(e.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         # Strip reference types to get the underlying struct type
         base_ty = _strip_ref(obj_ty)
@@ -2213,6 +2333,53 @@ def _infer_call(
             return sig.ret
         raise SemanticError(_diag(filename, e.line, e.col, f"undefined function {name}"))
     if isinstance(e.fn, FieldExpr):
+        if isinstance(e.fn.obj, Name) and _lookup(e.fn.obj.value, scopes) is None and e.fn.obj.value in enums:
+            enum_decl = enums[e.fn.obj.value]
+            variant = None
+            for vname, vtypes in enum_decl.variants:
+                if vname == e.fn.field:
+                    variant = (vname, vtypes)
+                    break
+            if variant is None:
+                raise SemanticError(
+                    _diag(filename, e.line, e.col, f"unknown enum variant {enum_decl.name}.{e.fn.field}")
+                )
+            _, payload_types = variant
+            if len(e.args) != len(payload_types):
+                raise SemanticError(
+                    _diag(
+                        filename,
+                        e.line,
+                        e.col,
+                        f"{enum_decl.name}.{e.fn.field} expects {len(payload_types)} args, got {len(e.args)}",
+                    )
+                )
+            type_bindings: dict[str, str] = {}
+            type_param_set = set(enum_decl.generics)
+            fn_ret_defaults: dict[str, str] = {}
+            fn_ret = _canonical_type(getattr(move, "fn_ret", ""))
+            fn_ret_param = _parse_parametric_type(fn_ret)
+            if fn_ret_param is not None:
+                fn_base, fn_args = fn_ret_param
+                if fn_base == enum_decl.name and len(fn_args) == len(enum_decl.generics):
+                    fn_ret_defaults = {tp: ty for tp, ty in zip(enum_decl.generics, fn_args)}
+            for i, (expected, arg) in enumerate(zip(payload_types, e.args)):
+                aty = arg_types[i]
+                exp_c = _canonical_type(expected)
+                if exp_c in type_param_set:
+                    prev = type_bindings.get(exp_c)
+                    if prev is None:
+                        type_bindings[exp_c] = aty
+                    else:
+                        _require_type(filename, arg.line, arg.col, prev, aty, f"arg {i} for {enum_decl.name}.{e.fn.field}")
+                else:
+                    _require_type(filename, arg.line, arg.col, expected, aty, f"arg {i} for {enum_decl.name}.{e.fn.field}")
+                if not _is_ref_type(aty):
+                    _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
+            if enum_decl.generics:
+                bound = [type_bindings.get(tp, fn_ret_defaults.get(tp, "Any")) for tp in enum_decl.generics]
+                return f"{enum_decl.name}<{', '.join(bound)}>"
+            return enum_decl.name
         obj_ty = _infer(e.fn.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         if e.fn.field == "get":
             if len(e.args) != 1:

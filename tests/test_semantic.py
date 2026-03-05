@@ -206,6 +206,103 @@ def test_type_sugar_question_mark_desugars_to_option():
     analyze(parse(src))
 
 
+def test_try_operator_typechecks_for_option_in_option_returning_fn():
+    src = """
+fn helper(v: Option<Int>) -> Option<Int> {
+  let x = v?;
+  return x;
+}
+fn main() -> Int { return 0; }
+"""
+    analyze(parse(src))
+
+
+def test_try_operator_requires_option_operand():
+    src = "fn helper(v Int) -> Option<Int> { return v?; } fn main() -> Int { return 0; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "`?` expects Option<T> operand" in str(e)
+
+
+def test_try_operator_requires_option_return_type():
+    src = "fn helper(v: Option<Int>) -> Int { return v?; } fn main() -> Int { return 0; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "`?` on Option<T> requires function return Option<U>" in str(e)
+
+
+def test_try_operator_typechecks_for_result_in_result_returning_fn():
+    src = """
+enum Result<T, E> {
+  Ok(T),
+  Err(E),
+}
+fn parse(v Int) -> Result<Int, Int> {
+  if v > 0 {
+    return Result.Ok(v);
+  }
+  else {}
+  return Result.Err(1);
+}
+fn helper(v Int) -> Result<Int, Int> {
+  let x = parse(v)?;
+  return Result.Ok(x + 1);
+}
+fn main() -> Int { return 0; }
+"""
+    analyze(parse(src))
+
+
+def test_try_operator_result_requires_result_return_type():
+    src = """
+enum Result<T, E> {
+  Ok(T),
+  Err(E),
+}
+fn parse(v Int) -> Result<Int, Int> {
+  if v > 0 { return Result.Ok(v); } else {}
+  return Result.Err(1);
+}
+fn helper(v Int) -> Int {
+  let x = parse(v)?;
+  return x;
+}
+fn main() -> Int { return 0; }
+"""
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "`?` on Result<T, E> requires function return Result<U, E>" in str(e)
+
+
+def test_try_operator_result_requires_matching_error_type():
+    src = """
+enum Result<T, E> {
+  Ok(T),
+  Err(E),
+}
+fn parse(v Int) -> Result<Int, Int> {
+  if v > 0 { return Result.Ok(v); } else {}
+  return Result.Err(1);
+}
+fn helper(v Int) -> Result<Int, String> {
+  let x = parse(v)?;
+  return Result.Ok(x);
+}
+fn main() -> Int { return 0; }
+"""
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "result error type" in str(e)
+
+
 def test_expression_statement_allows_discarding_non_void_values():
     src = "fn id(x Int) -> Int { return x; } fn main() -> Int { id(1); return 0; }"
     analyze(parse(src))
@@ -266,6 +363,52 @@ def test_match_duplicate_bool_pattern_is_rejected():
         assert False
     except SemanticError as e:
         assert "duplicate Bool match arm for true" in str(e)
+
+
+def test_match_non_exhaustive_enum_is_rejected():
+    src = """
+enum Color {
+  Red,
+  Green,
+  Blue,
+}
+fn main() -> Int {
+  let c: Color = Color.Red;
+  match c {
+    Color.Red => { return 1; }
+    Color.Green => { return 2; }
+  }
+  return 0;
+}
+"""
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "non-exhaustive match for enum Color" in str(e)
+
+
+def test_match_duplicate_enum_variant_is_rejected():
+    src = """
+enum Color {
+  Red,
+  Green,
+}
+fn main() -> Int {
+  let c: Color = Color.Red;
+  match c {
+    Color.Red => { return 1; }
+    Color.Red => { return 2; }
+    Color.Green => { return 3; }
+  }
+  return 0;
+}
+"""
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "duplicate enum match arm for Color.Red" in str(e)
 
 
 def test_specialization_prefers_concrete_impl():

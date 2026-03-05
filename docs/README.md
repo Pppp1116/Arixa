@@ -13,3 +13,4 @@ Existing project docs retained in this repository:
 - `docs/TOUR.md`
 - `docs/DIAGNOSTICS.md`
 - `docs/SPEC_COMPLIANCE.md`
+- `docs/FEATURE_STATUS.md`

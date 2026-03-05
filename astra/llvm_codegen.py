@@ -133,6 +133,36 @@ def _option_inner_type(typ: str) -> str:
     return typ
 
 
+def _parse_parametric_type(typ: str) -> tuple[str, list[str]] | None:
+    text = _canonical_type(typ).strip()
+    if "<" not in text or not text.endswith(">"):
+        return None
+    lt = text.find("<")
+    base = text[:lt].strip()
+    inner = text[lt + 1 : -1].strip()
+    if not base or not inner:
+        return None
+    args = _split_top_level(inner, ",")
+    if not args:
+        return None
+    return base, args
+
+
+def _is_result_type(typ: str) -> bool:
+    parsed = _parse_parametric_type(typ)
+    return parsed is not None and parsed[0] == "Result" and len(parsed[1]) == 2
+
+
+def _result_inner_types(typ: str) -> tuple[str, str] | None:
+    parsed = _parse_parametric_type(typ)
+    if parsed is None:
+        return None
+    base, args = parsed
+    if base != "Result" or len(args) != 2:
+        return None
+    return _canonical_type(args[0]), _canonical_type(args[1])
+
+
 def _int_info(typ: str) -> tuple[int, bool] | None:
     c = _canonical_type(typ)
     if c in {"Int", "isize"}:
@@ -415,6 +445,8 @@ def _llvm_type(ctx: _ModuleCtx, typ: str) -> ir.Type:
         return out_ty
     if _is_option_type(c):
         return ir.IntType(8).as_pointer()
+    if _is_result_type(c):
+        return ir.IntType(8).as_pointer()
     if c == "Bool":
         return ir.IntType(1)
     info = _int_info(c)
@@ -455,6 +487,42 @@ def _default_value(ctx: _ModuleCtx, typ: str) -> ir.Constant:
     if isinstance(llty, ir.VoidType):
         return ir.Constant(ir.IntType(1), 0)
     raise CodegenError(f"internal: no default value for {typ}")
+
+
+def _result_storage_ty() -> ir.LiteralStructType:
+    return ir.LiteralStructType([ir.IntType(8), ir.IntType(64)], packed=False)
+
+
+def _emit_result_value(
+    ctx: _ModuleCtx,
+    state: _FnState,
+    result_ty: str,
+    *,
+    is_ok: bool,
+    payload_v: ir.Value,
+    payload_ty: str,
+    node: Any,
+) -> ir.Value:
+    parsed = _result_inner_types(result_ty)
+    if parsed is None:
+        raise CodegenError(_diag(node, f"internal: expected Result<T, E> type, got {result_ty}"))
+    _ok_ty, _err_ty = parsed
+    payload_any = _coerce_value(ctx, state, payload_v, payload_ty, "Any", node)
+    if not (isinstance(payload_any.type, ir.IntType) and payload_any.type.width == 64):
+        payload_any = state.builder.bitcast(payload_any, ir.IntType(64))
+
+    i64 = ir.IntType(64)
+    mem = _alloc_bytes(ctx, state, ir.Constant(i64, 16), ir.Constant(i64, 8), node)
+    s_ptr = state.builder.bitcast(mem, _result_storage_ty().as_pointer())
+    tag_ptr = state.builder.gep(s_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+    payload_ptr = state.builder.gep(s_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
+    state.builder.store(ir.Constant(ir.IntType(8), 1 if is_ok else 0), tag_ptr)
+    state.builder.store(payload_any, payload_ptr)
+
+    out_ty = _llvm_type(ctx, result_ty)
+    if mem.type != out_ty:
+        return state.builder.bitcast(mem, out_ty)
+    return mem
 
 
 def _is_terminated(state: _FnState) -> bool:
@@ -697,6 +765,14 @@ def _expr_type(state: _FnState, e: Any) -> str:
         return _canonical_type(e.name)
     if isinstance(e, AwaitExpr):
         return _expr_type(state, e.expr)
+    if isinstance(e, TryExpr):
+        src_ty = _expr_type(state, e.expr)
+        if _is_option_type(src_ty):
+            return _option_inner_type(src_ty)
+        parsed = _result_inner_types(src_ty)
+        if parsed is not None:
+            return parsed[0]
+        return "Any"
     return "Int"
 
 
@@ -1720,6 +1796,44 @@ def _compile_struct_init(
 
 
 def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: str) -> _Value:
+    if (
+        isinstance(call.fn, FieldExpr)
+        and isinstance(call.fn.obj, Name)
+        and call.fn.obj.value == "Result"
+        and call.fn.field in {"Ok", "Err"}
+    ):
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, f"Result.{call.fn.field} expects 1 argument"))
+        out_ty = _expr_type(state, call)
+        parsed = _result_inner_types(out_ty)
+        if parsed is None:
+            raise CodegenError(_diag(call, f"Result constructor requires Result<T, E> context, got {out_ty}"))
+        ok_ty, err_ty = parsed
+        arg = _compile_expr(ctx, state, call.args[0], overflow_mode=overflow_mode)
+        if call.fn.field == "Ok":
+            payload = _coerce_value(ctx, state, arg.value, arg.ty, ok_ty, call.args[0])
+            out_ptr = _emit_result_value(
+                ctx,
+                state,
+                out_ty,
+                is_ok=True,
+                payload_v=payload,
+                payload_ty=ok_ty,
+                node=call,
+            )
+        else:
+            payload = _coerce_value(ctx, state, arg.value, arg.ty, err_ty, call.args[0])
+            out_ptr = _emit_result_value(
+                ctx,
+                state,
+                out_ty,
+                is_ok=False,
+                payload_v=payload,
+                payload_ty=err_ty,
+                node=call,
+            )
+        return _Value(out_ptr, out_ty)
+
     if isinstance(call.fn, FieldExpr) and call.fn.field == "get":
         if len(call.args) != 1:
             raise CodegenError(_diag(call, "get expects 1 argument"))
@@ -1953,6 +2067,83 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
             parsed = f"fn({', '.join(sig.params)}) -> {sig.ret}"
             return _Value(b.bitcast(fn, ir.IntType(8).as_pointer()), parsed)
         raise CodegenError(_diag(e, f"undefined local or function value {e.value}"))
+    if isinstance(e, TryExpr):
+        src = _compile_expr(ctx, state, e.expr, overflow_mode=overflow_mode)
+        src_ty = _canonical_type(src.ty)
+        fn_ret = _canonical_type(state.ret_type)
+        if _is_option_type(src_ty):
+            if not _is_option_type(fn_ret):
+                raise CodegenError(_diag(e, f"`?` requires Option<T> function return type, got {fn_ret}"))
+            if not isinstance(src.value.type, ir.PointerType):
+                raise CodegenError(_diag(e, "internal: Option<T> lowering expects pointer storage"))
+            is_none = b.icmp_unsigned("==", src.value, ir.Constant(src.value.type, None))
+            fn_ir = state.fn_ir
+            none_block = fn_ir.append_basic_block("try_none")
+            some_block = fn_ir.append_basic_block("try_some")
+            b.cbranch(is_none, none_block, some_block)
+
+            b.position_at_end(none_block)
+            if state.ret_alloca is None:
+                raise CodegenError(_diag(e, "internal: missing return storage for `?` propagation"))
+            none_rv = _default_value(ctx, fn_ret)
+            b.store(none_rv, state.ret_alloca)
+            b.branch(state.epilogue_block)
+
+            b.position_at_end(some_block)
+            inner_ty = _option_inner_type(src_ty)
+            inner_ll = _llvm_type(ctx, inner_ty)
+            some_ptr = b.bitcast(src.value, inner_ll.as_pointer())
+            some_v = b.load(some_ptr)
+            return _Value(some_v, inner_ty)
+
+        parsed_src = _result_inner_types(src_ty)
+        if parsed_src is None:
+            raise CodegenError(_diag(e, f"`?` expects Option<T> or Result<T, E> operand, got {src_ty}"))
+        if not _is_result_type(fn_ret):
+            raise CodegenError(_diag(e, f"`?` on Result<T, E> requires Result<T, E> function return type, got {fn_ret}"))
+        parsed_fn = _result_inner_types(fn_ret)
+        if parsed_fn is None:
+            raise CodegenError(_diag(e, f"internal: malformed function return type {fn_ret}"))
+        ok_ty, err_ty = parsed_src
+        _, fn_err_ty = parsed_fn
+        if _canonical_type(err_ty) != _canonical_type(fn_err_ty):
+            raise CodegenError(
+                _diag(e, f"`?` on Result<T, E> requires matching error type, got {err_ty} and {fn_err_ty}")
+            )
+        if not isinstance(src.value.type, ir.PointerType):
+            raise CodegenError(_diag(e, "internal: Result<T, E> lowering expects pointer storage"))
+
+        fn_ir = state.fn_ir
+        is_ok_block = fn_ir.append_basic_block("try_result_ok")
+        is_err_block = fn_ir.append_basic_block("try_result_err")
+        res_ptr = b.bitcast(src.value, _result_storage_ty().as_pointer())
+        tag_ptr = b.gep(res_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+        payload_ptr = b.gep(res_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
+        tag = b.load(tag_ptr)
+        ok_cond = b.icmp_unsigned("==", tag, ir.Constant(ir.IntType(8), 1))
+        b.cbranch(ok_cond, is_ok_block, is_err_block)
+
+        b.position_at_end(is_err_block)
+        if state.ret_alloca is None:
+            raise CodegenError(_diag(e, "internal: missing return storage for `?` propagation"))
+        err_any = b.load(payload_ptr)
+        err_value = _coerce_value(ctx, state, err_any, "Any", fn_err_ty, e)
+        err_result = _emit_result_value(
+            ctx,
+            state,
+            fn_ret,
+            is_ok=False,
+            payload_v=err_value,
+            payload_ty=fn_err_ty,
+            node=e,
+        )
+        b.store(err_result, state.ret_alloca)
+        b.branch(state.epilogue_block)
+
+        b.position_at_end(is_ok_block)
+        ok_any = b.load(payload_ptr)
+        ok_value = _coerce_value(ctx, state, ok_any, "Any", ok_ty, e)
+        return _Value(ok_value, ok_ty)
     if isinstance(e, AwaitExpr):
         return _compile_expr(ctx, state, e.expr, overflow_mode=overflow_mode)
     if isinstance(e, CastExpr):

@@ -860,6 +860,10 @@ class Parser:
                 end = self.eat(")")
                 expr = Call(expr, args, end.pos, end.line, end.col)
                 continue
+            if self.opt("?"):
+                q = self.toks[self.i - 1]
+                expr = TryExpr(expr, q.pos, q.line, q.col)
+                continue
             break
         return expr
 

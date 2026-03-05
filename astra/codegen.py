@@ -100,6 +100,29 @@ def to_python(
         "        out -= (1 << bits)",
         "    return out",
         "def print_(x): print(x); return None",
+        "class _AstraTryNone(Exception):",
+        "    pass",
+        "class _AstraTryResultErr(Exception):",
+        "    def __init__(self, value):",
+        "        super().__init__('result-err')",
+        "        self.value = value",
+        "def __astra_result_err(v):",
+        "    return {'__enum__': 'Result', 'tag': 'Err', 'values': [v]}",
+        "def __astra_try_unwrap(v):",
+        "    if v is None:",
+        "        raise _AstraTryNone()",
+        "    return v",
+        "def __astra_try_unwrap_result(v):",
+        "    if isinstance(v, dict) and v.get('__enum__') == 'Result':",
+        "        tag = v.get('tag')",
+        "        vals = v.get('values')",
+        "        if not isinstance(vals, list):",
+        "            vals = []",
+        "        if tag == 'Ok':",
+        "            return vals[0] if vals else None",
+        "        if tag == 'Err':",
+        "            raise _AstraTryResultErr(vals[0] if vals else None)",
+        "    raise TypeError('`?` on Result expected Result.Ok/Result.Err value')",
         "def len_(x): return len(x)",
         "def read_file(p): return pathlib.Path(p).read_text()",
         "def write_file(p,s): pathlib.Path(p).write_text(str(s)); return 0",
@@ -119,24 +142,21 @@ def to_python(
         "    tid = _astra_next_tid",
         "    _astra_next_tid += 1",
         "    state = {'done': False, 'result': 0}",
-        "    def _run():",
-        "        try:",
-        "            out = fn(*a)",
-        "            if inspect.isawaitable(out):",
-        "                out = asyncio.run(out)",
-        "            state['result'] = out",
-        "        finally:",
-        "            state['done'] = True",
-        "    th = threading.Thread(target=_run, daemon=True)",
-        "    state['thread'] = th",
+        "    try:",
+        "        out = fn(*a)",
+        "        if inspect.isawaitable(out):",
+        "            out = asyncio.run(out)",
+        "        state['result'] = out",
+        "    except Exception:",
+        "        state['result'] = 0",
+        "    finally:",
+        "        state['done'] = True",
         "    _astra_threads[tid] = state",
-        "    th.start()",
         "    return tid",
         "def join(tid):",
-        "    state = _astra_threads.get(tid)",
+        "    state = _astra_threads.get(int(tid))",
         "    if state is None:",
         "        return 0",
-        "    state['thread'].join()",
         "    return state['result']",
         "def await_result(v):",
         "    if inspect.isawaitable(v):",
@@ -327,6 +347,10 @@ def to_python(
             lines.append("        pass")
         for st in item.body:
             lines.extend(_stmt_py(st, 2))
+        lines.append("    except _AstraTryNone:")
+        lines.append("        return None")
+        lines.append("    except _AstraTryResultErr as __astra_err:")
+        lines.append("        return __astra_result_err(__astra_err.value)")
         lines.append("    finally:")
         lines.append("        for _d in reversed(_astra_defer_stack):")
         lines.append("            _d()")
@@ -525,6 +549,14 @@ def _expr(e: Any) -> str:
         raise CodegenError(_diag(e, "wildcard pattern `_` is only valid in match arms"))
     if isinstance(e, AwaitExpr):
         return f"await_result({_expr(e.expr)})"
+    if isinstance(e, TryExpr):
+        kind = getattr(e, "try_kind", "")
+        if kind == "result":
+            return f"__astra_try_unwrap_result({_expr(e.expr)})"
+        inferred = getattr(e.expr, "inferred_type", "")
+        if isinstance(inferred, str) and inferred.startswith("Result<"):
+            return f"__astra_try_unwrap_result({_expr(e.expr)})"
+        return f"__astra_try_unwrap({_expr(e.expr)})"
     if isinstance(e, CastExpr):
         return f"__astra_cast({_expr(e.expr)}, {_canonical_type(e.type_name)!r})"
     if isinstance(e, TypeAnnotated):

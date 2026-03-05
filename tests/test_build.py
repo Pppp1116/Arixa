@@ -1,5 +1,8 @@
 import shutil
+import socket
 import subprocess
+import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -45,6 +48,39 @@ def test_native_missing_clang_reports_codegen_error(monkeypatch, tmp_path: Path)
     assert msg.startswith("CODEGEN ")
 
 
+def test_build_native_accepts_sanitizer_flag(monkeypatch, tmp_path: Path):
+    src = tmp_path / "main.astra"
+    out = tmp_path / "main.exe"
+    src.write_text("fn main() -> Int { return 0; }")
+    seen: list[list[str]] = []
+
+    def fake_run(cmd, capture_output=True, text=True):
+        seen.append(list(cmd))
+        if "-o" in cmd:
+            out_idx = cmd.index("-o") + 1
+            Path(cmd[out_idx]).write_text("")
+        class CP:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+        return CP()
+
+    monkeypatch.setattr(build_mod.shutil, "which", lambda _: "/usr/bin/clang")
+    monkeypatch.setattr(build_mod.subprocess, "run", fake_run)
+    st = build(str(src), str(out), "native", sanitize="address")
+    assert st in {"built", "cached"}
+    assert any("-fsanitize=address" in arg for cmd in seen for arg in cmd)
+
+
+def test_build_rejects_sanitizer_for_non_native_targets(tmp_path: Path):
+    src = tmp_path / "main.astra"
+    out = tmp_path / "main.py"
+    src.write_text("fn main() -> Int { return 0; }")
+    with pytest.raises(RuntimeError) as excinfo:
+        build(str(src), str(out), "py", sanitize="address")
+    assert "sanitizer requires --target native" in str(excinfo.value)
+
+
 def test_build_cache_invalidates_when_imported_module_changes(tmp_path: Path):
     src = tmp_path / "main.astra"
     dep = tmp_path / "helper.astra"
@@ -85,6 +121,25 @@ fn main() -> Int { return 0; }
     assert st1 in {"built", "cached"}
     assert st2 == "cached"
     assert st3 == "built"
+
+
+def test_build_py_can_call_functions_from_imported_module(tmp_path: Path):
+    src = tmp_path / "main.astra"
+    dep = tmp_path / "helper.astra"
+    out = tmp_path / "main.py"
+    dep.write_text("fn helper(v Int) -> Int { return v + 2; }")
+    src.write_text(
+        """
+import helper;
+fn main() -> Int {
+  return helper(5);
+}
+"""
+    )
+    st = build(str(src), str(out), "py")
+    assert st in {"built", "cached"}
+    cp = subprocess.run([sys.executable, str(out)], capture_output=True, text=True)
+    assert cp.returncode == 7
 
 
 def test_build_cache_invalidates_when_toolchain_stamp_changes(monkeypatch, tmp_path: Path):
@@ -129,6 +184,51 @@ fn main() -> Int {
     1 => { return 1; }
     _ => { return 0; }
   }
+  return 0;
+}
+"""
+    )
+    st = build(str(src), str(out), "py", strict=True)
+    assert st in {"built", "cached"}
+
+
+def test_build_strict_mode_accepts_try_operator(tmp_path: Path):
+    src = tmp_path / "strict_try.astra"
+    out = tmp_path / "strict_try.py"
+    src.write_text(
+        """
+fn helper(v: Option<Int>) -> Option<Int> {
+  let x = v?;
+  return x;
+}
+fn main() -> Int {
+  return helper(3) ?? 0;
+}
+"""
+    )
+    st = build(str(src), str(out), "py", strict=True)
+    assert st in {"built", "cached"}
+
+
+def test_build_strict_mode_accepts_result_try_operator(tmp_path: Path):
+    src = tmp_path / "strict_try_result.astra"
+    out = tmp_path / "strict_try_result.py"
+    src.write_text(
+        """
+enum Result<T, E> {
+  Ok(T),
+  Err(E),
+}
+fn helper(v Int) -> Result<Int, Int> {
+  if v > 0 { return Result.Ok(v); } else {}
+  return Result.Err(1);
+}
+fn wrap(v Int) -> Result<Int, Int> {
+  let x = helper(v)?;
+  return Result.Ok(x);
+}
+fn main() -> Int {
+  let _ = wrap(1);
   return 0;
 }
 """
@@ -646,6 +746,58 @@ fn main() -> Int {{
     assert st in {"built", "cached"}
     cp = subprocess.run([str(out)], capture_output=True, text=True)
     assert cp.returncode == 160
+
+
+@pytest.mark.skipif(
+    shutil.which("clang") is None or sys.platform.startswith("win"),
+    reason="native TCP runtime test requires clang and POSIX sockets",
+)
+def test_build_native_tcp_runtime_roundtrip(tmp_path: Path):
+    ready = threading.Event()
+    port_box: list[int] = []
+
+    def _server() -> None:
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port_box.append(int(srv.getsockname()[1]))
+        ready.set()
+        conn, _ = srv.accept()
+        try:
+            _ = conn.recv(16)
+            conn.sendall(b"pong")
+        finally:
+            conn.close()
+            srv.close()
+
+    th = threading.Thread(target=_server, daemon=True)
+    th.start()
+    assert ready.wait(timeout=3.0)
+    assert port_box
+    port = port_box[0]
+
+    src = tmp_path / "tcp_roundtrip.astra"
+    out = tmp_path / "tcp_roundtrip.exe"
+    src.write_text(
+        f"""
+fn main() -> Int {{
+  let conn = tcp_connect("127.0.0.1:{port}");
+  if conn < 0 {{
+    return 100;
+  }}
+  let sent = tcp_send(conn, "ping");
+  let recv_len = len(tcp_recv(conn, 4));
+  let closed = tcp_close(conn);
+  return sent + recv_len + closed;
+}}
+"""
+    )
+    st = build(str(src), str(out), "native")
+    assert st in {"built", "cached"}
+    cp = subprocess.run([str(out)], capture_output=True, text=True)
+    th.join(timeout=3.0)
+    assert cp.returncode == 8
 
 
 @pytest.mark.skipif(

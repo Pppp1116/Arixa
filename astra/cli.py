@@ -10,6 +10,7 @@ from astra.build import build
 from astra.check import diagnostics_to_json_list, format_diagnostic, run_check_paths, run_check_source
 from astra.docgen import main as doc_main
 from astra.formatter import fmt, resolve_format_config
+from astra.pkg import main as pkg_main
 
 
 def cmd_build(a):
@@ -31,6 +32,7 @@ def cmd_build(a):
         freestanding=a.freestanding,
         profile=a.profile,
         overflow=a.overflow,
+        sanitize=a.sanitize,
         triple=a.triple,
         links=a.link,
     )
@@ -185,6 +187,18 @@ def cmd_selfhost(a):
     raise SystemExit(1)
 
 
+def cmd_pkg(a):
+    """Handle the `astra pkg` subcommand.
+    
+    Parameters:
+        a: Input value used by this routine.
+    
+    Returns:
+        None. May raise `SystemExit` for CLI exit handling.
+    """
+    pkg_main(a.args)
+
+
 def main(argv=None):
     """CLI-style entrypoint for this module.
     
@@ -207,6 +221,7 @@ def main(argv=None):
     b.add_argument("--freestanding", action="store_true")
     b.add_argument("--profile", choices=["debug", "release"], default="debug")
     b.add_argument("--overflow", choices=["trap", "wrap", "debug"], default="debug")
+    b.add_argument("--sanitize", choices=["address", "undefined", "thread"])
     b.add_argument("--triple")
     b.add_argument("--link", action="append", default=[])
     b.set_defaults(func=cmd_build)
@@ -242,6 +257,10 @@ def main(argv=None):
 
     s = sp.add_parser("selfhost")
     s.set_defaults(func=cmd_selfhost)
+
+    k = sp.add_parser("pkg")
+    k.add_argument("args", nargs=argparse.REMAINDER)
+    k.set_defaults(func=cmd_pkg)
 
     a = p.parse_args(argv)
     try:

@@ -51,6 +51,21 @@ def test_pkg_main_roundtrip(tmp_path: Path):
         os.chdir(prev)
 
 
+def test_cli_pkg_dispatch_roundtrip(tmp_path: Path):
+    prev = Path.cwd()
+    try:
+        import os
+
+        os.chdir(tmp_path)
+        astra.cli.main(["pkg", "init", "demo"])
+        astra.cli.main(["pkg", "add", "dep_a", "0.1.0"])
+        astra.cli.main(["pkg", "verify"])
+        assert (tmp_path / "Astra.toml").exists()
+        assert (tmp_path / "Astra.lock").exists()
+    finally:
+        os.chdir(prev)
+
+
 def test_cli_main_check_and_build(tmp_path: Path):
     src = tmp_path / "a.astra"
     out = tmp_path / "a.py"

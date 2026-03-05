@@ -1,7 +1,7 @@
 # Astra Reference Manual
 
 ## CLI
-- `astra build <in> -o <out> [--target py|llvm|native] [--kind exe|lib] [--emit-ir out.ll] [--strict] [--freestanding] [--profile debug|release] [--overflow trap|wrap|debug] [--triple <llvm-triple>]`
+- `astra build <in> -o <out> [--target py|llvm|native] [--kind exe|lib] [--emit-ir out.ll] [--strict] [--freestanding] [--profile debug|release] [--overflow trap|wrap|debug] [--sanitize address|undefined|thread] [--triple <llvm-triple>]`
 - `astra check <in> [--freestanding] [--overflow trap|wrap|debug] [--json]`
 - `astra check --files <f1> <f2> ... [--freestanding] [--overflow ...] [--json]`
 - `astra check --stdin [--stdin-filename name] [--freestanding] [--overflow ...] [--json]`
@@ -9,6 +9,7 @@
 - `astra test [--kind unit|integration|e2e]`
 - `astra fmt <files...> [--check]`
 - `astra doc <in> -o <out>`
+- `astra pkg <astpm-args...>` (package-manager passthrough)
 - `astra selfhost` (currently unavailable: placeholder only, no real self-hosting pipeline)
 - `--target native` requires `clang` in `PATH` and links against bundled runtime source (override with `ASTRA_RUNTIME_C_PATH`).
 - `--kind exe` (default) requires an entrypoint:
@@ -22,7 +23,7 @@
   - freestanding vectors use builtins: `vec_new`, `vec_from`, `vec_len`, `vec_get`, `vec_set`, `vec_push`
 
 ## Tooling
-- `astpm init/add/lock`
+- `astpm init/add/remove/search/list/update/publish/lock/verify`
 - `astfmt <file>`
 - `astlint <file>`
 - `astdoc <in> -o <out>`
@@ -32,7 +33,7 @@
 - `astprof <py script>`
 
 ## Standard library modules
-- core, collections, io, net, serde, process, time, crypto
+- core, vec, mem, collections, io, net, serde, process, time, crypto, str, thread, sync, channel, atomic
 - module import syntax:
   - `import std.io;` (preferred, package-managed stdlib)
   - `import stdlib::io;` (legacy supported)
@@ -46,6 +47,9 @@
 - `drop <expr>;` (consumes value and runs destructor immediately)
 - use `let _ = <expr>;` / `_ = <expr>;` to discard a value result
 - option coalescing: `<a> ?? <b>` where `<a>: Option<T>`
+- propagation sugar: `<a>?`
+  - `Option<T>` form (only in functions returning `Option<_>`)
+  - `Result<T, E>` form (only in functions returning `Result<_, E>`)
 - `for` loops use only `for <ident> in <iterable-expr> { ... }` (C-style `for init; cond; step` is not supported)
   - iterables: ranges (`start..end`, `start..=end`), `Vec<T>`, slice refs (`&[T]`/`&mut [T]`), `Bytes`
 - immutable bindings: `fixed name[: Type] = expr;`
@@ -112,5 +116,5 @@
   - division/modulo by zero always traps
   - signed division/modulo overflow (`MIN / -1`, `MIN % -1`) always traps
 - Structured `defer` lowering supports full expressions (LIFO at function exit), including loop-hit counting.
-- Async/await declarations lower on x86 as direct native control flow.
+- Async/await surface lowers through direct control-flow/runtime helper paths; no language-level async scheduler contract is guaranteed yet.
 - Non-scalar values lower as opaque pointer-sized ABI handles in native mode.

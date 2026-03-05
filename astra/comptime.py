@@ -256,6 +256,8 @@ class _Evaluator:
             raise ComptimeError(_diag(self.filename, e.line, e.col, "field access only supported for map-like values"))
         if isinstance(e, AwaitExpr):
             return self.eval_expr(e.expr, env, env_types)
+        if isinstance(e, TryExpr):
+            raise ComptimeError(_diag(self.filename, e.line, e.col, "`?` is not supported in comptime expressions"))
         if isinstance(e, Call):
             args = [self.eval_expr(a, env, env_types) for a in e.args]
             name = self._call_target_name(e.fn, env, env_types, e)
@@ -685,6 +687,9 @@ def _collect_runtime_name_uses_expr(expr: Any, out: set[str]) -> None:
         _collect_runtime_name_uses_expr(expr.expr, out)
         return
     if isinstance(expr, AwaitExpr):
+        _collect_runtime_name_uses_expr(expr.expr, out)
+        return
+    if isinstance(expr, TryExpr):
         _collect_runtime_name_uses_expr(expr.expr, out)
         return
     if isinstance(expr, Call):

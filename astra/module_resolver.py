@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 try:
@@ -12,6 +13,7 @@ except Exception:  # pragma: no cover - only for older Python fallback
 from astra.ast import ImportDecl
 
 _MANIFEST = "Astra.toml"
+_LOCKFILE = "Astra.lock"
 _STDLIB_ENV = "ASTRA_STDLIB_PATH"
 _RUNTIME_ENV = "ASTRA_RUNTIME_C_PATH"
 _PKG_HOME_ENV = "ASTRA_PKG_HOME"
@@ -208,6 +210,24 @@ def _package_module_candidate(pkg_version_dir: Path, name: str, subpath: str = "
 def _dependency_version(project_root: Path | None, name: str) -> str | None:
     if project_root is None:
         return None
+    lock = project_root / _LOCKFILE
+    if lock.exists():
+        try:
+            data = json.loads(lock.read_text())
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            packages = data.get("packages")
+            if isinstance(packages, dict):
+                entry = packages.get(name)
+                if isinstance(entry, dict):
+                    ver = entry.get("version")
+                    if isinstance(ver, str) and ver.strip():
+                        return ver.strip()
+            legacy = data.get(name)
+            if isinstance(legacy, str) and legacy.strip():
+                return legacy.strip()
+
     manifest = project_root / _MANIFEST
     if not manifest.exists():
         return None

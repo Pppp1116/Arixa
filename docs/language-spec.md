@@ -46,7 +46,7 @@ add_expr  = mul_expr { ("+" | "-") mul_expr } ;
 mul_expr  = unary_expr { ("*" | "/" | "%") unary_expr } ;
 unary_expr = ["await"] ( ("-" | "!" | "~" | "*" | "&" ["mut"]) unary_expr | cast_expr ) ;
 cast_expr = postfix_expr { "as" type } ;
-postfix_expr = atom { "." ident | "[" expr "]" | "(" [expr {"," expr}] ")" } ;
+postfix_expr = atom { "." ident | "[" expr "]" | "(" [expr {"," expr}] ")" | "?" } ;
 atom      = int | float | string | typed_int | "none" | ident | "(" expr ")" | layout_query | type_query ;
 typed_int = int int_type_tok ;
 int_type_tok = ("i" | "u") nonzero_digit {digit} ;
@@ -111,6 +111,9 @@ Conventions:
 - `none` has no standalone type; it is valid only where `Option<T>` is expected.
 - `a ?? b` requires `a: Option<T>` and `b: T`, producing `T`.
 - `??` is short-circuiting: the right operand is evaluated only when the left operand is `none`.
+- `a?` supports both:
+  - `Option<T>` in functions returning `Option<U>` (propagates `none`).
+  - `Result<T, E>` in functions returning `Result<U, E>` (propagates `Err(E)`).
 - Integer type queries:
   - `bitSizeOf(T)` returns logical bit width.
   - `maxVal(T)`/`minVal(T)` return integer bounds for integer type `T`.
@@ -167,9 +170,9 @@ Conventions:
 - Safety violations in checked operations trap at runtime rather than invoking undefined behavior.
 
 ## Concurrency model
-- M:N runtime scheduling model conceptually.
-- `spawn` creates concurrent tasks and returns a task id; `join` waits for completion and yields the task result.
-- Async operations are poll-based and integrate with runtime event loop.
+- Current task model is eager/runtime-backed and does not guarantee parallel execution.
+- `spawn` evaluates a callable and stores its result under a task id; `join` retrieves that result.
+- `await` lowers through runtime helper behavior (`await_result`) rather than a language-level event-loop contract.
 - `spawn` enforces `Send`-like constraints on argument/return types in safe code.
 - Shared references passed across tasks require `Sync`-like compatibility of their pointee type.
 
@@ -211,7 +214,7 @@ Conventions:
 ## Runtime intrinsics
 - `alloc(n)` allocates `n` bytes in the managed runtime heap and returns an integer handle.
 - `free(ptr)` releases a previously allocated handle.
-- `spawn(fn, ...)` starts `fn` on a runtime thread and returns an integer task id.
-- `join(task_id)` blocks until the task completes and returns its result.
+- `spawn(fn, ...)` evaluates `fn` with provided arguments and stores the result under an integer task id.
+- `join(task_id)` returns a previously stored task result.
 - `countOnes(x)`, `leadingZeros(x)`, `trailingZeros(x)` (and aliases `popcnt`, `clz`, `ctz`) require integer arguments.
 - `rotl(x, n)` and `rotr(x, n)` rotate integer bit patterns with modulo-width counts.

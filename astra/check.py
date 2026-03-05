@@ -545,6 +545,9 @@ def _friendly_message_for(message: str, code: str) -> str:
 
     if message.startswith("non-exhaustive match for Bool"):
         return "non-exhaustive `match` for `Bool`"
+    if message.startswith("non-exhaustive match for enum "):
+        enum_name = message.removeprefix("non-exhaustive match for enum ").strip()
+        return f"non-exhaustive `match` for enum `{enum_name}`"
 
     no_impl = _NO_MATCHING_IMPL_RE.match(message)
     if no_impl is not None:
@@ -738,6 +741,8 @@ def _suggestions_for(
 
     if "non-exhaustive match for bool" in m:
         out.append(DiagSuggestion(message="add the missing `false`/`true` arm, or add a trailing wildcard `_ => { ... }` arm"))
+    if "non-exhaustive match for enum " in m:
+        out.append(DiagSuggestion(message="add arms for the remaining enum variants, or add a trailing wildcard `_ => { ... }` arm"))
 
     if "wildcard match arm must be last" in m:
         out.append(DiagSuggestion(message="move `_ => ...` to the end of the match arms"))

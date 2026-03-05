@@ -28,6 +28,7 @@ from astra.ast import (
     SizeOfValueExpr,
     StructDecl,
     TypeAliasDecl,
+    TryExpr,
     Unary,
     UnsafeStmt,
     WildcardPattern,
@@ -244,6 +245,20 @@ fn main() -> Int {
     assert isinstance(fn.body[2], LetStmt)
     assert isinstance(fn.body[2].expr, Binary)
     assert fn.body[2].expr.op == "??"
+
+
+def test_parse_try_postfix_operator():
+    src = """
+fn helper(v: Option<Int>) -> Option<Int> {
+  let x = v?;
+  return x;
+}
+fn main() -> Int { return 0; }
+"""
+    prog = parse(src)
+    fn = prog.items[0]
+    assert isinstance(fn.body[0], LetStmt)
+    assert isinstance(fn.body[0].expr, TryExpr)
 
 
 def test_parse_accepts_multiline_string_literal():

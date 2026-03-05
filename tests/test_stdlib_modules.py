@@ -13,6 +13,7 @@ def _load(path: str) -> str:
 
 def test_core_stdlib_module_analyzes_in_freestanding_mode():
     modules = [
+        "stdlib/atomic.astra",
         "stdlib/core.astra",
         "stdlib/math.astra",
         "stdlib/vec.astra",
@@ -26,6 +27,7 @@ def test_core_stdlib_module_analyzes_in_freestanding_mode():
 
 def test_hosted_stdlib_modules_are_rejected_in_freestanding_mode():
     modules = [
+        "stdlib/channel.astra",
         "stdlib/collections.astra",
         "stdlib/crypto.astra",
         "stdlib/io.astra",
@@ -33,6 +35,8 @@ def test_hosted_stdlib_modules_are_rejected_in_freestanding_mode():
         "stdlib/net.astra",
         "stdlib/process.astra",
         "stdlib/serde.astra",
+        "stdlib/sync.astra",
+        "stdlib/thread.astra",
         "stdlib/time.astra",
     ]
     for module in modules:
@@ -49,6 +53,10 @@ def test_extended_stdlib_exports_exist():
         "stdlib/io.astra": {"read_or", "print_int", "print_bool", "print_float", "print_str", "print_any"},
         "stdlib/collections.astra": {"map_get_or"},
         "stdlib/net.astra": {"tcp_send_line"},
+        "stdlib/thread.astra": {"spawn0", "spawn1", "join_task", "yield_now"},
+        "stdlib/sync.astra": {"mutex_new", "mutex_lock", "mutex_unlock"},
+        "stdlib/channel.astra": {"Channel", "channel_new", "channel_send", "channel_recv", "channel_close"},
+        "stdlib/atomic.astra": {"AtomicInt", "atomic_int_new", "atomic_load", "atomic_store", "atomic_fetch_add", "atomic_compare_exchange"},
         "stdlib/process.astra": {"env_or", "run_ok", "eprintln"},
         "stdlib/crypto.astra": {"digest_pair"},
         "stdlib/math.astra": {"min_int", "max_int", "clamp_int", "abs_int"},
