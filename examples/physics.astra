@@ -3,16 +3,16 @@ struct Vec2 {
     y Float,
 }
 
-fn dot(a Vec2, b Vec2) -> Float {
+fn dot(a Vec2, b Vec2) Float{
     return a.x * b.x + a.y * b.y;
 }
 
-fn len2(v Vec2) -> Float {
+fn len2(v Vec2) Float{
     return dot(v, v);
 }
 
-fn classify_speed(v2 Float) -> Int {
-    let fast = v2 > 25.0;
+fn classify_speed(v2 Float) Int{
+    fast = v2 > 25.0;
     match fast {
         true => {
             return 2;
@@ -23,12 +23,12 @@ fn classify_speed(v2 Float) -> Int {
     }
 }
 
-fn main() -> Int {
-    let pts = [Vec2(3.0, 4.0), Vec2(1.0, 2.0), Vec2(10.0, 0.0)];
-    let mut i = 0;
-    let mut acc = 0.0;
+fn main() Int{
+    pts = [Vec2(3.0, 4.0), Vec2(1.0, 2.0), Vec2(10.0, 0.0)];
+    mut i = 0;
+    mut acc = 0.0;
     while i < len(pts) {
-        let v2 = len2(pts[i]);
+        v2 = len2(pts[i]);
         acc = acc + v2;
         i += 1;
     }

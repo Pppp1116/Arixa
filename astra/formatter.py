@@ -143,7 +143,7 @@ def _fmt_expr(e, cfg: FormatConfig, *, indent: int = 0) -> str:
     if isinstance(e, AwaitExpr):
         return f"await {_fmt_expr_with_prec(e.expr, cfg, _PREC_UNARY)}"
     if isinstance(e, TryExpr):
-        return f"{_fmt_expr_with_prec(e.expr, cfg, _PREC_POSTFIX)}?"
+        return f"{_fmt_expr_with_prec(e.expr, cfg, _PREC_POSTFIX)}!"
     if isinstance(e, Unary):
         return f"{e.op}{_fmt_expr_with_prec(e.expr, cfg, _PREC_UNARY)}"
     if isinstance(e, CastExpr):
@@ -209,12 +209,12 @@ def _fmt_block(prefix: str, body: list, ind: int, cfg: FormatConfig) -> list[str
 def _fmt_stmt(st, ind: int, cfg: FormatConfig) -> list[str]:
     p = _indent(ind, cfg)
     if isinstance(st, LetStmt):
-        kw = "fixed" if st.fixed else "let"
-        mut = "mut " if st.mut and not st.fixed else ""
+        mut = "mut " if st.mut else ""
         ann = f": {type_text(st.type_name)}" if st.type_name else ""
-        return [f"{p}{kw} {mut}{st.name}{ann} = {_fmt_expr(st.expr, cfg, indent=ind)};"]
+        return [f"{p}{mut}{st.name}{ann} = {_fmt_expr(st.expr, cfg, indent=ind)};"]
     if isinstance(st, AssignStmt):
-        return [f"{p}{_fmt_expr(st.target, cfg, indent=ind)} {st.op} {_fmt_expr(st.expr, cfg, indent=ind)};"]
+        set_kw = "set " if getattr(st, "explicit_set", False) else ""
+        return [f"{p}{set_kw}{_fmt_expr(st.target, cfg, indent=ind)} {st.op} {_fmt_expr(st.expr, cfg, indent=ind)};"]
     if isinstance(st, ReturnStmt):
         if st.expr is None:
             return [f"{p}return;"]
@@ -266,6 +266,10 @@ def _fmt_item(item, cfg: FormatConfig) -> list[str]:
         return [f"import {'.'.join(item.path)}{alias};"]
     if isinstance(item, TypeAliasDecl):
         return [f"type {item.name} = {type_text(item.target)};"]
+    if isinstance(item, LetStmt):
+        mut = "mut " if item.mut else ""
+        ann = f": {type_text(item.type_name)}" if item.type_name else ""
+        return [f"{mut}{item.name}{ann} = {_fmt_expr(item.expr, cfg)};"]
     if isinstance(item, StructDecl):
         out = []
         if item.doc:
@@ -309,7 +313,8 @@ def _fmt_item(item, cfg: FormatConfig) -> list[str]:
         if item.is_variadic:
             sig_parts.append("...")
         sig = ", ".join(sig_parts)
-        line = f"{pub}{us}extern fn {item.name}({sig}) -> {type_text(item.ret)};"
+        ret_text = f" {type_text(item.ret)}" if type_text(item.ret) != "Void" else ""
+        line = f"{pub}{us}extern fn {item.name}({sig}){ret_text};"
         if len(line) <= cfg.line_width or not item.params:
             out.append(line)
             return out
@@ -318,14 +323,14 @@ def _fmt_item(item, cfg: FormatConfig) -> list[str]:
             out.append(f"{_indent(1, cfg)}{n} {type_text(t)},")
         if item.is_variadic:
             out.append(f"{_indent(1, cfg)}...,")
-        out.append(f") -> {type_text(item.ret)};")
+        ret_text = f" {type_text(item.ret)}" if type_text(item.ret) != "Void" else ""
+        out.append(f"){ret_text};")
         return out
     if isinstance(item, FnDecl):
         out = []
         if item.doc:
             out.extend([f"/// {line}" for line in item.doc.splitlines()])
         pub = "pub " if item.pub else ""
-        impl_kw = "impl " if item.is_impl else ""
         async_kw = "async " if item.async_fn else ""
         unsafe_kw = "unsafe " if item.unsafe else ""
         sig = ", ".join(f"{n} {type_text(t)}" for n, t in item.params)
@@ -336,12 +341,13 @@ def _fmt_item(item, cfg: FormatConfig) -> list[str]:
                 groups.setdefault(tvar, []).append(tr)
             parts = [f"{tv}: {' + '.join(bounds)}" for tv, bounds in groups.items()]
             where_text = f" where {', '.join(parts)}"
-        fn_head = f"{pub}{impl_kw}{async_kw}{unsafe_kw}fn {item.name}({sig}) -> {type_text(item.ret)}{where_text}"
+        ret_text = f" {type_text(item.ret)}" if type_text(item.ret) != "Void" else ""
+        fn_head = f"{pub}{async_kw}{unsafe_kw}fn {item.name}({sig}){ret_text}{where_text}"
         if len(fn_head) > cfg.line_width and item.params:
-            out.append(f"{pub}{impl_kw}{async_kw}{unsafe_kw}fn {item.name}(")
+            out.append(f"{pub}{async_kw}{unsafe_kw}fn {item.name}(")
             for n, t in item.params:
                 out.append(f"{_indent(1, cfg)}{n} {type_text(t)},")
-            fn_head = f") -> {type_text(item.ret)}{where_text}"
+            fn_head = f"){ret_text}{where_text}"
         if not item.body:
             out.append(f"{fn_head} {{}}")
             return out
@@ -358,11 +364,10 @@ def _fmt_item(item, cfg: FormatConfig) -> list[str]:
         out.append(f"{pub}trait {item.name} {{")
         for mname, params, ret in item.methods:
             sig = ", ".join(f"{n} {type_text(t)}" for n, t in params)
-            out.append(f"{_indent(1, cfg)}fn {mname}({sig}) -> {type_text(ret)};")
+            ret_text = f" {type_text(ret)}" if type_text(ret) != "Void" else ""
+            out.append(f"{_indent(1, cfg)}fn {mname}({sig}){ret_text};")
         out.append("}")
         return out
-    if isinstance(item, TraitImplDecl):
-        return [f"impl {item.trait_name} for {type_text(item.target_type)};"]
     raise ValueError(f"formatter: unsupported top-level node {type(item).__name__}")
 
 

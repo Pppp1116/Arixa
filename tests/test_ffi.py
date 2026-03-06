@@ -15,7 +15,7 @@ from astra.semantic import analyze
 
 
 def test_parse_extern_decl_shape():
-    src = "extern fn foo(x: i32) -> i32;"
+    src = "extern fn foo(x i32) i32;"
     prog = parse(src)
     ext = prog.items[0]
     assert isinstance(ext, ExternFnDecl)
@@ -27,7 +27,7 @@ def test_parse_extern_decl_shape():
 
 
 def test_parse_variadic_extern_decl():
-    src = 'extern fn printf(fmt: *u8, ...) -> i32;'
+    src = 'extern fn printf(fmt *u8, ...) i32;'
     prog = parse(src)
     ext = prog.items[0]
     assert isinstance(ext, ExternFnDecl)
@@ -36,7 +36,7 @@ def test_parse_variadic_extern_decl():
 
 
 def test_parse_link_attribute_on_extern():
-    src = '@link("SDL2") extern fn SDL_Init(flags: u32) -> i32;'
+    src = '@link("SDL2") extern fn SDL_Init(flags u32) i32;'
     prog = parse(src)
     ext = prog.items[0]
     assert isinstance(ext, ExternFnDecl)
@@ -44,7 +44,7 @@ def test_parse_link_attribute_on_extern():
 
 
 def test_parse_multiple_link_attributes():
-    src = '@link("SDL2") @link("SDL2main") extern fn SDL_Init(flags: u32) -> i32;'
+    src = '@link("SDL2") @link("SDL2main") extern fn SDL_Init(flags u32) i32;'
     prog = parse(src)
     ext = prog.items[0]
     assert isinstance(ext, ExternFnDecl)
@@ -52,25 +52,25 @@ def test_parse_multiple_link_attributes():
 
 
 def test_semantic_extern_symbol_is_callable():
-    src = "extern fn foo(x: i32) -> i32; fn main() -> Int { return foo(2i32); }"
+    src = "extern fn foo(x i32) i32; fn main() Int{ return foo(2i32); }"
     prog = parse(src)
     analyze(prog)
 
 
 def test_semantic_extern_with_body_is_parse_error():
-    src = "extern fn foo() -> i32 { return 1i32; }"
+    src = "extern fn foo() i32{ return 1i32; }"
     with pytest.raises(ParseError):
         parse(src)
 
 
 def test_semantic_extern_inside_function_is_parse_error():
-    src = "fn main() -> Int { extern fn foo() -> i32; return 0; }"
+    src = "fn main() Int{ extern fn foo() i32; return 0; }"
     with pytest.raises(ParseError, match="only allowed at module scope"):
         parse(src)
 
 
 def test_llvm_codegen_emits_declare_for_extern():
-    src = "extern fn foo(x: i32) -> i32; fn main() -> Int { return foo(1i32); }"
+    src = "extern fn foo(x i32) i32; fn main() Int{ return foo(1i32); }"
     prog = parse(src)
     ir = to_llvm_ir(prog, filename="<mem>")
     assert "declare i32 @foo(i32)" in ir
@@ -78,7 +78,7 @@ def test_llvm_codegen_emits_declare_for_extern():
 
 
 def test_python_codegen_emits_ctypes_bindings():
-    src = '@link("SDL2") extern fn SDL_Init(flags: u32) -> i32; fn main() -> Int { return 0; }'
+    src = '@link("SDL2") extern fn SDL_Init(flags u32) i32; fn main() Int{ return 0; }'
     prog = parse(src)
     analyze(prog)
     py = to_python(prog)
@@ -98,7 +98,7 @@ def test_native_build_can_link_external_c_abi_library(tmp_path: Path, monkeypatc
 
     src = tmp_path / "main.astra"
     out = tmp_path / "app"
-    src.write_text('@link("calcffi") extern fn c_add7(x: i32) -> i32;\nfn main() -> Int { return c_add7(5i32); }\n')
+    src.write_text('@link("calcffi") extern fn c_add7(x i32) i32;\nfn main() Int{ return c_add7(5i32); }\n')
 
     old_library_path = os.environ.get("LIBRARY_PATH", "")
     old_ld_library_path = os.environ.get("LD_LIBRARY_PATH", "")

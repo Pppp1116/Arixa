@@ -6,15 +6,15 @@ def test_std_thread_and_atomic_runtime(tmp_path) -> None:
 import "thread";
 import "atomic";
 
-fn worker() -> Int {
+fn worker() Int{
   return 41;
 }
 
-fn main() -> Int {
-  let tid = spawn0(worker);
-  let out: Int = join_task(tid) as Int;
-  let mut a = atomic_int_new(1);
-  let prev = atomic_fetch_add(&mut a, out);
+fn main() Int{
+  tid = spawn0(worker);
+  out: Int = join_task(tid) as Int;
+  mut a = atomic_int_new(1);
+  prev = atomic_fetch_add(&mut a, out);
   print(prev);
   return atomic_load(&a);
 }
@@ -32,14 +32,14 @@ def test_std_channel_runtime(tmp_path) -> None:
     src = '''
 import "channel";
 
-fn main() -> Int {
-  let mut ch = channel_new();
-  let rc = channel_send(&mut ch, 7);
+fn main() Int{
+  mut ch = channel_new();
+  rc = channel_send(&mut ch, 7);
   if rc != 0 {
     return 1;
   }
   else {}
-  let v = channel_recv(&mut ch) ?? 0;
+  v = channel_recv(&mut ch) ?? 0;
   return v as Int;
 }
 '''
@@ -57,16 +57,16 @@ def test_spawn_returns_before_join(tmp_path) -> None:
 import "thread";
 import "time";
 
-fn worker(ms Int) -> Int {
-  let _ = sleep_ms(ms);
+fn worker(ms Int) Int{
+  _ = sleep_ms(ms);
   return 7;
 }
 
-fn main() -> Int {
-  let t0 = monotonic_ms();
-  let tid = spawn1(worker, 200);
-  let t1 = monotonic_ms();
-  let out: Int = join_task(tid) as Int;
+fn main() Int{
+  t0 = monotonic_ms();
+  tid = spawn1(worker, 200);
+  t1 = monotonic_ms();
+  out: Int = join_task(tid) as Int;
   if out != 7 {
     return 2;
   }

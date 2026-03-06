@@ -102,7 +102,7 @@ class ExternFnDecl:
 
 @dataclass
 class LetStmt:
-    """AST node representing let stmt.
+    """AST node representing binding declaration stmt.
     
     This type is part of Astra's public compiler/tooling surface.
     """
@@ -113,7 +113,9 @@ class LetStmt:
     pos: int = 0
     line: int = 0
     col: int = 0
-    fixed: bool = False
+    # For `x = ...` (without `mut`/`set`), semantic analysis decides whether this
+    # is a declaration or reassignment (dual mode) based on prior bindings.
+    reassign_if_exists: bool = False
 
 
 @dataclass
@@ -188,6 +190,7 @@ class AssignStmt:
     pos: int = 0
     line: int = 0
     col: int = 0
+    explicit_set: bool = False
 
 
 @dataclass

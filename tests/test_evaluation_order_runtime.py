@@ -5,29 +5,29 @@ def test_binary_ops_and_call_args_are_left_to_right(tmp_path) -> None:
     src = """
 struct Box { x Int }
 
-fn log(x Int, tag Int) -> Int {
+fn log(x Int, tag Int) Int{
   print(tag);
   return x;
 }
 
-fn add(a Int, b Int) -> Int {
+fn add(a Int, b Int) Int{
   return a + b;
 }
 
-fn make() -> Box {
+fn make() Box{
   print(5);
   return Box(1);
 }
 
-fn get(b Box) -> Int {
+fn get(b Box) Int{
   print(6);
   return b.x;
 }
 
-fn main() -> Int {
-  let _ = log(1, 1) + log(2, 2);
-  let _ = add(log(3, 3), log(4, 4));
-  let _ = get(make());
+fn main() Int{
+  _ = log(1, 1) + log(2, 2);
+  _ = add(log(3, 3), log(4, 4));
+  _ = get(make());
   return 0;
 }
 """

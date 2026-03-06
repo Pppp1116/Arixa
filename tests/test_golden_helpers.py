@@ -4,7 +4,7 @@ from golden_helpers import assert_same_stdout_and_exit, compile_and_run_program
 def test_compile_and_run_py_and_native_backends(tmp_path) -> None:
     # Simple program that exercises stdout and exit codes consistently.
     src = """
-fn main() -> Int {
+fn main() Int{
   print("ok");
   return 0;
 }
@@ -25,7 +25,7 @@ fn main() -> Int {
 def test_compile_and_run_llvm_ir_build(tmp_path) -> None:
     # LLVM path: treat stdout as IR text so tests can assert CODEGEN details.
     src = """
-fn main() -> Int {
+fn main() Int{
   return 0;
 }
 """
@@ -44,8 +44,8 @@ fn main() -> Int {
 
 def test_multiline_string_behaves_consistently_across_backends(tmp_path) -> None:
     src = """
-fn main() -> Int {
-  let s = \"\"\"a
+fn main() Int{
+  s = \"\"\"a
 b\"\"\";
   print(s);
   return 0;
@@ -65,8 +65,8 @@ b\"\"\";
 
 def test_range_for_and_match_wildcard_consistent_across_backends(tmp_path) -> None:
     src = """
-fn main() -> Int {
-  let mut total = 0;
+fn main() Int{
+  mut total = 0;
   for i in 1..=5 {
     total += i;
   }

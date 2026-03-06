@@ -24,6 +24,7 @@ BIN_PREC = {
     "&": 6,
     "==": 7,
     "!=": 7,
+    "is": 7,
     "<": 8,
     "<=": 8,
     ">": 8,
@@ -55,6 +56,60 @@ def _parse_int_literal(text: str) -> int:
 
 def _parse_float_literal(text: str) -> float:
     return float(text.replace("_", ""))
+
+
+def _split_top_level_type(text: str, sep: str) -> list[str]:
+    out: list[str] = []
+    depth_angle = 0
+    depth_paren = 0
+    depth_bracket = 0
+    cur: list[str] = []
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "<":
+            depth_angle += 1
+        elif ch == ">" and depth_angle > 0:
+            depth_angle -= 1
+        elif ch == "(":
+            depth_paren += 1
+        elif ch == ")" and depth_paren > 0:
+            depth_paren -= 1
+        elif ch == "[":
+            depth_bracket += 1
+        elif ch == "]" and depth_bracket > 0:
+            depth_bracket -= 1
+        if (
+            text.startswith(sep, i)
+            and depth_angle == 0
+            and depth_paren == 0
+            and depth_bracket == 0
+        ):
+            out.append("".join(cur).strip())
+            cur = []
+            i += len(sep)
+            continue
+        cur.append(ch)
+        i += 1
+    out.append("".join(cur).strip())
+    return out
+
+
+def _normalize_union(parts: list[str]) -> str:
+    flat: list[str] = []
+    for p in parts:
+        for sub in _split_top_level_type(type_text(p), "|"):
+            t = sub.strip()
+            if t:
+                flat.append(t)
+    out: list[str] = []
+    seen: set[str] = set()
+    for t in flat:
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return " | ".join(out)
 
 
 class Parser:
@@ -136,6 +191,40 @@ class Parser:
             self.i += 1
         return "\n".join(lines)
 
+    def _looks_like_binding_start(self, idx: int | None = None) -> bool:
+        j = self.i if idx is None else idx
+        if self.toks[j].kind == "mut":
+            j += 1
+        if self.toks[j].kind != "IDENT":
+            return False
+        j += 1
+        if self.toks[j].kind == ":":
+            j += 1
+            depth_angle = 0
+            depth_paren = 0
+            depth_bracket = 0
+            while j < len(self.toks):
+                k = self.toks[j].kind
+                if k == "<":
+                    depth_angle += 1
+                elif k == ">" and depth_angle > 0:
+                    depth_angle -= 1
+                elif k == "(":
+                    depth_paren += 1
+                elif k == ")" and depth_paren > 0:
+                    depth_paren -= 1
+                elif k == "[":
+                    depth_bracket += 1
+                elif k == "]" and depth_bracket > 0:
+                    depth_bracket -= 1
+                elif k == "=" and depth_angle == 0 and depth_paren == 0 and depth_bracket == 0:
+                    return True
+                elif k in {";", "}", "EOF"} and depth_angle == 0 and depth_paren == 0 and depth_bracket == 0:
+                    return False
+                j += 1
+            return False
+        return self.toks[j].kind == "="
+
     def recover(self) -> None:
         """Advance the parser to the next synchronization point after an error.
         
@@ -149,15 +238,14 @@ class Parser:
             ";",
             "}",
             "fn",
-            "impl",
             "struct",
             "enum",
             "trait",
             "type",
             "import",
             "extern",
-            "let",
-            "fixed",
+            "mut",
+            "set",
             "pub",
             "async",
             "unsafe",
@@ -212,7 +300,6 @@ class Parser:
         is_pub = False
         is_unsafe = False
         is_async = False
-        is_impl = False
         is_packed = False
         link_libs: list[str] = []
         while True:
@@ -224,9 +311,6 @@ class Parser:
                 continue
             if self.opt("async"):
                 is_async = True
-                continue
-            if self.opt("impl"):
-                is_impl = True
                 continue
             if self.opt("@"):
                 attr = self.eat("IDENT").text
@@ -284,9 +368,6 @@ class Parser:
             if is_unsafe or is_async:
                 self._err("trait cannot be prefixed with unsafe/async")
                 raise ParseError(self.errors[-1])
-            if is_impl:
-                self._err("impl cannot prefix trait declarations")
-                raise ParseError(self.errors[-1])
             if is_packed:
                 self._err("@packed is only valid on struct declarations")
                 raise ParseError(self.errors[-1])
@@ -314,22 +395,14 @@ class Parser:
             if link_libs:
                 self._err("@link is only valid on extern function declarations")
                 raise ParseError(self.errors[-1])
-            return self.parse_fn(is_pub, is_async, doc, is_impl=is_impl, is_unsafe=is_unsafe)
-        if is_impl and self.cur().kind == "IDENT":
-            if is_pub or is_unsafe or is_async or link_libs or is_packed:
-                self._err("trait impls cannot be combined with declaration modifiers or attributes")
-                raise ParseError(self.errors[-1])
-            return self.parse_trait_impl()
-        if self.cur().kind in {"let", "fixed"}:
-            if link_libs or is_packed or is_pub or is_unsafe or is_async or is_impl:
+            return self.parse_fn(is_pub, is_async, doc, is_unsafe=is_unsafe)
+        if self._looks_like_binding_start():
+            if link_libs or is_packed or is_pub or is_async:
                 self._err("top-level bindings cannot use declaration modifiers or attributes")
                 raise ParseError(self.errors[-1])
-            return self.parse_global_binding()
+            return self.parse_global_binding(is_unsafe=is_unsafe)
         if link_libs:
             self._err("@link is only valid on extern function declarations")
-            raise ParseError(self.errors[-1])
-        if is_impl:
-            self._err("impl must be followed by fn")
             raise ParseError(self.errors[-1])
         self._err(f"unexpected top-level token {self.cur().kind}")
         raise ParseError(self.errors[-1])
@@ -388,8 +461,9 @@ class Parser:
                 break
         return bounds
 
-    def _parse_params(self, *, allow_variadic: bool = False) -> tuple[list[tuple[str, str]], bool]:
+    def _parse_params(self, *, allow_variadic: bool = False) -> tuple[list[tuple[str, str]], bool, dict[str, bool]]:
         params: list[tuple[str, str]] = []
+        param_mut: dict[str, bool] = {}
         variadic = False
         self.eat("(")
         if self.cur().kind != ")":
@@ -397,7 +471,9 @@ class Parser:
                 self.eat("...")
                 variadic = True
             else:
-                params.append(self._parse_named_type())
+                name, typ, is_mut = self._parse_param_type()
+                params.append((name, typ))
+                param_mut[name] = is_mut
             while self.opt(","):
                 if self.cur().kind == ")":
                     break
@@ -408,18 +484,29 @@ class Parser:
                 if variadic:
                     self._err("variadic marker `...` must be the last parameter")
                     raise ParseError(self.errors[-1])
-                params.append(self._parse_named_type())
+                name, typ, is_mut = self._parse_param_type()
+                params.append((name, typ))
+                param_mut[name] = is_mut
             if variadic and self.cur().kind != ")":
                 self._err("variadic marker `...` must be the last parameter")
                 raise ParseError(self.errors[-1])
         self.eat(")")
-        return params, variadic
+        return params, variadic, param_mut
 
     def _parse_named_type(self) -> tuple[str, str]:
         name = self.eat("IDENT").text
         self.opt(":")
         typ = self.parse_type()
         return name, typ
+
+    def _parse_param_type(self) -> tuple[str, str, bool]:
+        is_mut = bool(self.opt("mut"))
+        name = self.eat("IDENT").text
+        typ = self.parse_type()
+        return name, typ, is_mut
+
+    def _starts_type(self) -> bool:
+        return self.cur().kind in {"IDENT", "INT_TYPE", "none", "*", "&", "[", "fn"}
 
     def parse_extern_fn(
         self,
@@ -447,11 +534,13 @@ class Parser:
             self.i += 1
         self.eat("fn")
         name_tok = self.eat("IDENT")
-        params, is_variadic = self._parse_params(allow_variadic=True)
-        self.eat("->")
-        ret = self.parse_type()
+        params, is_variadic, param_mut = self._parse_params(allow_variadic=True)
+        if self.opt("->"):
+            self._err("`->` is no longer valid in function signatures; place return type after `)`")
+            raise ParseError(self.errors[-1])
+        ret = self.parse_type() if self._starts_type() else "Void"
         self.eat(";")
-        return ExternFnDecl(
+        out = ExternFnDecl(
             name=name_tok.text,
             params=params,
             ret=ret,
@@ -465,13 +554,14 @@ class Parser:
             line=tok.line,
             col=tok.col,
         )
+        setattr(out, "param_mut", param_mut)
+        return out
 
     def parse_fn(
         self,
         is_pub: bool = False,
         is_async: bool = False,
         doc: str = "",
-        is_impl: bool = False,
         is_unsafe: bool = False,
     ) -> FnDecl:
         """Parse the `fn` grammar production from the token stream.
@@ -480,7 +570,6 @@ class Parser:
             is_pub: Input value used by this routine.
             is_async: Input value used by this routine.
             doc: Input value used by this routine.
-            is_impl: Input value used by this routine.
             is_unsafe: Input value used by this routine.
         
         Returns:
@@ -489,23 +578,21 @@ class Parser:
         fn_tok = self.eat("fn")
         name = self.eat("IDENT").text
         generics = self._parse_generics()
-        params, _ = self._parse_params()
+        params, _, param_mut = self._parse_params()
         if self.opt("->"):
-            ret = self.parse_type()
-        elif name == "main" and not is_impl and not params and not generics:
-            ret = "Int"
-        else:
-            self._err("expected -> return type", self.cur())
+            self._err("`->` is no longer valid in function signatures; place return type after `)`")
             raise ParseError(self.errors[-1])
+        ret = self.parse_type() if self._starts_type() else "Void"
         where_bounds = self._parse_where_bounds()
         body = self.parse_block()
-        return FnDecl(
+        if ret != "Void":
+            body = self._rewrite_implicit_tail_return(body)
+        out = FnDecl(
             name,
             generics,
             params,
             ret,
             body,
-            is_impl=is_impl,
             pub=is_pub,
             async_fn=is_async,
             unsafe=is_unsafe,
@@ -515,6 +602,8 @@ class Parser:
             line=fn_tok.line,
             col=fn_tok.col,
         )
+        setattr(out, "param_mut", param_mut)
+        return out
 
     def parse_struct(self, is_pub: bool = False, doc: str = "", packed: bool = False) -> StructDecl:
         """Parse the `struct` grammar production from the token stream.
@@ -593,27 +682,15 @@ class Parser:
             self.eat("fn")
             mname = self.eat("IDENT").text
             _ = self._parse_generics()
-            params, _ = self._parse_params()
-            self.eat("->")
-            ret = self.parse_type()
+            params, _, _ = self._parse_params()
+            if self.opt("->"):
+                self._err("`->` is no longer valid in function signatures; place return type after `)`")
+                raise ParseError(self.errors[-1])
+            ret = self.parse_type() if self._starts_type() else "Void"
             self.eat(";")
             methods.append((mname, params, ret))
         self.eat("}")
         return TraitDecl(name, methods, pub=is_pub, doc=doc, pos=tok.pos, line=tok.line, col=tok.col)
-
-    def parse_trait_impl(self) -> TraitImplDecl:
-        tok = self.eat("IDENT")
-        trait_name = tok.text
-        self.eat("for")
-        target_type = self.parse_type()
-        if self.opt(";"):
-            return TraitImplDecl(trait_name, target_type, tok.pos, tok.line, tok.col)
-        self.eat("{")
-        if self.cur().kind != "}":
-            self._err("trait impl bodies are not yet supported; use `impl Trait for Type;` or empty braces")
-            raise ParseError(self.errors[-1])
-        self.eat("}")
-        return TraitImplDecl(trait_name, target_type, tok.pos, tok.line, tok.col)
 
     def parse_type(self):
         """Parse the `type` grammar production from the token stream.
@@ -624,52 +701,58 @@ class Parser:
         Returns:
             Value produced by the routine, if any.
         """
-        typ: str
-        if self.opt("*"):
-            typ = f"*{type_text(self.parse_type())}"
-        elif self.opt("&"):
-            mut = "mut " if self.opt("mut") else ""
-            typ = f"&{mut}{type_text(self.parse_type())}"
-        elif self.opt("["):
-            inner = self.parse_type()
-            self.eat("]")
-            typ = f"[{type_text(inner)}]"
-        elif self.opt("fn"):
-            self.eat("(")
-            args: list[str] = []
-            if self.cur().kind != ")":
-                args.append(type_text(self.parse_type()))
-                while self.opt(","):
+        def parse_atom_type():
+            typ: str
+            if self.opt("*"):
+                typ = f"*{type_text(parse_atom_type())}"
+            elif self.opt("&"):
+                mut = "mut " if self.opt("mut") else ""
+                typ = f"&{mut}{type_text(parse_atom_type())}"
+            elif self.opt("["):
+                inner = self.parse_type()
+                self.eat("]")
+                typ = f"[{type_text(inner)}]"
+            elif self.opt("fn"):
+                self.eat("(")
+                args: list[str] = []
+                if self.cur().kind != ")":
                     args.append(type_text(self.parse_type()))
-            self.eat(")")
-            self.eat("->")
-            typ = f"fn({', '.join(args)}) -> {type_text(self.parse_type())}"
-        else:
-            if self.cur().kind in {"IDENT", "INT_TYPE"}:
-                tok_kind = self.cur().kind
-                name = self.cur().text
-                self.i += 1
+                    while self.opt(","):
+                        args.append(type_text(self.parse_type()))
+                self.eat(")")
+                self.eat("->")
+                typ = f"fn({', '.join(args)}) -> {type_text(self.parse_type())}"
             else:
-                self._err(f"expected type name, got {self.cur().kind}", self.cur())
-                raise ParseError(self.errors[-1])
-            if tok_kind == "INT_TYPE":
-                int_info = parse_int_type_name(name)
-                if int_info is not None:
-                    bits, signed = int_info
-                    typ = str(ArbitraryIntType(signed=signed, width=bits))
+                if self.cur().kind in {"IDENT", "INT_TYPE", "none"}:
+                    tok_kind = self.cur().kind
+                    name = self.cur().text
+                    self.i += 1
+                else:
+                    self._err(f"expected type name, got {self.cur().kind}", self.cur())
+                    raise ParseError(self.errors[-1])
+                if tok_kind == "INT_TYPE":
+                    int_info = parse_int_type_name(name)
+                    if int_info is not None:
+                        bits, signed = int_info
+                        typ = str(ArbitraryIntType(signed=signed, width=bits))
+                    else:
+                        typ = name
                 else:
                     typ = name
-            else:
-                typ = name
-            if self.opt("<"):
-                args = [type_text(self.parse_type())]
-                while self.opt(","):
-                    args.append(type_text(self.parse_type()))
-                self.eat(">")
-                typ = f"{name}<{', '.join(args)}>"
-        while self.opt("?"):
-            typ = f"Option<{type_text(typ)}>"
-        return typ
+                if self.opt("<"):
+                    args = [type_text(self.parse_type())]
+                    while self.opt(","):
+                        args.append(type_text(self.parse_type()))
+                    self.eat(">")
+                    typ = f"{name}<{', '.join(args)}>"
+            while self.opt("?"):
+                typ = _normalize_union([typ, "none"])
+            return typ
+
+        parts = [type_text(parse_atom_type())]
+        while self.opt("|"):
+            parts.append(type_text(parse_atom_type()))
+        return _normalize_union(parts)
 
     def parse_block(self) -> list[Any]:
         """Parse the `block` grammar production from the token stream.
@@ -696,15 +779,11 @@ class Parser:
         self.eat("}")
         return body
 
-    def parse_global_binding(self) -> LetStmt:
+    def parse_global_binding(self, *, is_unsafe: bool = False) -> LetStmt:
         tok = self.cur()
-        if self.cur().kind not in {"let", "fixed"}:
-            self._err("expected top-level binding")
-            raise ParseError(self.errors[-1])
-        is_fixed = self.eat(self.cur().kind).kind == "fixed"
         is_mut = bool(self.opt("mut"))
-        if is_mut:
-            self._err("top-level bindings cannot be mutable", tok)
+        if is_mut and not is_unsafe:
+            self._err("top-level mutable bindings require `unsafe mut`", tok)
             raise ParseError(self.errors[-1])
         name_tok = self.eat("IDENT")
         type_name = None
@@ -713,7 +792,29 @@ class Parser:
         self.eat("=")
         expr = self.parse_expr()
         self.eat(";")
-        return LetStmt(name_tok.text, expr, False, type_name, tok.pos, tok.line, tok.col, fixed=is_fixed)
+        out = LetStmt(name_tok.text, expr, is_mut, type_name, tok.pos, tok.line, tok.col, reassign_if_exists=False)
+        setattr(out, "_decl_unsafe", bool(is_unsafe))
+        return out
+
+    def _parse_binding_stmt(self, tok: Token, *, starts_with_mut: bool, reassign_if_exists: bool) -> LetStmt:
+        is_mut = starts_with_mut or bool(self.opt("mut"))
+        name_tok = self.eat("IDENT")
+        type_name = None
+        if self.opt(":"):
+            type_name = self.parse_type()
+        self.eat("=")
+        expr = self.parse_expr()
+        self.eat(";")
+        return LetStmt(
+            name_tok.text,
+            expr,
+            is_mut,
+            type_name,
+            tok.pos,
+            tok.line,
+            tok.col,
+            reassign_if_exists=reassign_if_exists,
+        )
 
     def parse_stmt(self):
         """Parse the `stmt` grammar production from the token stream.
@@ -731,20 +832,11 @@ class Parser:
         if self.cur().kind == "@":
             self._err("attributes are only allowed on module-level declarations", tok)
             raise ParseError(self.errors[-1])
-        if self.cur().kind in {"let", "fixed"}:
-            is_fixed = self.eat(self.cur().kind).kind == "fixed"
-            is_mut = bool(self.opt("mut"))
-            if is_fixed and is_mut:
-                self._err("fixed bindings cannot be mutable", tok)
-                raise ParseError(self.errors[-1])
-            name_tok = self.eat("IDENT")
-            type_name = None
-            if self.opt(":"):
-                type_name = self.parse_type()
-            self.eat("=")
-            expr = self.parse_expr()
-            self.eat(";")
-            return LetStmt(name_tok.text, expr, is_mut, type_name, tok.pos, tok.line, tok.col, fixed=is_fixed)
+        if self.cur().kind == "mut" and self._looks_like_binding_start():
+            self.eat("mut")
+            return self._parse_binding_stmt(tok, starts_with_mut=True, reassign_if_exists=False)
+        if self.cur().kind == "IDENT" and self._looks_like_binding_start():
+            return self._parse_binding_stmt(tok, starts_with_mut=False, reassign_if_exists=True)
         if self.opt("return"):
             if self.opt(";"):
                 return ReturnStmt(None, tok.pos, tok.line, tok.col)
@@ -787,14 +879,48 @@ class Parser:
             body = self.parse_block()
             return UnsafeStmt(body, tok.pos, tok.line, tok.col)
 
+        explicit_set = bool(self.opt("set"))
         lhs = self.parse_expr()
         if self.cur().kind in ASSIGN_OPS:
             op = self.eat(self.cur().kind).kind
             expr = self.parse_expr()
             self.eat(";")
-            return AssignStmt(lhs, op, expr, tok.pos, tok.line, tok.col)
-        self.eat(";")
+            return AssignStmt(lhs, op, expr, tok.pos, tok.line, tok.col, explicit_set=explicit_set)
+        if explicit_set:
+            self._err("expected assignment operator after `set`", tok)
+            raise ParseError(self.errors[-1])
+        if self.cur().kind == ";":
+            self.eat(";")
+        elif self.cur().kind != "}":
+            self._err("expected `;`", self.cur())
+            raise ParseError(self.errors[-1])
         return ExprStmt(lhs, tok.pos, tok.line, tok.col)
+
+    def _rewrite_implicit_tail_return(self, body: list[Any]) -> list[Any]:
+        if not body:
+            return body
+        tail = body[-1]
+        if isinstance(tail, ExprStmt):
+            return body[:-1] + [ReturnStmt(tail.expr, tail.pos, tail.line, tail.col)]
+        if isinstance(tail, IfStmt):
+            if not tail.then_body or not tail.else_body:
+                return body
+            then_body = self._rewrite_implicit_tail_return(tail.then_body)
+            else_body = self._rewrite_implicit_tail_return(tail.else_body)
+            new_tail = IfStmt(tail.cond, then_body, else_body, tail.pos, tail.line, tail.col)
+            return body[:-1] + [new_tail]
+        if isinstance(tail, MatchStmt):
+            new_arms: list[tuple[Any, list[Any]]] = []
+            for pat, arm in tail.arms:
+                if not arm:
+                    return body
+                new_arms.append((pat, self._rewrite_implicit_tail_return(arm)))
+            new_tail = MatchStmt(tail.expr, new_arms, tail.pos, tail.line, tail.col)
+            return body[:-1] + [new_tail]
+        if isinstance(tail, UnsafeStmt):
+            new_tail = UnsafeStmt(self._rewrite_implicit_tail_return(tail.body), tail.pos, tail.line, tail.col)
+            return body[:-1] + [new_tail]
+        return body
 
     def parse_for(self, tok: Token) -> ForStmt:
         """Parse the `for` grammar production from the token stream.
@@ -877,7 +1003,10 @@ class Parser:
         while self.cur().kind in BIN_PREC and BIN_PREC[self.cur().kind] >= min_prec:
             op_tok = self.eat(self.cur().kind)
             prec = BIN_PREC[op_tok.kind]
-            right = self.parse_expr(prec + 1)
+            if op_tok.kind == "is":
+                right = Name(self.parse_type(), op_tok.pos, op_tok.line, op_tok.col)
+            else:
+                right = self.parse_expr(prec + 1)
             left = Binary(op_tok.kind, left, right, op_tok.pos, op_tok.line, op_tok.col)
         return left
 
@@ -946,7 +1075,7 @@ class Parser:
                 end = self.eat(")")
                 expr = Call(expr, args, end.pos, end.line, end.col)
                 continue
-            if self.opt("?"):
+            if self.opt("!"):
                 q = self.toks[self.i - 1]
                 expr = TryExpr(expr, q.pos, q.line, q.col)
                 continue

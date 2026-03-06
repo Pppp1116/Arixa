@@ -3,14 +3,16 @@ from golden_helpers import assert_same_stdout_and_exit, compile_and_run_program
 
 def test_trait_where_bound_runtime_parity(tmp_path) -> None:
     src = """
-trait Show {}
-impl Show for Int;
+trait Show {
+  fn show(x Self) String;
+}
+fn show(x Int) String { return "ok"; }
 
-impl fn wrap(x T) -> T where T: Show {
+fn wrap(x T) T where T: Show{
   return x;
 }
 
-fn main() -> Int {
+fn main() Int{
   return wrap(7);
 }
 """

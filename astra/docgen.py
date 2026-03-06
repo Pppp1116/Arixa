@@ -50,21 +50,22 @@ def main(argv=None):
         elif isinstance(item, ExternFnDecl):
             pub = "pub " if item.pub else ""
             us = "unsafe " if item.unsafe else ""
-            sig_parts = [f"{n}: {t}" for n, t in item.params]
+            sig_parts = [f"{n} {t}" for n, t in item.params]
             if item.is_variadic:
                 sig_parts.append("...")
             sig = ", ".join(sig_parts)
             libs = list(item.link_libs) or ([item.lib] if item.lib else [])
             attrs = "".join([f'@link("{lib}") ' for lib in libs])
-            lines.append(f"- `{attrs}{pub}{us}extern fn {item.name}({sig}) -> {item.ret}`")
+            ret_text = f" {item.ret}" if item.ret != "Void" else ""
+            lines.append(f"- `{attrs}{pub}{us}extern fn {item.name}({sig}){ret_text}`")
             lines.extend(_doc_block(item.doc))
             lines.append("")
         elif isinstance(item, FnDecl):
             pub = "pub " if item.pub else ""
-            impl_kw = "impl " if item.is_impl else ""
             async_kw = "async " if item.async_fn else ""
-            sig = ", ".join(f"{n}: {t}" for n, t in item.params)
-            lines.append(f"- `{pub}{impl_kw}{async_kw}fn {item.name}({sig}) -> {item.ret}`")
+            sig = ", ".join(f"{n} {t}" for n, t in item.params)
+            ret_text = f" {item.ret}" if item.ret != "Void" else ""
+            lines.append(f"- `{pub}{async_kw}fn {item.name}({sig}){ret_text}`")
             lines.extend(_doc_block(item.doc))
             lines.append("")
     Path(ns.output).write_text("\n".join(lines).rstrip() + "\n")

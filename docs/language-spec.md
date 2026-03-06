@@ -5,13 +5,13 @@
 Grammar (EBNF):
 
 ```
-program   = { import_decl | type_decl | struct_decl | enum_decl | extern_fn | fn_decl | impl_fn } ;
+program   = { import_decl | type_decl | struct_decl | enum_decl | extern_fn | fn_decl } ;
 import_decl = "import" (module_path | string) ["as" ident] [";"] ;
 module_path = ident { ("." | "::") ident } ;
-fn_decl   = ["pub"] ["async"] "fn" ident ["<" ident {"," ident} ">"] "(" [param {"," param}] [","] ")" "->" type block ;
-impl_fn   = ["pub"] "impl" ["async"] "fn" ident ["<" ident {"," ident} ">"] "(" [param {"," param}] [","] ")" "->" type block ;
-extern_fn = ["unsafe"] "extern" string "fn" ident "(" [param {"," param}] ")" "->" type ";" ;
-param     = ident ":" type ;
+fn_decl   = ["pub"] ["async"] ["unsafe"] "fn" ident ["<" ident {"," ident} ">"] "(" [param {"," param}] [","] ")" [type] ["where" where_bound {"," where_bound}] block ;
+extern_fn = ["unsafe"] "extern" string "fn" ident "(" [param {"," param}] ")" [type] ";" ;
+param     = ["mut"] ident type ;
+where_bound = ident ":" ident {"+" ident} ;
 type      = postfix_type ;
 postfix_type = primary_type ["?"] ;
 primary_type = ident ["<" type {"," type} ">"]
@@ -19,11 +19,11 @@ primary_type = ident ["<" type {"," type} ">"]
              | "[" type "]"
              | "fn" "(" [type {"," type}] ")" "->" type
              | "(" type ")" ;
-block     = "{" { stmt } "}" ;
-stmt      = let_stmt | fixed_stmt | comptime_stmt | defer_stmt | drop_stmt | return_stmt | if_stmt | while_stmt | for_stmt | match_stmt | assign_stmt | expr ";" ;
+block     = "{" { stmt } [expr] "}" ;
+stmt      = bind_stmt | set_stmt | comptime_stmt | defer_stmt | drop_stmt | return_stmt | if_stmt | while_stmt | for_stmt | match_stmt | assign_stmt | expr ";" ;
 comptime_stmt = "comptime" block ;
-let_stmt  = "let" ["mut"] ident [":" type] "=" expr ";" ;
-fixed_stmt = "fixed" ident [":" type] "=" expr ";" ;
+bind_stmt = ["mut"] ident [":" type] "=" expr ";" ;
+set_stmt  = "set" expr ("=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=") expr ";" ;
 defer_stmt = "defer" expr ";" ;
 drop_stmt = "drop" expr ";" ;
 return_stmt = "return" [expr] ";" ;
@@ -46,7 +46,7 @@ add_expr  = mul_expr { ("+" | "-") mul_expr } ;
 mul_expr  = unary_expr { ("*" | "/" | "%") unary_expr } ;
 unary_expr = ["await"] ( ("-" | "!" | "~" | "*" | "&" ["mut"]) unary_expr | cast_expr ) ;
 cast_expr = postfix_expr { "as" type } ;
-postfix_expr = atom { "." ident | "[" expr "]" | "(" [expr {"," expr}] ")" | "?" } ;
+postfix_expr = atom { "." ident | "[" expr "]" | "(" [expr {"," expr}] ")" | "!" } ;
 atom      = int | float | string | typed_int | "none" | ident | "(" expr ")" | layout_query | type_query ;
 typed_int = int int_type_tok ;
 int_type_tok = ("i" | "u") nonzero_digit {digit} ;
@@ -55,8 +55,9 @@ type_query = "bitSizeOf" "(" type ")" | "maxVal" "(" type ")" | "minVal" "(" typ
 ```
 
 Conventions:
-- Canonical style uses colon-typed declarations (`name: Type`) for params, fields, and local bindings.
-- The parser still accepts legacy field/param style (`name Type`) for backward compatibility.
+- Parameter syntax is `name Type` (no `:`).
+- Return type appears directly after `)` (no `->`).
+- Return type is optional; omitted means `Void`.
 - `@packed` is currently a recognized top-level attribute and is only valid on `struct` declarations.
 
 ## Semantics
@@ -102,18 +103,16 @@ Conventions:
   - typed suffixes: `123u32`, `-1i64`
 - Signed `i1` is rejected in semantic analysis with a hint suggesting `u1`.
 - Invalid widths like `i0` or `u65536` are lexer errors.
-- Built-in generic sums: `Option<T>` and `Result<T, E>`.
+- First-class union types: `A | B | C`.
 - Stdlib core owned types: `String`, `Vec<T>`.
 - Built-in bytes alias: `Bytes = Vec<u8>`.
 - Built-in unsized DSTs: `str`, `[T]`.
-- Parametric generics on function declarations (`fn id<T>(x T) -> T`).
-- `T?` is syntax sugar for `Option<T>`.
-- `none` has no standalone type; it is valid only where `Option<T>` is expected.
-- `a ?? b` requires `a: Option<T>` and `b: T`, producing `T`.
+- Parametric generics on function declarations (`fn id<T>(x T) T`).
+- `T?` is syntax sugar for `T | none`.
+- `none` has no standalone type; it is valid only where a nullable type is expected.
+- `a ?? b` requires `a: T | none` and `b: T`, producing `T`.
 - `??` is short-circuiting: the right operand is evaluated only when the left operand is `none`.
-- `a?` supports both:
-  - `Option<T>` in functions returning `Option<U>` (propagates `none`).
-  - `Result<T, E>` in functions returning `Result<U, E>` (propagates `Err(E)`).
+- `a!` propagates non-success union branches to the caller.
 - Integer type queries:
   - `bitSizeOf(T)` returns logical bit width.
   - `maxVal(T)`/`minVal(T)` return integer bounds for integer type `T`.
@@ -121,7 +120,7 @@ Conventions:
   - `countOnes(x)`, `leadingZeros(x)`, `trailingZeros(x)`.
   - aliases: `popcnt(x)`, `clz(x)`, `ctz(x)`.
   - rotate helpers: `rotl(x, n)`, `rotr(x, n)` (rotation count is modulo bit width).
-- `Option<T>` models absence/presence; `Result<T, E>` models recoverable failures with error information.
+- Nullable and error flows are modeled with unions and user-defined error types.
 - `Never` is coercible to any type `T` (including `Void`).
 - In type joins, `Never` acts as bottom: `join(Never, T) = T` and `join(Never, Never) = Never`.
 - `Any` is a tagged dynamic value on native/LLVM backends.
@@ -134,6 +133,7 @@ Conventions:
 - Expression statements may discard values of any type.
 - `drop expr;` remains accepted for explicit consumption/destruction-style flows (legacy-compatible syntax).
 - `return;` is valid only in functions returning `Void`.
+- `return` is for early exit; a trailing expression returns implicitly from non-`Void` functions.
 - `for` uses only `for <ident> in <iterable-expr> { ... }` syntax; C-style `for init; cond; step { ... }` is invalid.
 - Supported `for` iterables are:
   - ranges: `start..end`, `start..=end`
@@ -148,8 +148,8 @@ Conventions:
   - References have lifetimes, inferred/elided in current surface syntax.
   - Input reference parameters start with distinct inferred lifetimes unless constrained.
   - Returning a reference requires tying the return lifetime to at least one input reference.
-  - Example accepted: `fn first(xs: &[Int]) -> &Int`
-  - Example rejected: `fn bad() -> &Int`
+  - Example accepted: `fn first(xs &[Int]) &Int`
+  - Example rejected: `fn bad() &Int`
 - Move/copy baseline:
   - Assignment, argument passing, and return are move-by-default.
   - Copy-by-default set is currently scalar numerics, `Float`, `Bool`, and shared references (`&T`).
@@ -160,8 +160,9 @@ Conventions:
 - Indexing rules:
   - `Vec<T>`, `Bytes`, and slice views index with `Int` and yield `T` (or `u8` for `Bytes`).
   - `index` operations are bounds-checked and trap/panic on out-of-bounds in safe code.
-  - `get(i)`-style APIs return `Option<T>` (`T?`) for non-trapping lookup.
-  - Direct indexing of `String`/`str` is rejected (UTF-8 text must be handled through byte/char APIs).
+- `get(i)`-style APIs return `T | none` (`T?`) for non-trapping lookup.
+- Direct indexing of `String`/`str` is rejected (UTF-8 text must be handled through byte/char APIs).
+- UFCS is supported: `x.f(a, b)` desugars to `f(x, a, b)` when `f` resolves as a free function.
 - Safety guarantees: undefined identifiers rejected; arity/type mismatches rejected in semantic pass.
 
 ## Safe/unsafe boundary
@@ -196,13 +197,13 @@ Conventions:
   - bundled package path (`astra/stdlib`)
 
 ## Error handling
-- Recoverable errors returned as result values.
+- Recoverable errors are modeled with unions (`Value | ErrorType`).
 - Unrecoverable errors produce panic with stack trace.
 
 ## Intentional differences from Rust
 - `defer expr;` schedules cleanup/action at scope exit with straightforward control-flow semantics.
-- `a ?? b` is defined over `Option<T>` instead of a null type.
-- `impl fn` supports compile-time specialization with most-specific implementation selection.
+- `a ?? b` is defined over nullable unions (`T | none`).
+- `fn` supports compile-time specialization with most-specific implementation selection.
 - `comptime { ... }` executes deterministic, pure code during compilation.
 - Freestanding mode (`--freestanding`) allows hosted-runtime-free compilation flows for kernels/boot/runtime code.
 

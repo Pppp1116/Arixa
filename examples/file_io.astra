@@ -1,9 +1,9 @@
 import std.io;
 
-fn main() -> Int {
-    let path = "build/example_output.txt";
+fn main() Int{
+    path = "build/example_output.txt";
     drop write_file(path, "astra file I/O demo\\n");
-    let text = read_file(path);
+    text = read_file(path);
     print(text);
     return 0;
 }

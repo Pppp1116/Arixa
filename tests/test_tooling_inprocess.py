@@ -16,7 +16,7 @@ import astra.runtime
 def test_docgen_main_writes_output(tmp_path: Path):
     src = tmp_path / "a.astra"
     out = tmp_path / "api.md"
-    src.write_text("/// docs\nfn main() -> Int { return 0; }\n")
+    src.write_text("/// docs\nfn main() Int{ return 0; }\n")
     astra.docgen.main([str(src), "-o", str(out)])
     text = out.read_text()
     assert "# API" in text
@@ -26,7 +26,7 @@ def test_docgen_main_writes_output(tmp_path: Path):
 
 def test_linter_main_json_output(tmp_path: Path, capsys):
     src = tmp_path / "bad.astra"
-    src.write_text("fn main() -> Int {\treturn 0;\n}\n")
+    src.write_text("fn main() Int{\treturn 0;\n}\n")
     try:
         astra.linter.main([str(src), "--json", "--no-semantic"])
         assert False
@@ -69,7 +69,7 @@ def test_cli_pkg_dispatch_roundtrip(tmp_path: Path):
 def test_cli_main_check_and_build(tmp_path: Path):
     src = tmp_path / "a.astra"
     out = tmp_path / "a.py"
-    src.write_text("fn main() -> Int { return 0; }")
+    src.write_text("fn main() Int{ return 0; }")
     astra.cli.main(["check", str(src)])
     astra.cli.main(["build", str(src), "-o", str(out)])
     assert out.exists()
@@ -81,17 +81,17 @@ def test_cli_main_check_and_build(tmp_path: Path):
 
 
 def test_lsp_helpers_and_main_dispatch(monkeypatch):
-    assert astra.lsp._word_at("fn main() -> Int {}", 0, 1) == "fn"
-    diags = astra.lsp._parse_diagnostics('fn main() -> Int { return "x"; }', "<mem>")
+    assert astra.lsp._word_at("fn main() Int{}", 0, 1) == "fn"
+    diags = astra.lsp._parse_diagnostics('fn main() Int{ return "x"; }', "<mem>")
     assert diags
     assert diags[0]["code"] == "E0100"
 
     src = (
-        "fn add(x Int) -> Int { return x; }\n"
-        "struct S { v Int }\n"
+        "fn add(x Int) Int{ return x; }\n"
+        "struct S { v: Int }\n"
         "enum E { A }\n"
-        "fn main() -> Int {\n"
-        "  let y = add(1);\n"
+        "fn main() Int{\n"
+        "  y = add(1);\n"
         "  return y;\n"
         "}\n"
     )
@@ -129,7 +129,7 @@ def test_lsp_helpers_and_main_dispatch(monkeypatch):
             "jsonrpc": "2.0",
             "id": 4,
             "method": "textDocument/definition",
-            "params": {"textDocument": {"uri": "u"}, "position": {"line": 4, "character": 10}},
+            "params": {"textDocument": {"uri": "u"}, "position": {"line": 4, "character": 7}},
         }
     )
     by_id = {m.get("id"): m for m in sent if m.get("id") is not None}
@@ -140,7 +140,7 @@ def test_lsp_helpers_and_main_dispatch(monkeypatch):
     assert {"y", "add", "S", "E", "print", "fn"} <= labels
     assert by_id[4]["result"] is not None
 
-    semicolon_diags = astra.lsp._parse_diagnostics("fn main() -> Int { let x = 1 return 0; }", "u")
+    semicolon_diags = astra.lsp._parse_diagnostics("fn main() Int{ x = 1 return 0; }", "u")
     assert semicolon_diags
     assert semicolon_diags[0]["code"] == "E0301"
     action_result = srv._code_actions(

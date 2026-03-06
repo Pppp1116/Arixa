@@ -6,7 +6,7 @@ def kinds(src: str) -> list[str]:
 
 
 def test_new_keywords_and_bool():
-    ks = kinds("for break continue struct enum trait type import let fixed mut pub extern async await unsafe impl where match defer drop comptime none true false")
+    ks = kinds("for break continue struct enum trait type import mut set pub extern async await unsafe where match defer drop comptime none true false")
     assert "for" in ks
     assert "break" in ks
     assert "continue" in ks
@@ -14,10 +14,10 @@ def test_new_keywords_and_bool():
     assert "async" in ks
     assert "await" in ks
     assert "unsafe" in ks
-    assert "impl" in ks
+    assert "impl" not in ks
     assert "trait" in ks
     assert "where" in ks
-    assert "fixed" in ks
+    assert "set" in ks
     assert "none" in ks
     assert "defer" in ks
     assert "drop" in ks
@@ -27,7 +27,7 @@ def test_new_keywords_and_bool():
 
 
 def test_float_doc_comment_and_symbols():
-    toks = lex('/// docs\nlet x = 1.5 && true; x += 1; a[0].b:c; let y: Option<Int> = none; let z = y ?? 1;')
+    toks = lex('/// docs\nlet x = 1.5 && true; x += 1; a[0].b:c; y: Option<Int> = none; z = y ?? 1;')
     assert toks[0].kind == "DOC_COMMENT"
     assert any(t.kind == "FLOAT" for t in toks)
     seen = {t.kind for t in toks}
@@ -36,7 +36,7 @@ def test_float_doc_comment_and_symbols():
 
 
 def test_line_col_and_block_comment_and_error():
-    toks = lex("let x = 1;\n/* ok */\n@");
+    toks = lex("x = 1;\n/* ok */\n@");
     at = [t for t in toks if t.kind == "@"][0]
     assert (at.line, at.col) == (3, 1)
 
@@ -45,7 +45,7 @@ def test_line_col_and_block_comment_and_error():
 
 
 def test_lexes_dynamic_integer_type_tokens():
-    toks = lex("let a: u4 = 1u4; let b: i127 = 2;")
+    toks = lex("a: u4 = 1u4; b: i127 = 2;")
     kinds = [t.kind for t in toks]
     assert kinds.count("INT_TYPE") >= 3
     assert any(t.kind == "INT_TYPE" and t.text == "u4" for t in toks)
@@ -53,14 +53,14 @@ def test_lexes_dynamic_integer_type_tokens():
 
 
 def test_invalid_integer_width_tokens_emit_lex_error():
-    toks = lex("let a: i0 = 1; let b: u65536 = 2;")
+    toks = lex("a: i0 = 1; b: u65536 = 2;")
     errs = [t for t in toks if t.kind == "ERROR"]
     assert len(errs) >= 2
     assert all("integer width must be between" in t.text for t in errs[:2])
 
 
 def test_lexes_prefixed_and_separator_integer_literals():
-    toks = lex("let a = 0xFF_FF; let b = 0b1010_0101; let c = 1_000_000; let d = 123u32;")
+    toks = lex("a = 0xFF_FF; b = 0b1010_0101; c = 1_000_000; d = 123u32;")
     ints = [t.text for t in toks if t.kind == "INT"]
     assert "0xFF_FF" in ints
     assert "0b1010_0101" in ints
@@ -70,19 +70,19 @@ def test_lexes_prefixed_and_separator_integer_literals():
 
 
 def test_invalid_separator_literals_emit_lex_error():
-    toks = lex("let a = 1__2; let b = 0x_FF; let c = 0b;")
+    toks = lex("a = 1__2; b = 0x_FF; c = 0b;")
     errs = [t for t in toks if t.kind == "ERROR"]
     assert len(errs) >= 3
     assert all("invalid numeric literal" in t.text for t in errs)
 
 
 def test_lexes_multiline_string_literal():
-    src = 'fn main() -> Int { let s = """a\nb"""; return 0; }'
+    src = 'fn main() Int{ s = """a\nb"""; return 0; }'
     toks = lex(src)
     kinds = [t.kind for t in toks]
     assert "STR_MULTI" in kinds
 
 
 def test_lexes_ellipsis_token_for_variadic_externs():
-    toks = lex("extern fn printf(fmt: *u8, ...) -> i32;")
+    toks = lex("extern fn printf(fmt *u8, ...) i32;")
     assert any(t.kind == "..." for t in toks)

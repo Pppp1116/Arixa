@@ -31,6 +31,8 @@ COPY_SCALAR_TYPES = {"Float", "f32", "f64", "Bool"}
 NONE_LIT_TYPE = "<none>"
 _TRAIT_IMPLS_STACK: list[dict[str, set[str]]] = [{}]
 _KNOWN_TRAITS_STACK: list[set[str]] = [set()]
+_TRAITS_STACK: list[dict[str, TraitDecl]] = [{}]
+_FN_GROUPS_STACK: list[dict[str, list[FnDecl | ExternFnDecl]]] = [{}]
 
 
 def _is_option_type(typ: Any) -> bool:
@@ -77,6 +79,54 @@ def _result_err_inner(typ: Any) -> str:
     return parsed[1][1]
 
 
+def _union_members(typ: Any) -> list[str]:
+    t = type_text(typ).strip()
+    if "|" not in t:
+        return [t]
+    return [p.strip() for p in _split_top_level(t, "|") if p.strip()]
+
+
+def _is_union_type(typ: Any) -> bool:
+    return len(_union_members(typ)) > 1
+
+
+def _normalize_union(types: list[str]) -> str:
+    out: list[str] = []
+    seen: set[str] = set()
+    for t in types:
+        for m in _union_members(t):
+            c = _canonical_type(m)
+            if c in seen:
+                continue
+            seen.add(c)
+            out.append(c)
+    return " | ".join(out)
+
+
+def _is_nullable_union(typ: Any) -> bool:
+    members = _union_members(_canonical_type(typ))
+    return "none" in members and len(members) >= 2
+
+
+def _remove_none_from_union(typ: Any) -> str:
+    members = [m for m in _union_members(_canonical_type(typ)) if m != "none"]
+    if not members:
+        return "none"
+    if len(members) == 1:
+        return members[0]
+    return _normalize_union(members)
+
+
+def _remove_member_from_union(typ: Any, member: str) -> str:
+    m = _canonical_type(member)
+    members = [v for v in _union_members(_canonical_type(typ)) if _canonical_type(v) != m]
+    if not members:
+        return _canonical_type(typ)
+    if len(members) == 1:
+        return members[0]
+    return _normalize_union(members)
+
+
 def _is_vec_type(typ: Any) -> bool:
     t = type_text(typ)
     return t.startswith("Vec<") and t.endswith(">")
@@ -116,6 +166,8 @@ def _is_mut_ref_type(typ: Any) -> bool:
 
 def _canonical_type(typ: Any) -> str:
     t = type_text(typ)
+    if "|" in t:
+        return _normalize_union(_split_top_level(t, "|"))
     if t == "Bytes":
         return "Vec<u8>"
     if _is_option_type(t):
@@ -139,6 +191,8 @@ def _canonical_type(typ: Any) -> str:
 
 def _substitute_typevars(typ: Any, bindings: dict[str, str]) -> str:
     t = type_text(typ).strip()
+    if "|" in t:
+        return _normalize_union([_substitute_typevars(p, bindings) for p in _split_top_level(t, "|")])
     if t in bindings:
         return _canonical_type(bindings[t])
     if t.startswith("&mut "):
@@ -502,14 +556,14 @@ class _BorrowState:
         ref_name: str,
         owner: str,
         mutable: bool,
-        fixed: bool,
+        owner_mutable: bool,
         filename: str,
         line: int,
         col: int,
         origin: str | None = None,
     ):
         self.release_ref(ref_name)
-        self.ensure_can_borrow(owner, mutable, fixed, filename, line, col)
+        self.ensure_can_borrow(owner, mutable, owner_mutable, filename, line, col)
         if mutable:
             self.mutable_borrowed.add(owner)
         else:
@@ -518,12 +572,12 @@ class _BorrowState:
         if origin is not None:
             self.ref_origins[ref_name] = origin
 
-    def ensure_can_borrow(self, owner: str, mutable: bool, fixed: bool, filename: str, line: int, col: int):
+    def ensure_can_borrow(self, owner: str, mutable: bool, owner_mutable: bool, filename: str, line: int, col: int):
         has_shared = self.shared_counts.get(owner, 0) > 0
         has_mut = owner in self.mutable_borrowed
         if mutable:
-            if fixed:
-                raise SemanticError(_diag(filename, line, col, f"cannot mutably borrow fixed binding {owner}"))
+            if not owner_mutable:
+                raise SemanticError(_diag(filename, line, col, f"cannot mutably borrow immutable binding {owner}"))
             if has_mut or has_shared:
                 raise SemanticError(_diag(filename, line, col, f"cannot mutably borrow {owner} while it is already borrowed"))
             return
@@ -601,6 +655,14 @@ def _same_type(expected: str, actual: str) -> bool:
         return True
     expected = _canonical_type(expected)
     actual = _canonical_type(actual)
+    if _is_union_type(expected):
+        exp_members = _union_members(expected)
+        if _is_union_type(actual):
+            act_members = _union_members(actual)
+            return all(any(_same_type(e, a) for e in exp_members) for a in act_members)
+        return any(_same_type(e, actual) for e in exp_members)
+    if _is_union_type(actual):
+        return all(_same_type(expected, a) for a in _union_members(actual))
     if expected == actual:
         return True
     if expected.startswith("&") and not expected.startswith("&mut ") and actual.startswith("&mut "):
@@ -637,9 +699,9 @@ def _same_type(expected: str, actual: str) -> bool:
 
 def _require_type(filename: str, line: int, col: int, expected: str, actual: str, what: str):
     if actual == NONE_LIT_TYPE:
-        if _is_option_type(expected):
+        if _is_option_type(expected) or _is_nullable_union(expected):
             return
-        raise SemanticError(_diag(filename, line, col, f"`none` requires Option<T> context for {what}, got {expected}"))
+        raise SemanticError(_diag(filename, line, col, f"`none` requires nullable context for {what}, got {expected}"))
     if not _same_type(expected, actual):
         exp = _canonical_type(expected)
         act = _canonical_type(actual)
@@ -660,6 +722,8 @@ def _require_strict_int_operands(filename: str, line: int, col: int, op: str, le
     r = _canonical_type(right)
     if not _is_int_type(l) or not _is_int_type(r):
         raise SemanticError(_diag(filename, line, col, f"operator {op} expects integer operands, got {left} and {right}"))
+    if l == "Int" or r == "Int":
+        return
     if l != r:
         raise SemanticError(_diag(filename, line, col, f"operator {op} requires matching integer types, got {left} and {right}"))
 
@@ -802,8 +866,8 @@ def _assign(name: str, typ: str, scopes: list[dict[str, str]], filename: str, li
     raise SemanticError(_diag(filename, line, col, f"assignment to undefined name {name}"))
 
 
-def _lookup_fixed(name: str, fixed_scopes: list[dict[str, bool]]) -> bool | None:
-    for scope in reversed(fixed_scopes):
+def _lookup_mut(name: str, mut_scopes: list[dict[str, bool]]) -> bool | None:
+    for scope in reversed(mut_scopes):
         if name in scope:
             return scope[name]
     return None
@@ -1007,6 +1071,64 @@ def _current_trait_impls() -> dict[str, set[str]]:
     return _TRAIT_IMPLS_STACK[-1] if _TRAIT_IMPLS_STACK else {}
 
 
+def _current_traits() -> dict[str, TraitDecl]:
+    return _TRAITS_STACK[-1] if _TRAITS_STACK else {}
+
+
+def _current_fn_groups() -> dict[str, list[FnDecl | ExternFnDecl]]:
+    return _FN_GROUPS_STACK[-1] if _FN_GROUPS_STACK else {}
+
+
+def _replace_self_type(typ: str, concrete: str) -> str:
+    t = _canonical_type(typ)
+    if t == "Self":
+        return _canonical_type(concrete)
+    if t.startswith("&mut "):
+        inner = _replace_self_type(t[5:], concrete)
+        return f"&mut {inner}"
+    if t.startswith("&"):
+        inner = _replace_self_type(t[1:], concrete)
+        return f"&{inner}"
+    if "<" in t and t.endswith(">"):
+        parsed = _parse_parametric_type(t)
+        if parsed is not None:
+            base, args = parsed
+            return f"{base}<{', '.join(_replace_self_type(a, concrete) for a in args)}>"
+    return t
+
+
+def _trait_satisfied_by_type(trait_name: str, concrete: str) -> bool:
+    concrete_c = _canonical_type(concrete)
+    explicit = _current_trait_impls()
+    if concrete_c in explicit.get(trait_name, set()):
+        return True
+    traits = _current_traits()
+    fn_groups = _current_fn_groups()
+    decl = traits.get(trait_name)
+    if decl is None:
+        return False
+    for mname, params, ret in decl.methods:
+        target_params = [(n, _replace_self_type(t, concrete_c)) for n, t in params]
+        target_ret = _replace_self_type(ret, concrete_c)
+        cands = fn_groups.get(mname, [])
+        matched = False
+        for cand in cands:
+            if len(cand.params) != len(target_params):
+                continue
+            if not all(
+                _same_type(type_text(cp), type_text(tp))
+                for (_, cp), (_, tp) in zip(cand.params, target_params)
+            ):
+                continue
+            if not _same_type(type_text(cand.ret), target_ret):
+                continue
+            matched = True
+            break
+        if not matched:
+            return False
+    return True
+
+
 def _specialization_score(
     decl: FnDecl | ExternFnDecl,
     arg_types: list[str],
@@ -1026,7 +1148,22 @@ def _specialization_score(
     exact = 0
     constrained = 0
     wildcards = 0
-    for (_, pty), aty in zip(decl.params, arg_types):
+    for i, ((_, pty), aty) in enumerate(zip(decl.params, arg_types)):
+        if i == 0 and _is_ref_type(pty):
+            inner = _strip_ref(pty)
+            if _is_typevar(inner, known_types):
+                bound = bindings.get(inner)
+                if bound is None:
+                    bindings[inner] = aty
+                elif not _same_type(bound, aty):
+                    return None
+                constrained += 1
+                continue
+            if _same_type(inner, aty):
+                constrained += 1
+                if _canonical_type(inner) == _canonical_type(aty):
+                    exact += 1
+                continue
         if pty in type_vars:
             bound = bindings.get(pty)
             if bound is None:
@@ -1045,16 +1182,13 @@ def _specialization_score(
             exact += 1
     where_bounds = list(getattr(decl, "where_bounds", []))
     if where_bounds:
-        trait_impls = _current_trait_impls()
         for tvar, trait_name in where_bounds:
             concrete = bindings.get(tvar)
             if concrete is None:
                 return None
-            have = trait_impls.get(trait_name, set())
-            if _canonical_type(concrete) not in have:
+            if not _trait_satisfied_by_type(trait_name, concrete):
                 return None
-    impl_bonus = 1 if getattr(decl, "is_impl", False) else 0
-    return (exact, constrained, -wildcards, impl_bonus)
+    return (exact, constrained, -wildcards, 0)
 
 
 def _choose_impl(
@@ -1072,12 +1206,12 @@ def _choose_impl(
         if sc is not None:
             ranked.append((sc, d))
     if not ranked:
-        raise SemanticError(_diag(filename, line, col, f"no matching impl for {name}({', '.join(arg_types)})"))
+        raise SemanticError(_diag(filename, line, col, f"no matching overload for {name}({', '.join(arg_types)})"))
     ranked.sort(key=lambda x: x[0], reverse=True)
     best_score = ranked[0][0]
     best = [d for s, d in ranked if s == best_score]
     if len(best) > 1:
-        raise SemanticError(_diag(filename, line, col, f"ambiguous impl for {name}({', '.join(arg_types)})"))
+        raise SemanticError(_diag(filename, line, col, f"ambiguous overload for {name}({', '.join(arg_types)})"))
     return best[0]
 
 
@@ -1182,9 +1316,8 @@ def analyze(
         structs: dict[str, StructDecl] = {}
         enums: dict[str, EnumDecl] = {}
         traits: dict[str, TraitDecl] = {}
-        trait_impl_items: list[tuple[TraitImplDecl, str]] = []
         global_scope: dict[str, str] = {}
-        global_fixed_scope: dict[str, bool] = {}
+        global_mut_scope: dict[str, bool] = {}
         imported_seen: set[str] = set()
         ffi_libs: set[str] = set()
         local_const_types: dict[str, str] = {}
@@ -1226,9 +1359,6 @@ def analyze(
                 if isinstance(item, TraitDecl):
                     traits[item.name] = item
                     continue
-                if isinstance(item, TraitImplDecl):
-                    trait_impl_items.append((item, item_filename))
-                    continue
                 if isinstance(item, TypeAliasDecl):
                     _validate_decl_type(item.target, item_filename, item.line, item.col)
                     continue
@@ -1236,15 +1366,17 @@ def analyze(
                     enums[item.name] = item
                     continue
                 if isinstance(item, LetStmt):
-                    if not item.fixed:
-                        raise SemanticError(_diag(item_filename, item.line, item.col, "top-level `let` bindings must be `fixed`"))
+                    if getattr(item, "reassign_if_exists", False):
+                        raise SemanticError(_diag(item_filename, item.line, item.col, "top-level assignment requires a prior binding"))
+                    if item.mut and not getattr(item, "_decl_unsafe", False):
+                        raise SemanticError(_diag(item_filename, item.line, item.col, "top-level mutable bindings require `unsafe mut`"))
                     inferred = item.type_name or _const_expr_type(item.expr, local_const_types)
                     if inferred is None:
-                        raise SemanticError(_diag(item_filename, item.line, item.col, f"cannot infer type for top-level fixed binding {item.name}"))
+                        raise SemanticError(_diag(item_filename, item.line, item.col, f"cannot infer type for top-level binding {item.name}"))
                     _validate_decl_type(inferred, item_filename, item.line, item.col)
                     local_const_types[item.name] = inferred
                     global_scope[item.name] = inferred
-                    global_fixed_scope[item.name] = True
+                    global_mut_scope[item.name] = bool(item.mut)
                     continue
                 if isinstance(item, (FnDecl, ExternFnDecl)):
                     for _, pty in item.params:
@@ -1275,20 +1407,6 @@ def analyze(
                 continue
 
         trait_impls: dict[str, set[str]] = {name: set() for name in traits}
-        for impl_decl, impl_filename in trait_impl_items:
-            if impl_decl.trait_name not in traits:
-                _record(
-                    SemanticError(
-                        _diag(
-                            impl_filename,
-                            impl_decl.line,
-                            impl_decl.col,
-                            f"unknown trait {impl_decl.trait_name} in impl declaration",
-                        )
-                    )
-                )
-                continue
-            trait_impls.setdefault(impl_decl.trait_name, set()).add(_canonical_type(impl_decl.target_type))
 
         for decls in fn_groups.values():
             for fn in decls:
@@ -1328,7 +1446,7 @@ def analyze(
         prog.ffi_libs = set(sorted(ffi_libs))
 
         for name, decls in fn_groups.items():
-            if len(decls) == 1 and not (isinstance(decls[0], FnDecl) and decls[0].is_impl):
+            if len(decls) == 1:
                 if isinstance(decls[0], FnDecl):
                     decls[0].symbol = name
                 continue
@@ -1349,12 +1467,10 @@ def analyze(
                             filename,
                             entries[0].line,
                             entries[0].col,
-                            f"{require_entrypoint}() must have a single unambiguous impl",
+                            f"{require_entrypoint}() must have a single unambiguous declaration",
                         )
                     )
                 entry = entries[0]
-                if entry.is_impl:
-                    raise SemanticError(_diag(filename, entry.line, entry.col, f"{require_entrypoint}() cannot be declared with impl"))
                 if entry.params:
                     raise SemanticError(_diag(filename, entry.line, entry.col, f"{require_entrypoint}() must not take parameters"))
                 if require_entrypoint == "main" and _canonical_type(entry.ret) != "Int":
@@ -1364,6 +1480,8 @@ def analyze(
 
         _KNOWN_TRAITS_STACK.append(set(traits.keys()))
         _TRAIT_IMPLS_STACK.append({k: set(v) for k, v in trait_impls.items()})
+        _TRAITS_STACK.append(dict(traits))
+        _FN_GROUPS_STACK.append(fn_groups)
         try:
             for decls in fn_groups.values():
                 for fn in decls:
@@ -1371,11 +1489,13 @@ def analyze(
                         continue
                     try:
                         fn_filename = getattr(fn, "_source_filename", filename)
-                        _analyze_fn(fn, fn_groups, structs, enums, fn_filename, global_scope, global_fixed_scope)
+                        _analyze_fn(fn, fn_groups, structs, enums, fn_filename, global_scope, global_mut_scope)
                     except SemanticError as err:
                         _record(err)
                         continue
         finally:
+            _FN_GROUPS_STACK.pop()
+            _TRAITS_STACK.pop()
             _TRAIT_IMPLS_STACK.pop()
             _KNOWN_TRAITS_STACK.pop()
         if errors:
@@ -1391,7 +1511,7 @@ def _analyze_fn(
     enums: dict[str, EnumDecl],
     filename: str,
     global_scope: dict[str, str],
-    global_fixed_scope: dict[str, bool],
+    global_mut_scope: dict[str, bool],
 ):
     for pname, pty in fn.params:
         _require_sized_value_type(filename, fn.line, fn.col, pty, f"parameter {pname}")
@@ -1400,7 +1520,8 @@ def _analyze_fn(
     if _is_ref_type(fn.ret) and not ref_param_names:
         raise SemanticError(_diag(filename, fn.line, fn.col, f"function {fn.name} returns a reference but has no reference parameter to tie its lifetime"))
     scopes: list[dict[str, str]] = [global_scope, {n: t for n, t in fn.params}]
-    fixed_scopes: list[dict[str, bool]] = [global_fixed_scope, {n: False for n, _ in fn.params}]
+    param_mut = dict(getattr(fn, "param_mut", {}))
+    mut_scopes: list[dict[str, bool]] = [global_mut_scope, {n: bool(param_mut.get(n, False)) for n, _ in fn.params}]
     owned = _OwnedState()
     borrow = _BorrowState()
     move = _MoveState()
@@ -1412,7 +1533,7 @@ def _analyze_fn(
     _check_block(
         fn.body,
         scopes,
-        fixed_scopes,
+        mut_scopes,
         borrow_scopes,
         move_scopes,
         fn_groups,
@@ -1461,7 +1582,7 @@ def _has_value_return(body: list[Any]) -> bool:
 def _check_block(
     body: list[Any],
     scopes: list[dict[str, str]],
-    fixed_scopes: list[dict[str, bool]],
+    mut_scopes: list[dict[str, bool]],
     borrow_scopes: list[set[str]],
     move_scopes: list[dict[str, bool | None]],
     fn_groups: dict[str, list[FnDecl | ExternFnDecl]],
@@ -1481,7 +1602,7 @@ def _check_block(
         _check_stmt(
             st,
             scopes,
-            fixed_scopes,
+            mut_scopes,
             borrow_scopes,
             move_scopes,
             fn_groups,
@@ -1532,7 +1653,7 @@ def _enum_variant_name_for_pattern(pat: Any, enum_name: str) -> str | None:
 def _check_stmt(
     st,
     scopes: list[dict[str, str]],
-    fixed_scopes: list[dict[str, bool]],
+    mut_scopes: list[dict[str, bool]],
     borrow_scopes: list[set[str]],
     move_scopes: list[dict[str, bool | None]],
     fn_groups: dict[str, list[FnDecl | ExternFnDecl]],
@@ -1548,35 +1669,77 @@ def _check_stmt(
     loop_depth: int,
     unsafe_ok: bool,
 ):
+    def _is_narrowing_cond(expr: Any) -> tuple[str, str] | None:
+        if not (isinstance(expr, Binary) and expr.op == "is"):
+            return None
+        if not (isinstance(expr.left, Name) and isinstance(expr.right, Name)):
+            return None
+        return expr.left.value, _canonical_type(expr.right.value)
+
     if isinstance(st, LetStmt):
-        ty = _infer(st.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        if st.name == "_":
+            ty = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+            _consume_if_move_name(st.expr, ty, move, filename, st.line, st.col)
+            return
+        ty = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         if ty == NONE_LIT_TYPE and st.type_name is None:
-            raise SemanticError(_diag(filename, st.line, st.col, f"`none` requires explicit Option<T> type for {st.name}"))
+            raise SemanticError(_diag(filename, st.line, st.col, f"`none` requires explicit nullable type for {st.name}"))
         if st.type_name is not None:
             _require_type(filename, st.line, st.col, st.type_name, ty, st.name)
             ty = st.type_name
         _require_sized_value_type(filename, st.line, st.col, ty, st.name)
+        exists = _lookup(st.name, scopes)
+        if st.reassign_if_exists and exists is not None:
+            synthetic = AssignStmt(
+                target=Name(st.name, st.pos, st.line, st.col),
+                op="=",
+                expr=st.expr,
+                pos=st.pos,
+                line=st.line,
+                col=st.col,
+                explicit_set=False,
+            )
+            _check_stmt(
+                synthetic,
+                scopes,
+                mut_scopes,
+                borrow_scopes,
+                move_scopes,
+                fn_groups,
+                structs,
+                enums,
+                fn_ret,
+                ref_param_names,
+                owned,
+                borrow,
+                move,
+                filename,
+                fn_name,
+                loop_depth,
+                unsafe_ok,
+            )
+            return
         if st.name in scopes[-1]:
             borrow.release_ref(st.name)
         if st.name not in move_scopes[-1]:
             move_scopes[-1][st.name] = move.moved.get(st.name)
         move.declare(st.name)
         scopes[-1][st.name] = ty
-        fixed_scopes[-1][st.name] = st.fixed
+        mut_scopes[-1][st.name] = bool(st.mut)
         borrow_scopes[-1].add(st.name)
         if _is_ref_type(ty):
             if isinstance(st.expr, Unary) and st.expr.op in {"&", "&mut"} and isinstance(st.expr.expr, Name):
                 owner = st.expr.expr.value
-                fixed_owner = bool(_lookup_fixed(owner, fixed_scopes))
-                borrow.bind_ref(st.name, owner, st.expr.op == "&mut", fixed_owner, filename, st.line, st.col)
+                owner_mut = bool(_lookup_mut(owner, mut_scopes))
+                borrow.bind_ref(st.name, owner, st.expr.op == "&mut", owner_mut, filename, st.line, st.col)
             elif isinstance(st.expr, Name):
                 src_ref = borrow.ref_bindings.get(st.expr.value)
                 if src_ref is not None:
                     if src_ref.mutable:
                         raise SemanticError(_diag(filename, st.line, st.col, "cannot copy mutable reference"))
-                    fixed_owner = bool(_lookup_fixed(src_ref.owner, fixed_scopes))
+                    owner_mut = bool(_lookup_mut(src_ref.owner, mut_scopes))
                     origin = borrow.ref_origins.get(st.expr.value)
-                    borrow.bind_ref(st.name, src_ref.owner, False, fixed_owner, filename, st.line, st.col, origin=origin)
+                    borrow.bind_ref(st.name, src_ref.owner, False, owner_mut, filename, st.line, st.col, origin=origin)
                 elif st.expr.value in ref_param_names:
                     borrow.ref_origins[st.name] = st.expr.value
         if isinstance(st.expr, Name):
@@ -1586,35 +1749,39 @@ def _check_stmt(
             owned.track_alloc(st.name)
         return
     if isinstance(st, AssignStmt):
-        rhs = _infer(st.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        rhs = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         base = _assign_base_name(st.target)
         if base is not None:
             borrow.check_write(base, filename, st.line, st.col)
         if isinstance(st.target, Name):
-            is_fixed = _lookup_fixed(st.target.value, fixed_scopes)
-            if is_fixed is None:
+            is_mutable = _lookup_mut(st.target.value, mut_scopes)
+            if is_mutable is None:
                 raise SemanticError(_diag(filename, st.line, st.col, f"assignment to undefined name {st.target.value}"))
-            if is_fixed:
-                raise SemanticError(_diag(filename, st.line, st.col, f"cannot assign to fixed binding {st.target.value}"))
+            if not is_mutable:
+                raise SemanticError(_diag(filename, st.line, st.col, f"cannot assign to immutable binding {st.target.value}"))
             lhs = _lookup(st.target.value, scopes)
             if lhs is None:
                 raise SemanticError(_diag(filename, st.line, st.col, f"assignment to undefined name {st.target.value}"))
+            if _is_ref_type(lhs) and lhs.startswith("&mut ") and getattr(st, "explicit_set", False):
+                inner = lhs[5:]
+                _require_type(filename, st.line, st.col, inner, rhs, "set-through-reference")
+                return
             _require_compound_assign_compat(filename, st.line, st.col, st.op, lhs, rhs)
             if st.op in {"<<=", ">>="}:
                 _require_shift_rhs_static_safe(filename, st.op, lhs, st.expr)
             if _is_ref_type(lhs):
                 if isinstance(st.expr, Unary) and st.expr.op in {"&", "&mut"} and isinstance(st.expr.expr, Name):
                     owner = st.expr.expr.value
-                    fixed_owner = bool(_lookup_fixed(owner, fixed_scopes))
-                    borrow.bind_ref(st.target.value, owner, st.expr.op == "&mut", fixed_owner, filename, st.line, st.col)
+                    owner_mut = bool(_lookup_mut(owner, mut_scopes))
+                    borrow.bind_ref(st.target.value, owner, st.expr.op == "&mut", owner_mut, filename, st.line, st.col)
                 elif isinstance(st.expr, Name):
                     src_ref = borrow.ref_bindings.get(st.expr.value)
                     if src_ref is not None:
                         if src_ref.mutable:
                             raise SemanticError(_diag(filename, st.line, st.col, "cannot copy mutable reference"))
-                        fixed_owner = bool(_lookup_fixed(src_ref.owner, fixed_scopes))
+                        owner_mut = bool(_lookup_mut(src_ref.owner, mut_scopes))
                         origin = borrow.ref_origins.get(st.expr.value)
-                        borrow.bind_ref(st.target.value, src_ref.owner, False, fixed_owner, filename, st.line, st.col, origin=origin)
+                        borrow.bind_ref(st.target.value, src_ref.owner, False, owner_mut, filename, st.line, st.col, origin=origin)
                     else:
                         borrow.release_ref(st.target.value)
                         if st.expr.value in ref_param_names:
@@ -1631,13 +1798,13 @@ def _check_stmt(
             _assign(st.target.value, lhs, scopes, filename, st.line, st.col)
             move.reinitialize(st.target.value)
             return
-        lhs = _infer(st.target, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        lhs = _infer(st.target, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         _require_compound_assign_compat(filename, st.line, st.col, st.op, lhs, rhs)
         if st.op in {"<<=", ">>="}:
             _require_shift_rhs_static_safe(filename, st.op, lhs, st.expr)
         return
     if isinstance(st, ReturnStmt):
-        expr_ty = "Void" if st.expr is None else _infer(st.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        expr_ty = "Void" if st.expr is None else _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         _require_type(filename, st.line, st.col, fn_ret, expr_ty, "return")
         if _is_ref_type(fn_ret) and st.expr is not None and not _ref_return_tied_to_param(st.expr, ref_param_names, borrow):
             raise SemanticError(_diag(filename, st.line, st.col, "returned reference is not tied to an input reference parameter"))
@@ -1655,13 +1822,13 @@ def _check_stmt(
             raise SemanticError(_diag(filename, st.line, st.col, "continue used outside loop"))
         return
     if isinstance(st, DeferStmt):
-        _infer(st.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         return
     if isinstance(st, ComptimeStmt):
         _check_block(
             st.body,
             scopes + [{}],
-            fixed_scopes + [{}],
+            mut_scopes + [{}],
             borrow_scopes + [set()],
             move_scopes + [{}],
             fn_groups,
@@ -1682,7 +1849,7 @@ def _check_stmt(
         _check_block(
             st.body,
             scopes + [{}],
-            fixed_scopes + [{}],
+            mut_scopes + [{}],
             borrow_scopes + [set()],
             move_scopes + [{}],
             fn_groups,
@@ -1700,19 +1867,26 @@ def _check_stmt(
         )
         return
     if isinstance(st, IfStmt):
-        cond_ty = _infer(st.cond, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        cond_ty = _infer(st.cond, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         _require_type(filename, st.line, st.col, "Bool", cond_ty, "if condition")
         then_owned = owned.copy()
         then_scopes = scopes + [{}]
-        then_fixed_scopes = fixed_scopes + [{}]
+        then_mut_scopes = mut_scopes + [{}]
         then_borrow = borrow.copy()
         then_move = move.copy()
         then_borrow_scopes = borrow_scopes + [set()]
         then_move_scopes = move_scopes + [{}]
+        narrow = _is_narrowing_cond(st.cond)
+        if narrow is not None:
+            n_name, n_type = narrow
+            cur_ty = _lookup(n_name, scopes)
+            if cur_ty is not None and _is_union_type(cur_ty):
+                if any(_same_type(n_type, m) for m in _union_members(cur_ty)):
+                    then_scopes[-1][n_name] = n_type
         _check_block(
             st.then_body,
             then_scopes,
-            then_fixed_scopes,
+            then_mut_scopes,
             then_borrow_scopes,
             then_move_scopes,
             fn_groups,
@@ -1730,15 +1904,20 @@ def _check_stmt(
         )
         else_owned = owned.copy()
         else_scopes = scopes + [{}]
-        else_fixed_scopes = fixed_scopes + [{}]
+        else_mut_scopes = mut_scopes + [{}]
         else_borrow = borrow.copy()
         else_move = move.copy()
         else_borrow_scopes = borrow_scopes + [set()]
         else_move_scopes = move_scopes + [{}]
+        if narrow is not None:
+            n_name, n_type = narrow
+            cur_ty = _lookup(n_name, scopes)
+            if cur_ty is not None and _is_union_type(cur_ty):
+                else_scopes[-1][n_name] = _remove_member_from_union(cur_ty, n_type)
         _check_block(
             st.else_body,
             else_scopes,
-            else_fixed_scopes,
+            else_mut_scopes,
             else_borrow_scopes,
             else_move_scopes,
             fn_groups,
@@ -1759,11 +1938,11 @@ def _check_stmt(
         move.merge(then_move, else_move)
         return
     if isinstance(st, WhileStmt):
-        cond_ty = _infer(st.cond, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        cond_ty = _infer(st.cond, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         _require_type(filename, st.line, st.col, "Bool", cond_ty, "while condition")
         loop_owned = owned.copy()
         loop_scopes = scopes + [{}]
-        loop_fixed_scopes = fixed_scopes + [{}]
+        loop_mut_scopes = mut_scopes + [{}]
         loop_borrow = borrow.copy()
         loop_move = move.copy()
         loop_borrow_scopes = borrow_scopes + [set()]
@@ -1771,7 +1950,7 @@ def _check_stmt(
         _check_block(
             st.body,
             loop_scopes,
-            loop_fixed_scopes,
+            loop_mut_scopes,
             loop_borrow_scopes,
             loop_move_scopes,
             fn_groups,
@@ -1794,14 +1973,14 @@ def _check_stmt(
     if isinstance(st, ForStmt):
         loop_var_ty: str
         if isinstance(st.iterable, RangeExpr):
-            start_ty = _infer(st.iterable.start, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
-            end_ty = _infer(st.iterable.end, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+            start_ty = _infer(st.iterable.start, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+            end_ty = _infer(st.iterable.end, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
             if not _is_int_type(start_ty) or not _is_int_type(end_ty):
                 raise SemanticError(_diag(filename, st.line, st.col, "range for-in expects integer bounds"))
             _require_type(filename, st.line, st.col, start_ty, end_ty, "for-in range bounds")
             loop_var_ty = _canonical_type(start_ty)
         else:
-            iterable_ty = _infer(st.iterable, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+            iterable_ty = _infer(st.iterable, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
             base_ty = _strip_ref(_canonical_type(iterable_ty))
             if _is_vec_type(base_ty):
                 loop_var_ty = _vec_inner(base_ty)
@@ -1819,19 +1998,19 @@ def _check_stmt(
                     )
                 )
         loop_scopes = scopes + [{}]
-        loop_fixed_scopes = fixed_scopes + [{}]
+        loop_mut_scopes = mut_scopes + [{}]
         loop_owned = owned.copy()
         loop_borrow = borrow.copy()
         loop_move = move.copy()
         loop_borrow_scopes = borrow_scopes + [set()]
         loop_move_scopes = move_scopes + [{}]
         loop_scopes[-1][st.var] = loop_var_ty
-        loop_fixed_scopes[-1][st.var] = True
+        loop_mut_scopes[-1][st.var] = False
         loop_move_scopes[-1][st.var] = loop_move.moved.get(st.var, False)
         _check_block(
             st.body,
             loop_scopes,
-            loop_fixed_scopes,
+            loop_mut_scopes,
             loop_borrow_scopes,
             loop_move_scopes,
             fn_groups,
@@ -1852,7 +2031,7 @@ def _check_stmt(
         move.merge(move, loop_move)
         return
     if isinstance(st, MatchStmt):
-        subject_ty = _infer(st.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        subject_ty = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         seen_bool: set[bool] = set()
         seen_enum_variants: set[str] = set()
         subject_enum_decl: EnumDecl | None = None
@@ -1870,7 +2049,7 @@ def _check_stmt(
                 gty = _infer(
                     guard_expr,
                     scopes,
-                    fixed_scopes,
+                    mut_scopes,
                     fn_groups,
                     structs,
                     enums,
@@ -1902,7 +2081,7 @@ def _check_stmt(
                 pty = _infer(
                     alt_pat,
                     scopes,
-                    fixed_scopes,
+                    mut_scopes,
                     fn_groups,
                     structs,
                     enums,
@@ -1935,13 +2114,13 @@ def _check_stmt(
                             )
                         seen_enum_variants.add(variant_name)
             arm_scopes = scopes + [{}]
-            arm_fixed_scopes = fixed_scopes + [{}]
+            arm_mut_scopes = mut_scopes + [{}]
             arm_borrow_scopes = borrow_scopes + [set()]
             arm_move_scopes = move_scopes + [{}]
             _check_block(
                 body,
                 arm_scopes,
-                arm_fixed_scopes,
+                arm_mut_scopes,
                 arm_borrow_scopes,
                 arm_move_scopes,
                 fn_groups,
@@ -1965,7 +2144,7 @@ def _check_stmt(
                 raise SemanticError(_diag(filename, st.line, st.col, f"non-exhaustive match for enum {subject_enum_decl.name}"))
         return
     if isinstance(st, ExprStmt):
-        _infer(st.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         if _is_free_call(st.expr):
             ptr = st.expr.args[0]
             if not isinstance(ptr, Name):
@@ -1973,7 +2152,7 @@ def _check_stmt(
             owned.free(ptr.value, Span.at(filename, st.line, st.col))
         return
     if isinstance(st, DropStmt):
-        expr_ty = _infer(st.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        expr_ty = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         _consume_if_move_name(st.expr, expr_ty, move, filename, st.line, st.col)
         if isinstance(st.expr, Name):
             if st.expr.value in owned.owners:
@@ -1990,7 +2169,7 @@ def _check_stmt(
 def _infer(
     e,
     scopes: list[dict[str, str]],
-    fixed_scopes: list[dict[str, bool]],
+    mut_scopes: list[dict[str, bool]],
     fn_groups: dict[str, list[FnDecl | ExternFnDecl]],
     structs: dict[str, StructDecl],
     enums: dict[str, EnumDecl],
@@ -2086,7 +2265,7 @@ def _infer(
         owned_copy = owned.copy() if owned is not None else None
         borrow_copy = borrow.copy()
         move_copy = move.copy()
-        val_ty = _infer(e.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned_copy, borrow_copy, move_copy, filename, fn_name, unsafe_ok)
+        val_ty = _infer(e.expr, scopes, mut_scopes, fn_groups, structs, enums, owned_copy, borrow_copy, move_copy, filename, fn_name, unsafe_ok)
         try:
             layout_of_type(val_ty, structs, mode="query")
         except LayoutError as err:
@@ -2094,25 +2273,38 @@ def _infer(
         setattr(e, "query_type", _canonical_type(val_ty))
         return _typed(e, "Int")
     if isinstance(e, AwaitExpr):
-        return _typed(e, _infer(e.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok))
+        return _typed(e, _infer(e.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok))
     if isinstance(e, TryExpr):
-        src_ty = _infer(e.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        src_ty = _infer(e.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         fn_ret = _canonical_type(getattr(move, "fn_ret", ""))
         src_c = _canonical_type(src_ty)
+        if _is_union_type(src_c):
+            members = _union_members(src_c)
+            if len(members) < 2:
+                raise SemanticError(_diag(filename, e.line, e.col, f"`!` expects a fallible union operand, got {src_ty}"))
+            ok_ty = members[0]
+            err_tys = members[1:]
+            fn_members = set(_union_members(fn_ret))
+            for et in err_tys:
+                if et not in fn_members:
+                    raise SemanticError(_diag(filename, e.line, e.col, f"`!` requires function return to include propagated branch `{et}`, got {fn_ret or '<unknown>'}"))
+            setattr(e, "try_kind", "union")
+            setattr(e, "try_error_types", err_tys)
+            return _typed(e, ok_ty)
         if _is_option_type(src_c):
             if not _is_option_type(fn_ret):
-                raise SemanticError(_diag(filename, e.line, e.col, f"`?` on Option<T> requires function return Option<U>, got {fn_ret or '<unknown>'}"))
-            _require_type(filename, e.line, e.col, fn_ret, src_c, "? operand")
+                raise SemanticError(_diag(filename, e.line, e.col, f"`!` on Option<T> requires function return Option<U>, got {fn_ret or '<unknown>'}"))
+            _require_type(filename, e.line, e.col, fn_ret, src_c, "! operand")
             setattr(e, "try_kind", "option")
             return _typed(e, _option_inner(src_c))
         if _is_result_type(src_c):
             if not _is_result_type(fn_ret):
-                raise SemanticError(_diag(filename, e.line, e.col, f"`?` on Result<T, E> requires function return Result<U, E>, got {fn_ret or '<unknown>'}"))
+                raise SemanticError(_diag(filename, e.line, e.col, f"`!` on Result<T, E> requires function return Result<U, E>, got {fn_ret or '<unknown>'}"))
             _require_type(filename, e.line, e.col, _result_err_inner(fn_ret), _result_err_inner(src_c), "result error type")
             setattr(e, "try_kind", "result")
             setattr(e, "try_error_type", _result_err_inner(src_c))
             return _typed(e, _result_ok_inner(src_c))
-        raise SemanticError(_diag(filename, e.line, e.col, f"`?` expects Option<T> or Result<T, E> operand, got {src_ty}"))
+        raise SemanticError(_diag(filename, e.line, e.col, f"`!` expects a fallible union operand, got {src_ty}"))
     if isinstance(e, Unary):
         if e.op in {"&", "&mut"}:
             if not isinstance(e.expr, Name):
@@ -2123,12 +2315,12 @@ def _infer(
                 raise SemanticError(_diag(filename, e.line, e.col, f"cannot borrow undefined name {owner}"))
             if owned is not None:
                 owned.check_use(owner, Span.at(filename, e.line, e.col))
-            fixed_owner = bool(_lookup_fixed(owner, fixed_scopes))
-            borrow.ensure_can_borrow(owner, e.op == "&mut", fixed_owner, filename, e.line, e.col)
+            owner_mut = bool(_lookup_mut(owner, mut_scopes))
+            borrow.ensure_can_borrow(owner, e.op == "&mut", owner_mut, filename, e.line, e.col)
             if e.op == "&mut":
                 return _typed(e, f"&mut {owner_ty}")
             return _typed(e, f"&{owner_ty}")
-        inner = _infer(e.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        inner = _infer(e.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         if e.op == "!":
             _require_type(filename, e.line, e.col, "Bool", inner, "unary !")
             return _typed(e, "Bool")
@@ -2142,7 +2334,7 @@ def _infer(
             return _typed(e, _strip_ref(inner))
         return _typed(e, inner)
     if isinstance(e, CastExpr):
-        src = _infer(e.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        src = _infer(e.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         dst = _canonical_type(e.type_name)
         _validate_decl_type(dst, filename, e.line, e.col)
         src_c = _canonical_type(src)
@@ -2156,35 +2348,39 @@ def _infer(
             raise SemanticError(_diag(filename, e.line, e.col, f"unsupported cast from {src} to {e.type_name}"))
         return _typed(e, dst)
     if isinstance(e, TypeAnnotated):
-        src = _infer(e.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        src = _infer(e.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         dst = _canonical_type(e.type_name)
         _validate_decl_type(dst, filename, e.line, e.col)
         _require_type(filename, e.line, e.col, dst, src, "type annotation")
         return _typed(e, dst)
     if isinstance(e, Binary):
-        l = _infer(e.left, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
-        r = _infer(e.right, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        l = _infer(e.left, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        r = _infer(e.right, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        l_eff = _strip_ref(l)
+        r_eff = _strip_ref(r)
         if e.op in {"+", "-", "*", "/", "%"}:
-            if e.op == "+" and _is_text_type(l) and _is_text_type(r):
+            if e.op == "+" and _is_text_type(l_eff) and _is_text_type(r_eff):
                 return _typed(e, "String")
-            if _is_int_type(l) and _is_int_type(r):
-                _require_strict_int_operands(filename, e.line, e.col, e.op, l, r)
-                return _typed(e, _canonical_type(l))
-            if _is_float_type(l) and _is_float_type(r):
-                return _typed(e, _canonical_type(l))
-            if (_is_int_type(l) and _is_float_type(r)) or (_is_float_type(l) and _is_int_type(r)):
+            if _is_int_type(l_eff) and _is_int_type(r_eff):
+                _require_strict_int_operands(filename, e.line, e.col, e.op, l_eff, r_eff)
+                return _typed(e, _canonical_type(l_eff))
+            if _is_float_type(l_eff) and _is_float_type(r_eff):
+                return _typed(e, _canonical_type(l_eff))
+            if (_is_int_type(l_eff) and _is_float_type(r_eff)) or (_is_float_type(l_eff) and _is_int_type(r_eff)):
                 raise SemanticError(_diag(filename, e.line, e.col, f"mixed int/float arithmetic requires explicit cast for operator {e.op}"))
             raise SemanticError(_diag(filename, e.line, e.col, f"numeric operator {e.op} expects numeric operands"))
         if e.op in {"&", "|", "^", "<<", ">>"}:
-            _require_strict_int_operands(filename, e.line, e.col, e.op, l, r)
+            _require_strict_int_operands(filename, e.line, e.col, e.op, l_eff, r_eff)
             if e.op in {"<<", ">>"}:
-                _require_shift_rhs_static_safe(filename, e.op, l, e.right)
-            return _typed(e, _canonical_type(l))
+                _require_shift_rhs_static_safe(filename, e.op, l_eff, e.right)
+            return _typed(e, _canonical_type(l_eff))
         if e.op in {"==", "!=", "<", "<=", ">", ">="}:
-            if _is_int_type(l) and _is_int_type(r):
-                _require_strict_int_operands(filename, e.line, e.col, e.op, l, r)
-            elif (_is_int_type(l) and _is_float_type(r)) or (_is_float_type(l) and _is_int_type(r)):
+            if _is_int_type(l_eff) and _is_int_type(r_eff):
+                _require_strict_int_operands(filename, e.line, e.col, e.op, l_eff, r_eff)
+            elif (_is_int_type(l_eff) and _is_float_type(r_eff)) or (_is_float_type(l_eff) and _is_int_type(r_eff)):
                 raise SemanticError(_diag(filename, e.line, e.col, f"mixed int/float comparison requires explicit cast for operator {e.op}"))
+            return _typed(e, "Bool")
+        if e.op == "is":
             return _typed(e, "Bool")
         if e.op in {"&&", "||"}:
             _require_type(filename, e.line, e.col, "Bool", l, f"{e.op} left operand")
@@ -2193,17 +2389,21 @@ def _infer(
         if e.op == "??":
             if l == NONE_LIT_TYPE:
                 return _typed(e, r)
-            if not _is_option_type(l):
-                raise SemanticError(_diag(filename, e.line, e.col, "left operand of ?? must be Option<T>"))
-            inner = _option_inner(l)
+            if _is_option_type(l):
+                inner = _option_inner(l)
+                _require_type(filename, e.line, e.col, inner, r, "?? right operand")
+                return _typed(e, inner)
+            if not _is_nullable_union(l):
+                raise SemanticError(_diag(filename, e.line, e.col, "left operand of ?? must be nullable"))
+            inner = _remove_none_from_union(l)
             _require_type(filename, e.line, e.col, inner, r, "?? right operand")
             return _typed(e, inner)
         return _typed(e, "Any")
     if isinstance(e, Call):
-        return _typed(e, _infer_call(e, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok))
+        return _typed(e, _infer_call(e, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok))
     if isinstance(e, IndexExpr):
-        obj_ty = _infer(e.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
-        idx_ty = _infer(e.index, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        obj_ty = _infer(e.obj, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        idx_ty = _infer(e.index, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         _require_type(filename, e.line, e.col, "Int", idx_ty, "index")
         base_ty = _strip_ref(_canonical_type(obj_ty))
         if base_ty in {"String", "str"}:
@@ -2236,7 +2436,7 @@ def _infer(
             if enum_decl.generics:
                 ret = f"{enum_decl.name}<{', '.join('Any' for _ in enum_decl.generics)}>"
             return _typed(e, ret)
-        obj_ty = _infer(e.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        obj_ty = _infer(e.obj, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         # Strip reference types to get the underlying struct type
         base_ty = _strip_ref(obj_ty)
         if base_ty in structs:
@@ -2247,9 +2447,9 @@ def _infer(
     if isinstance(e, ArrayLit):
         if not e.elements:
             return _typed(e, "[Any]")
-        first_ty = _infer(e.elements[0], scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        first_ty = _infer(e.elements[0], scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         for el in e.elements[1:]:
-            ety = _infer(el, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+            ety = _infer(el, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
             _require_type(filename, el.line, el.col, first_ty, ety, "array element")
         return _typed(e, f"[{first_ty}]")
     if isinstance(e, StructLit):
@@ -2269,7 +2469,7 @@ def _infer(
             fexpr = field_map.get(fname)
             if fexpr is None:
                 raise SemanticError(_diag(filename, e.line, e.col, f"missing field {fname} for struct {e.name}"))
-            ety = _infer(fexpr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+            ety = _infer(fexpr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
             _require_type(filename, getattr(fexpr, "line", e.line), getattr(fexpr, "col", e.col), fty, ety, f"field {fname} of {e.name}")
         return _typed(e, e.name)
     return _typed(e, "Any")
@@ -2277,7 +2477,7 @@ def _infer(
 
 def _check_call_arg_borrows(
     args: list[Any],
-    fixed_scopes: list[dict[str, bool]],
+    mut_scopes: list[dict[str, bool]],
     borrow: _BorrowState,
     filename: str,
 ):
@@ -2286,9 +2486,9 @@ def _check_call_arg_borrows(
         if not (isinstance(arg, Unary) and arg.op in {"&", "&mut"} and isinstance(arg.expr, Name)):
             continue
         owner = arg.expr.value
-        fixed_owner = bool(_lookup_fixed(owner, fixed_scopes))
+        owner_mut = bool(_lookup_mut(owner, mut_scopes))
         mutable = arg.op == "&mut"
-        temp.ensure_can_borrow(owner, mutable, fixed_owner, filename, arg.line, arg.col)
+        temp.ensure_can_borrow(owner, mutable, owner_mut, filename, arg.line, arg.col)
         if mutable:
             temp.mutable_borrowed.add(owner)
         else:
@@ -2298,7 +2498,7 @@ def _check_call_arg_borrows(
 def _infer_call(
     e: Call,
     scopes: list[dict[str, str]],
-    fixed_scopes: list[dict[str, bool]],
+    mut_scopes: list[dict[str, bool]],
     fn_groups: dict[str, list[FnDecl | ExternFnDecl]],
     structs: dict[str, StructDecl],
     enums: dict[str, EnumDecl],
@@ -2318,8 +2518,8 @@ def _infer_call(
         if spawn_like and i == 0 and isinstance(arg, Name) and arg.value in fn_groups and len(fn_groups[arg.value]) > 1:
             arg_types.append("Any")
             continue
-        arg_types.append(_infer(arg, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok))
-    _check_call_arg_borrows(e.args, fixed_scopes, borrow, filename)
+        arg_types.append(_infer(arg, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok))
+    _check_call_arg_borrows(e.args, mut_scopes, borrow, filename)
 
     def _require_unsafe_context(callee_name: str, line: int, col: int) -> None:
         if unsafe_ok:
@@ -2552,7 +2752,44 @@ def _infer_call(
                 bound = [type_bindings.get(tp, fn_ret_defaults.get(tp, "Any")) for tp in enum_decl.generics]
                 return f"{enum_decl.name}<{', '.join(bound)}>"
             return enum_decl.name
-        obj_ty = _infer(e.fn.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        obj_ty = _infer(e.fn.obj, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        if e.fn.field in fn_groups:
+            ufcs_name = e.fn.field
+            all_arg_types = [obj_ty] + arg_types
+            known_types = set(PRIMITIVES) | set(structs.keys()) | set(enums.keys())
+            decl = _choose_impl(ufcs_name, fn_groups[ufcs_name], all_arg_types, known_types, filename, e.line, e.col)
+            if getattr(decl, "unsafe", False):
+                _require_unsafe_context(ufcs_name, e.line, e.col)
+            if len(decl.params) != len(all_arg_types):
+                raise SemanticError(_diag(filename, e.line, e.col, f"{ufcs_name} expects {len(decl.params)} args, got {len(all_arg_types)}"))
+            type_bindings: dict[str, str] = {}
+            receiver_and_args = [e.fn.obj] + e.args
+            for i, ((_, pty), arg, aty) in enumerate(zip(decl.params, receiver_and_args, all_arg_types)):
+                if _is_typevar(pty, known_types):
+                    bound = type_bindings.get(pty)
+                    if bound is None:
+                        type_bindings[pty] = aty
+                    elif not _same_type(bound, aty):
+                        raise SemanticError(_diag(filename, arg.line, arg.col, f"inconsistent generic binding for {pty}: {bound} vs {aty}"))
+                    continue
+                if i == 0 and _is_ref_type(pty):
+                    inner = _strip_ref(pty)
+                    _require_type(filename, arg.line, arg.col, inner, aty, f"receiver for {ufcs_name}")
+                    if pty.startswith("&mut "):
+                        if not isinstance(arg, Name):
+                            raise SemanticError(_diag(filename, arg.line, arg.col, f"mutable receiver for {ufcs_name} must be a name"))
+                        is_mutable = _lookup_mut(arg.value, mut_scopes)
+                        if not is_mutable:
+                            raise SemanticError(_diag(filename, arg.line, arg.col, f"receiver {arg.value} must be mutable for {ufcs_name}"))
+                    continue
+                _require_type(filename, arg.line, arg.col, pty, aty, f"arg {i} for {ufcs_name}")
+                if not _is_ref_type(pty) and pty != "Any" and not _is_typevar(pty, known_types):
+                    _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
+            if isinstance(decl, FnDecl):
+                e.resolved_name = decl.symbol or decl.name
+            setattr(e, "ufcs_receiver", e.fn.obj)
+            setattr(e, "ufcs_receiver_ty", obj_ty)
+            return _substitute_typevars(decl.ret, type_bindings)
         if e.fn.field == "get":
             if len(e.args) != 1:
                 raise SemanticError(_diag(filename, e.line, e.col, "get expects 1 arg"))
@@ -2563,7 +2800,7 @@ def _infer_call(
             if _is_vec_type(base_ty):
                 return f"Option<{_vec_inner(base_ty)}>"
         return "Any"
-    callee_ty = _infer(e.fn, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+    callee_ty = _infer(e.fn, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
     setattr(e.fn, "inferred_type", callee_ty)
     parsed = _parse_fn_type(callee_ty)
     if parsed is None:

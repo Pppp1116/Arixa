@@ -6,8 +6,6 @@ from astra.int_types import INT_WIDTH_MAX, parse_prefixed_int_type, prefixed_int
 
 KEYWORDS = {
     "fn",
-    "let",
-    "fixed",
     "return",
     "if",
     "else",
@@ -25,7 +23,6 @@ KEYWORDS = {
     "async",
     "await",
     "unsafe",
-    "impl",
     "trait",
     "where",
     "match",
@@ -33,6 +30,8 @@ KEYWORDS = {
     "drop",
     "comptime",
     "none",
+    "set",
+    "is",
     "in",
     "as",
     "sizeof",

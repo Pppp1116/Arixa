@@ -579,7 +579,7 @@ def _cmd_new(name: str) -> None:
         "[dependencies]\n"
     )
     (root / "src" / "main.astra").write_text(
-        "fn main() -> Int {\n"
+        "fn main() Int{\n"
         '    print("hello from astra");\n'
         "    return 0;\n"
         "}\n"

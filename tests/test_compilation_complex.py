@@ -11,18 +11,18 @@ def test_complex_program_python_build_contains_precomputed_constants(tmp_path: P
     out = tmp_path / "complex.py"
     src.write_text(
         """
-impl fn norm(x Int) -> Int { return x; }
-impl fn norm(x Float) -> Float { return x; }
+fn norm(x Int) Int{ return x; }
+fn norm(x Float) Float{ return x; }
 
-fn fib(n Int) -> Int {
+fn fib(n Int) Int{
   if n <= 1 { return n; }
   return fib(n - 1) + fib(n - 2);
 }
 
-fn main() -> Int {
+fn main() Int{
   comptime {
-    let k = fib(8);
-    let p = alloc(16);
+    k = fib(8);
+    p = alloc(16);
     free(p);
   }
   if norm(k) == 21 {
@@ -45,16 +45,16 @@ def test_complex_program_llvm_ir_shape(tmp_path: Path):
     out = tmp_path / "x.ll"
     src.write_text(
         """
-fn calc(a Int, b Int) -> Int {
-  let mut x = a;
-  let mut y = b;
+fn calc(a Int, b Int) Int{
+  mut x = a;
+  mut y = b;
   while y > 0 {
     x += 1;
     y -= 1;
   }
   return x;
 }
-fn main() -> Int {
+fn main() Int{
   return calc(5, 7);
 }
 """
@@ -71,13 +71,13 @@ def test_llvm_if_program_is_valid(tmp_path: Path):
     out = tmp_path / "ifopt.ll"
     src.write_text(
         """
-fn cmp(a Int, b Int) -> Int {
+fn cmp(a Int, b Int) Int{
   if a < b {
     return 1;
   }
   return 0;
 }
-fn main() -> Int {
+fn main() Int{
   return cmp(3, 7);
 }
 """
@@ -93,9 +93,9 @@ def test_llvm_algebraic_program_is_valid(tmp_path: Path):
     out = tmp_path / "alg.ll"
     src.write_text(
         """
-fn main() -> Int {
-  let a = 7;
-  let b = (a * 1) + 0;
+fn main() Int{
+  a = 7;
+  b = (a * 1) + 0;
   return b;
 }
 """
@@ -111,9 +111,9 @@ def test_mutable_loop_variable_is_not_const_propagated(tmp_path: Path):
     out = tmp_path / "loop.py"
     src.write_text(
         """
-fn main() -> Int {
-  let mut i = 0;
-  let mut acc = 0;
+fn main() Int{
+  mut i = 0;
+  mut acc = 0;
   while i < 4 {
     acc += 5 * 1;
     i += 1;

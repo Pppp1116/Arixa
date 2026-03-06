@@ -34,4 +34,4 @@ def test_pkg_new_scaffolds_project(tmp_path: Path):
     assert '[project]' in manifest
     assert 'name = "hello"' in manifest
     assert 'entry = "src/main.astra"' in manifest
-    assert 'fn main() -> Int {' in main_src
+    assert 'fn main() Int{' in main_src

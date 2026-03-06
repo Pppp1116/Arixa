@@ -3,7 +3,7 @@ from golden_helpers import assert_same_stdout_and_exit, compile_and_run_program
 
 def test_try_operator_propagates_none_and_short_circuits(tmp_path) -> None:
     src = """
-fn maybe(v Int) -> Option<Int> {
+fn maybe(v Int) Option<Int>{
   if v > 0 {
     return v;
   }
@@ -11,15 +11,15 @@ fn maybe(v Int) -> Option<Int> {
   return none;
 }
 
-fn helper(v Int) -> Option<Int> {
-  let x = maybe(v)?;
+fn helper(v Int) Option<Int>{
+  x = maybe(v)!;
   print("after");
   return x + 1;
 }
 
-fn main() -> Int {
-  let a = helper(0) ?? 7;
-  let b = helper(1) ?? 0;
+fn main() Int{
+  a = helper(0) ?? 7;
+  b = helper(1) ?? 0;
   return a + b;
 }
 """
@@ -34,15 +34,15 @@ fn main() -> Int {
 
 def test_try_operator_runs_defers_on_early_return(tmp_path) -> None:
     src = """
-fn helper(v: Option<Int>) -> Option<Int> {
+fn helper(v Option<Int>) Option<Int>{
   defer print("cleanup");
-  let x = v?;
+  x = v!;
   return x;
 }
 
-fn main() -> Int {
-  let mut input: Option<Int> = none;
-  let out = helper(input) ?? 5;
+fn main() Int{
+  mut input: Option<Int> = none;
+  out = helper(input) ?? 5;
   return out;
 }
 """
@@ -62,7 +62,7 @@ enum Result<T, E> {
   Err(E),
 }
 
-fn parse(v Int) -> Result<Int, Int> {
+fn parse(v Int) Result<Int, Int>{
   if v > 0 {
     return Result.Ok(v);
   }
@@ -70,13 +70,13 @@ fn parse(v Int) -> Result<Int, Int> {
   return Result.Err(404);
 }
 
-fn add1(v Int) -> Result<Int, Int> {
-  let x = parse(v)?;
+fn add1(v Int) Result<Int, Int>{
+  x = parse(v)!;
   print("after-ok");
   return Result.Ok(x + 1);
 }
 
-fn main() -> Int {
+fn main() Int{
   print(to_json(add1(2)));
   print(to_json(add1(0)));
   return 0;
@@ -106,7 +106,7 @@ enum Result<T, E> {
   Err(E),
 }
 
-fn parse(v Int) -> Result<Int, Int> {
+fn parse(v Int) Result<Int, Int>{
   if v > 0 {
     return Result.Ok(v);
   }
@@ -114,15 +114,15 @@ fn parse(v Int) -> Result<Int, Int> {
   return Result.Err(1);
 }
 
-fn helper(v Int) -> Result<Int, Int> {
-  let x = parse(v)?;
+fn helper(v Int) Result<Int, Int>{
+  x = parse(v)!;
   print("after");
   return Result.Ok(x + 1);
 }
 
-fn main() -> Int {
-  let _ = helper(0);
-  let _ = helper(1);
+fn main() Int{
+  _ = helper(0);
+  _ = helper(1);
   return 0;
 }
 """

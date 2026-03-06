@@ -13,9 +13,9 @@
 - `astra selfhost` (currently unavailable: placeholder only, no real self-hosting pipeline)
 - `--target native` requires `clang` in `PATH` and links against bundled runtime source (override with `ASTRA_RUNTIME_C_PATH`).
 - `--kind exe` (default) requires an entrypoint:
-  - hosted mode: `fn main() -> Int`
+  - hosted mode: `fn main() Int`
   - freestanding mode: `fn _start()`
-  - convenience: top-level `fn main()` with zero params may omit `-> Int`; it defaults to `Int`
+  - convenience: return type may be omitted; omitted means `Void`
 - `--kind lib` does not require an entrypoint.
 - `--freestanding` enforces runtime-free semantics/codegen for LLVM/native outputs:
   - hosted/runtime builtins are rejected in semantic analysis
@@ -45,18 +45,18 @@
 ## Language conveniences
 - `defer <expr>;`
 - `drop <expr>;` (consumes value and runs destructor immediately)
-- use `let _ = <expr>;` / `_ = <expr>;` to discard a value result
-- option coalescing: `<a> ?? <b>` where `<a>: Option<T>`
-- propagation sugar: `<a>?`
-  - `Option<T>` form (only in functions returning `Option<_>`)
-  - `Result<T, E>` form (only in functions returning `Result<_, E>`)
+- use `_ = <expr>;` to discard a value result
+- option coalescing: `<a> ?? <b>` where `<a>: T | none`
+- propagation sugar: `<a>!` (propagates non-success union branches)
 - `for` loops use only `for <ident> in <iterable-expr> { ... }` (C-style `for init; cond; step` is not supported)
   - iterables: ranges (`start..end`, `start..=end`), `Vec<T>`, slice refs (`&[T]`/`&mut [T]`), `Bytes`
-- immutable bindings: `fixed name[: Type] = expr;`
-- option literal: `none` (only valid in `Option<T>` context)
+- immutable bindings: `name[: Type] = expr;`
+- mutable bindings: `mut name[: Type] = expr;`
+- explicit reassignment: `set name = expr;`
+- option literal: `none` (only valid in nullable union context)
 - expression statements may discard values of any type
-- typed params/fields accept `name Type` and `name: Type` (canonical style is `name: Type`)
-- specialization impls: `impl fn name(...) -> ... { ... }`
+- typed params use `name Type`; fields/locals use `name: Type`
+- UFCS: `x.f(a, b)` desugars to `f(x, a, b)` when `f` resolves as a free function
 - compile-time execution: `comptime { ... }` (pure/deterministic subset with control flow and function-typed call support)
 - text/buffer core types: `String`/`Vec<T>` (stdlib owned types), `str`/`[T]` (unsized DSTs behind references), `Bytes = Vec<u8>`
 - `[T]` is valid in practice as `&[T]` / `&mut [T]` (or other pointer-backed DST positions), not as a standalone sized value

@@ -19,7 +19,7 @@ def test_integration_wheel_install_has_bundled_stdlib(tmp_path: Path):
     repo = Path(__file__).resolve().parents[1]
     venv = tmp_path / "venv"
     src = tmp_path / "main.astra"
-    src.write_text("import std.core; fn main() -> Int { return 0; }\n")
+    src.write_text("import std.core; fn main() Int{ return 0; }\n")
     assert subprocess.call([sys.executable, "-m", "venv", str(venv)]) == 0
     pip = venv / "bin" / "pip"
     astra = venv / "bin" / "astra"

@@ -30,7 +30,6 @@ from astra.ast import (
     SizeOfValueExpr,
     StructDecl,
     TraitDecl,
-    TraitImplDecl,
     TypeAliasDecl,
     TryExpr,
     Unary,
@@ -42,7 +41,7 @@ from astra.semantic import SemanticError, analyze
 
 
 def test_precedence_and_unary_and_chained_postfix():
-    prog = parse("fn main() -> Int { let x = 1 + 2 * 3; let y = -x; let z = a.b[0].c; return 0; }")
+    prog = parse("fn main() Int{ x = 1 + 2 * 3; y = -x; z = a.b[0].c; return 0; }")
     fn = prog.items[0]
     expr = fn.body[0].expr
     assert isinstance(expr, Binary)
@@ -60,8 +59,8 @@ def test_for_break_continue_import_struct_enum_mut_pub_assign():
 import stdlib::io as io;
 pub struct Point { x Int, y Int }
 enum Color { Red, Green, Blue }
-pub fn main() -> Int {
-  let mut stop = 5;
+pub fn main() Int{
+  mut stop = 5;
   for x in 0..10 {
     if x == stop { break; }
     continue;
@@ -80,13 +79,13 @@ pub fn main() -> Int {
     assert isinstance(fn.body[1], ForStmt)
     assert any(isinstance(s, BreakStmt) for s in fn.body[1].body[0].then_body)
     assert any(isinstance(s, ContinueStmt) for s in fn.body[1].body)
-    assert isinstance(fn.body[2], AssignStmt) and fn.body[2].op == "="
+    assert isinstance(fn.body[2], LetStmt) and fn.body[2].reassign_if_exists
 
 
 def test_parse_range_for_builds_for_in_range_expr():
     src = """
-fn main() -> Int {
-  let mut total = 0;
+fn main() Int{
+  mut total = 0;
   for i in 1..4 {
     total += i;
   }
@@ -105,7 +104,7 @@ fn main() -> Int {
 
 
 def test_parse_range_for_inclusive_uses_lte_condition():
-    src = "fn main() -> Int { for i in 0..=2 { } return 0; }"
+    src = "fn main() Int{ for i in 0..=2 { } return 0; }"
     prog = parse(src)
     fn = prog.items[0]
     loop = fn.body[0]
@@ -115,7 +114,7 @@ def test_parse_range_for_inclusive_uses_lte_condition():
 
 
 def test_parse_for_rejects_c_style_loop():
-    bad = "fn main() -> Int { for let i = 0; i < 3; i += 1 { } return 0; }"
+    bad = "fn main() Int{ for i = 0; i < 3; i += 1 { } return 0; }"
     try:
         parse(bad)
         assert False
@@ -124,7 +123,7 @@ def test_parse_for_rejects_c_style_loop():
 
 
 def test_parse_match_accepts_wildcard_pattern():
-    src = "fn main() -> Int { let x = 1; match x { _ => { return 2; } } return 0; }"
+    src = "fn main() Int{ x = 1; match x { _ => { return 2; } } return 0; }"
     prog = parse(src)
     fn = prog.items[0]
     m = fn.body[1]
@@ -134,8 +133,8 @@ def test_parse_match_accepts_wildcard_pattern():
 
 def test_parse_match_or_pattern_and_guard():
     src = """
-fn main() -> Int {
-  let x = 2;
+fn main() Int{
+  x = 2;
   match x {
     1 | 2 if x == 2 => { return 7; }
     _ => { return 0; }
@@ -153,24 +152,21 @@ fn main() -> Int {
     assert len(pat.pattern.patterns) == 2
 
 
-def test_parse_trait_where_and_trait_impl():
+def test_parse_trait_where_and_implicit_satisfaction():
     src = """
 trait Show {
-  fn show(x Self) -> String;
+  fn show(x Self) String;
 }
 
-impl Show for Int;
+fn show(x Int) String { return "ok"; }
 
-fn wrap<T>(x T) -> T where T: Show {
+fn wrap<T>(x T) T where T: Show{
   return x;
 }
 """
     prog = parse(src)
     assert isinstance(prog.items[0], TraitDecl)
     assert prog.items[0].name == "Show"
-    assert isinstance(prog.items[1], TraitImplDecl)
-    assert prog.items[1].trait_name == "Show"
-    assert prog.items[1].target_type == "Int"
     fn = prog.items[2]
     assert isinstance(fn, FnDecl)
     assert fn.generics == ["T"]
@@ -181,7 +177,7 @@ def test_import_supports_dotted_module_and_string_forms():
     src = """
 import std.io as io;
 import "../shared/util.astra";
-fn main() -> Int { return 0; }
+fn main() Int{ return 0; }
 """
     prog = parse(src)
     imp_mod = prog.items[0]
@@ -198,9 +194,9 @@ fn main() -> Int { return 0; }
 def test_parse_extern_and_async_await():
     src = """
 /// ffi sum
-unsafe extern "libc.so.6" fn c_add(a Int, b Int) -> Int;
-async fn worker() -> Int { return await c_add(1, 2); }
-fn main() -> Int { return 0; }
+unsafe extern "libc.so.6" fn c_add(a Int, b Int) Int;
+async fn worker() Int{ return await c_add(1, 2); }
+fn main() Int{ return 0; }
 """
     prog = parse(src)
     ext = prog.items[0]
@@ -214,7 +210,7 @@ fn main() -> Int { return 0; }
 
 
 def test_parse_linked_variadic_extern_fn():
-    src = '@link("c") extern fn printf(fmt: *u8, ...) -> i32;'
+    src = '@link("c") extern fn printf(fmt *u8, ...) i32;'
     prog = parse(src)
     ext = prog.items[0]
     assert isinstance(ext, ExternFnDecl)
@@ -225,10 +221,10 @@ def test_parse_linked_variadic_extern_fn():
 
 def test_parse_unsafe_fn_and_block():
     src = """
-unsafe fn poke(x Int) -> Int { return x; }
-fn main() -> Int {
+unsafe fn poke(x Int) Int{ return x; }
+fn main() Int{
   unsafe {
-    let y = poke(7);
+    y = poke(7);
     return y;
   }
 }
@@ -245,8 +241,8 @@ fn main() -> Int {
 def test_parse_colon_typed_params_and_fields():
     src = """
 struct Vec2 { x: Int, y: Int, }
-fn add(a: Int, b: Int,) -> Int { return a + b; }
-fn main() -> Int { return add(1, 2); }
+fn add(a Int, b Int,) Int{ return a + b; }
+fn main() Int{ return add(1, 2); }
 """
     prog = parse(src)
     st = prog.items[0]
@@ -258,17 +254,17 @@ fn main() -> Int { return add(1, 2); }
 
 
 def test_parse_option_type_sugar():
-    src = "fn maybe(x: Int?) -> Int? { let y: Int? = none; return y; } fn main() -> Int { return 0; }"
+    src = "fn maybe(x Int?) Int?{ y: Int? = none; return y; } fn main() Int{ return 0; }"
     prog = parse(src)
     fn = prog.items[0]
-    assert fn.params == [("x", "Option<Int>")]
-    assert fn.ret == "Option<Int>"
+    assert fn.params == [("x", "Int | none")]
+    assert fn.ret == "Int | none"
 
 
 def test_parse_owned_and_borrowed_text_buffer_types():
     src = """
 type Bytes = Vec<u8>;
-fn view(s: &str, b: Bytes, xs: Vec<i16>, sl: &[u8]) -> Void { return; }
+fn view(s &str, b Bytes, xs Vec<i16>, sl &[u8]) Void{ return; }
 """
     prog = parse(src)
     assert isinstance(prog.items[0], TypeAliasDecl)
@@ -280,10 +276,10 @@ fn view(s: &str, b: Bytes, xs: Vec<i16>, sl: &[u8]) -> Void { return; }
 
 def test_parse_defer_and_coalesce():
     src = """
-fn main() -> Int {
+fn main() Int{
   defer print("done");
-  let x: Option<Int> = none;
-  let y = x ?? 7;
+  x: Option<Int> = none;
+  y = x ?? 7;
   return y;
 }
 """
@@ -298,11 +294,11 @@ fn main() -> Int {
 
 def test_parse_try_postfix_operator():
     src = """
-fn helper(v: Option<Int>) -> Option<Int> {
-  let x = v?;
+fn helper(v Option<Int>) Option<Int>{
+  x = v!;
   return x;
 }
-fn main() -> Int { return 0; }
+fn main() Int{ return 0; }
 """
     prog = parse(src)
     fn = prog.items[0]
@@ -312,8 +308,8 @@ fn main() -> Int { return 0; }
 
 def test_parse_accepts_multiline_string_literal():
     src = """
-fn main() -> Int {
-  let s = \"\"\"a
+fn main() Int{
+  s = \"\"\"a
 b\"\"\";
   return 0;
 }
@@ -323,14 +319,14 @@ b\"\"\";
 
 
 def test_parse_drop_stmt():
-    src = "fn main() -> Int { drop print(1); return 0; }"
+    src = "fn main() Int{ drop print(1); return 0; }"
     prog = parse(src)
     fn = prog.items[0]
     assert isinstance(fn.body[0], DropStmt)
 
 
 def test_parse_mutable_borrow_unary_expression():
-    src = "fn main() -> Int { let mut x = 1; let r = &mut x; return 0; }"
+    src = "fn main() Int{ mut x = 1; r = &mut x; return 0; }"
     prog = parse(src)
     fn = prog.items[0]
     assert isinstance(fn.body[1], LetStmt)
@@ -338,25 +334,25 @@ def test_parse_mutable_borrow_unary_expression():
     assert fn.body[1].expr.op == "&mut"
 
 
-def test_parse_impl_fn_specializations():
+def test_parse_overload_specializations():
     src = """
-impl fn sum(x T) -> T { return x; }
-impl fn sum(x Int) -> Int { return x; }
-fn main() -> Int { return sum(1); }
+fn sum(x T) T{ return x; }
+fn sum(x Int) Int{ return x; }
+fn main() Int{ return sum(1); }
 """
     prog = parse(src)
-    assert isinstance(prog.items[0], FnDecl) and prog.items[0].is_impl
-    assert isinstance(prog.items[1], FnDecl) and prog.items[1].is_impl
+    assert isinstance(prog.items[0], FnDecl)
+    assert isinstance(prog.items[1], FnDecl)
 
 
 def test_doc_comment_attaches_to_next_decl():
-    prog = parse("/// hello\nfn main() -> Int { return 0; }\n")
+    prog = parse("/// hello\nfn main() Int{ return 0; }\n")
     assert isinstance(prog.items[0], FnDecl)
     assert prog.items[0].doc == "hello"
 
 
 def test_multi_error_recovery_collects_multiple():
-    bad = "fn main() -> Int { let = 1; if { return 0 } let x = ; }"
+    bad = "fn main() Int{ = 1; if { return 0 } x = ; }"
     try:
         parse(bad)
         assert False, "expected ParseError"
@@ -368,7 +364,7 @@ def test_multi_error_recovery_collects_multiple():
 
 def test_parse_deep_nesting_reports_parse_error_with_span():
     nested = "(" * 120 + "1" + ")" * 119
-    bad = f"fn main() -> Int {{ let x = {nested}; return 0; }}"
+    bad = f"fn main() Int{{ x = {nested}; return 0; }}"
     try:
         parse(bad, filename="deep.astra")
         assert False, "expected ParseError"
@@ -379,7 +375,7 @@ def test_parse_deep_nesting_reports_parse_error_with_span():
 
 def test_nil_keyword_is_rejected():
     try:
-        analyze(parse("fn main() -> Int { let x = nil; return 0; }"))
+        analyze(parse("fn main() Int{ x = nil; return 0; }"))
         assert False
     except SemanticError as e:
         assert "undefined name nil" in str(e)
@@ -387,13 +383,13 @@ def test_nil_keyword_is_rejected():
 
 def test_parse_bitwise_shift_cast_and_layout_queries():
     src = """
-fn main() -> Int {
-  let x: u8 = 3 as u8;
-  let y: u8 = (x << (1 as u8)) | (1 as u8);
-  let a = sizeof(u16);
-  let b = alignof(u16);
-  let c = size_of(y);
-  let d = align_of(y);
+fn main() Int{
+  x: u8 = 3 as u8;
+  y: u8 = (x << (1 as u8)) | (1 as u8);
+  a = sizeof(u16);
+  b = alignof(u16);
+  c = size_of(y);
+  d = align_of(y);
   return (y as Int) + a + b + c + d;
 }
 """
@@ -408,7 +404,7 @@ fn main() -> Int {
 
 
 def test_parse_dynamic_integer_type_names():
-    src = "fn widen(x: u4, y: i127) -> u4 { return x; }"
+    src = "fn widen(x u4, y i127) u4{ return x; }"
     prog = parse(src)
     fn = prog.items[0]
     assert isinstance(fn, FnDecl)
@@ -417,7 +413,7 @@ def test_parse_dynamic_integer_type_names():
 
 
 def test_parse_integer_literal_type_suffix():
-    src = "fn main() -> Int { let x: u4 = 15u4; return x as Int; }"
+    src = "fn main() Int{ x: u4 = 15u4; return x as Int; }"
     prog = parse(src)
     fn = prog.items[0]
     assert isinstance(fn.body[0], LetStmt)
@@ -426,7 +422,7 @@ def test_parse_integer_literal_type_suffix():
 
 
 def test_parse_prefixed_integer_literals_and_suffixes():
-    src = "fn main() -> Int { let a = 0xFF_FF; let b = 0b1010_0101u16; return (a as Int) + (b as Int); }"
+    src = "fn main() Int{ a = 0xFF_FF; b = 0b1010_0101u16; return (a as Int) + (b as Int); }"
     prog = parse(src)
     fn = prog.items[0]
     assert fn.body[0].expr.value == 65535
@@ -445,10 +441,10 @@ def test_parse_packed_struct_attribute():
 
 def test_parse_bit_intrinsics_with_type_arguments():
     src = """
-fn main() -> Int {
-  let a = bitSizeOf(u3);
-  let b = maxVal(u4);
-  let c = minVal(i4);
+fn main() Int{
+  a = bitSizeOf(u3);
+  b = maxVal(u4);
+  c = minVal(i4);
   return a + (b as Int) + (c as Int);
 }
 """

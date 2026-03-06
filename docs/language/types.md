@@ -9,8 +9,8 @@
 ## Compound and Generic Types
 
 - `Vec<T>`
-- `Option<T>` (`T?` sugar)
-- `Result<T, E>`
+- unions: `A | B | C`
+- nullable sugar: `T?` = `T | none`
 - references: `&T`, `&mut T`
 - slices: `[T]` (unsized, usually behind references)
 
@@ -18,5 +18,5 @@
 
 - Integer operations require compatible integer operands.
 - Explicit casts are required for narrowing or dynamic downcasts.
-- `none` is only valid where `Option<T>` is expected.
+- `none` is only valid where a nullable union is expected.
 - `Never` can coerce to other types in control-flow joins.

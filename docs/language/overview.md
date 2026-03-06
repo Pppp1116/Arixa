@@ -6,7 +6,7 @@ Core traits:
 
 - Explicit types with inference where possible.
 - Compile-time execution via `comptime {}`.
-- `Option<T>`/`Result<T, E>` value-oriented error and absence modeling.
+- Union-based error/absence modeling (`A | B`, `T?`, `none`, `!`, `??`).
 - Hosted and freestanding build modes.
 
 Main reference links:

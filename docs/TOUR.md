@@ -5,12 +5,12 @@ This is a short, runnable tour of core Astra features.
 ## 1. Basic function and locals
 
 ```astra
-fn add(a Int, b Int) -> Int {
+fn add(a Int, b Int) Int{
   let sum = a + b;
   return sum;
 }
 
-fn main() -> Int {
+fn main() Int{
   return add(20, 22);
 }
 ```
@@ -18,7 +18,7 @@ fn main() -> Int {
 ## 2. Control flow and range `for`
 
 ```astra
-fn main() -> Int {
+fn main() Int{
   let mut total = 0;
   for i in 1..=5 {
     total += i;
@@ -30,7 +30,7 @@ fn main() -> Int {
 `for` also works over `Vec<T>`, slices (`&[T]`/`&mut [T]`), and `Bytes`:
 
 ```astra
-fn main() -> Int {
+fn main() Int{
   let mut v: Vec<Int> = vec_new() as Vec<Int>;
   drop vec_push(v, 4);
   drop vec_push(v, 5);
@@ -45,7 +45,7 @@ fn main() -> Int {
 ## 3. Option values and coalesce
 
 ```astra
-fn main() -> Int {
+fn main() Int{
   let maybe: Option<Int> = none;
   let value = maybe ?? 7;
   return value;
@@ -55,7 +55,7 @@ fn main() -> Int {
 ## 4. Match with wildcard arm
 
 ```astra
-fn main() -> Int {
+fn main() Int{
   let ok = true;
   match ok {
     true => { return 1; }
@@ -69,7 +69,7 @@ fn main() -> Int {
 ```astra
 struct Point { x Int, y Int }
 
-fn main() -> Int {
+fn main() Int{
   let p = Point(3, 4);
   return p.x + p.y;
 }

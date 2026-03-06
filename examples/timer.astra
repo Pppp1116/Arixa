@@ -1,11 +1,11 @@
-fn ms() -> Int {
+fn ms() Int{
     return __monotonic_ms();
 }
 
-fn main() -> Int {
-    let t0 = ms();
-    let mut i = 0;
-    let mut x = 0.0;
+fn main() Int{
+    t0 = ms();
+    mut i = 0;
+    mut x = 0.0;
     while i < 20000000 {
         x = x * 1.0000001 + 0.5;
         if x > 1000000.0 {
@@ -14,8 +14,8 @@ fn main() -> Int {
         else {}
         i += 1;
     }
-    let t1 = ms();
-    let dt = t1 - t0;
+    t1 = ms();
+    dt = t1 - t0;
     print(dt);
     print(x);
     return 0;

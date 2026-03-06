@@ -3,7 +3,7 @@
 ## Hosted Mode (default)
 
 - Runtime-backed I/O/process/network helpers are available.
-- Entry point for executables: `fn main() -> Int`.
+- Entry point for executables: `fn main() Int`.
 
 ## Freestanding Mode (`--freestanding`)
 

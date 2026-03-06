@@ -30,15 +30,15 @@ def _normalize(node):
 @pytest.mark.parametrize(
     "src",
     [
-        "fn main() -> Int { return (1 + 2) * 3; }",
-        "fn main() -> Int { return 10 - (7 - 1); }",
-        "fn main() -> Int { return 1 + (2 * (3 + 4)); }",
-        "fn main() -> Int { return a ?? (b ?? c); }",
-        "fn main() -> Int { return -(1 + 2); }",
-        "fn main() -> Int { return await (a + b); }",
-        'fn main() -> Int { defer print("bye"); return 0; }',
-        "fn main() -> Int { comptime { let x = 1; } return 0; }",
-        "fn main() -> Int { let mut s = 0; for i in 1..=3 { s += i; } match s == 6 { true => { return 1; } _ => { return 0; } } }",
+        "fn main() Int{ return (1 + 2) * 3; }",
+        "fn main() Int{ return 10 - (7 - 1); }",
+        "fn main() Int{ return 1 + (2 * (3 + 4)); }",
+        "fn main() Int{ return a ?? (b ?? c); }",
+        "fn main() Int{ return -(1 + 2); }",
+        "fn main() Int{ return await (a + b); }",
+        'fn main() Int{ defer print("bye"); return 0; }',
+        "fn main() Int{ comptime { x = 1; } return 0; }",
+        "fn main() Int{ mut s = 0; for i in 1..=3 { s += i; } match s == 6 { true => { return 1; } _ => { return 0; } } }",
     ],
 )
 def test_formatter_idempotent_and_structural_for_precedence_cases(src: str):
@@ -55,9 +55,9 @@ def test_formatter_idempotent_and_structural_for_precedence_cases(src: str):
 @pytest.mark.parametrize(
     ("src", "expected_rc"),
     [
-        ("fn main() -> Int { return (1 + 2) * 3; }", 9),
-        ("fn main() -> Int { return 10 - (7 - 1); }", 4),
-        ("fn main() -> Int { return -(1 + 2); }", 253),
+        ("fn main() Int{ return (1 + 2) * 3; }", 9),
+        ("fn main() Int{ return 10 - (7 - 1); }", 4),
+        ("fn main() Int{ return -(1 + 2); }", 253),
     ],
 )
 def test_formatter_preserves_runtime_meaning_py_backend(tmp_path: Path, src: str, expected_rc: int):

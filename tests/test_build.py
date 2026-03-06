@@ -15,7 +15,7 @@ from astra.semantic import SemanticError
 
 def test_build_py(tmp_path: Path):
     src = tmp_path / 'a.astra'
-    src.write_text('fn main() -> Int { print("ok"); return 0; }')
+    src.write_text('fn main() Int{ print("ok"); return 0; }')
     out = tmp_path / 'a.py'
     st = build(str(src), str(out), 'py')
     assert st in {'built','cached'}
@@ -24,7 +24,7 @@ def test_build_py(tmp_path: Path):
 
 def test_build_emit_ir(tmp_path: Path):
     src = tmp_path / "a.astra"
-    src.write_text("fn main() -> Int { let x = 1 + 2; return x; }")
+    src.write_text("fn main() Int{ x = 1 + 2; return x; }")
     out = tmp_path / "a.py"
     ir = tmp_path / "a.ll"
     st = build(str(src), str(out), "py", emit_ir=str(ir))
@@ -38,7 +38,7 @@ def test_build_emit_ir(tmp_path: Path):
 def test_native_missing_clang_reports_codegen_error(monkeypatch, tmp_path: Path):
     src = tmp_path / "no_clang.astra"
     out = tmp_path / "no_clang.exe"
-    src.write_text("fn main() -> Int { return 0; }")
+    src.write_text("fn main() Int{ return 0; }")
     # Simulate an environment without clang even if CI provides it.
     monkeypatch.setattr(build_mod, "shutil", shutil)
     monkeypatch.setattr(build_mod.shutil, "which", lambda _: None)
@@ -51,7 +51,7 @@ def test_native_missing_clang_reports_codegen_error(monkeypatch, tmp_path: Path)
 def test_build_native_accepts_sanitizer_flag(monkeypatch, tmp_path: Path):
     src = tmp_path / "main.astra"
     out = tmp_path / "main.exe"
-    src.write_text("fn main() -> Int { return 0; }")
+    src.write_text("fn main() Int{ return 0; }")
     seen: list[list[str]] = []
 
     def fake_run(cmd, capture_output=True, text=True):
@@ -75,7 +75,7 @@ def test_build_native_accepts_sanitizer_flag(monkeypatch, tmp_path: Path):
 def test_build_rejects_sanitizer_for_non_native_targets(tmp_path: Path):
     src = tmp_path / "main.astra"
     out = tmp_path / "main.py"
-    src.write_text("fn main() -> Int { return 0; }")
+    src.write_text("fn main() Int{ return 0; }")
     with pytest.raises(RuntimeError) as excinfo:
         build(str(src), str(out), "py", sanitize="address")
     assert "sanitizer requires --target native" in str(excinfo.value)
@@ -85,16 +85,16 @@ def test_build_cache_invalidates_when_imported_module_changes(tmp_path: Path):
     src = tmp_path / "main.astra"
     dep = tmp_path / "helper.astra"
     out = tmp_path / "main.py"
-    dep.write_text("fn helper() -> Int { return 1; }")
+    dep.write_text("fn helper() Int{ return 1; }")
     src.write_text(
         """
 import helper;
-fn main() -> Int { return 0; }
+fn main() Int{ return 0; }
 """
     )
     st1 = build(str(src), str(out), "py")
     st2 = build(str(src), str(out), "py")
-    dep.write_text("fn helper() -> Int { return 2; }")
+    dep.write_text("fn helper() Int{ return 2; }")
     st3 = build(str(src), str(out), "py")
     assert st1 in {"built", "cached"}
     assert st2 == "cached"
@@ -107,16 +107,16 @@ def test_build_cache_invalidates_when_string_imported_module_changes(tmp_path: P
     dep = dep_dir / "helper.astra"
     out = tmp_path / "main.py"
     dep_dir.mkdir()
-    dep.write_text("fn helper() -> Int { return 1; }")
+    dep.write_text("fn helper() Int{ return 1; }")
     src.write_text(
         """
 import "deps/helper";
-fn main() -> Int { return 0; }
+fn main() Int{ return 0; }
 """
     )
     st1 = build(str(src), str(out), "py")
     st2 = build(str(src), str(out), "py")
-    dep.write_text("fn helper() -> Int { return 2; }")
+    dep.write_text("fn helper() Int{ return 2; }")
     st3 = build(str(src), str(out), "py")
     assert st1 in {"built", "cached"}
     assert st2 == "cached"
@@ -127,11 +127,11 @@ def test_build_py_can_call_functions_from_imported_module(tmp_path: Path):
     src = tmp_path / "main.astra"
     dep = tmp_path / "helper.astra"
     out = tmp_path / "main.py"
-    dep.write_text("fn helper(v Int) -> Int { return v + 2; }")
+    dep.write_text("fn helper(v Int) Int{ return v + 2; }")
     src.write_text(
         """
 import helper;
-fn main() -> Int {
+fn main() Int{
   return helper(5);
 }
 """
@@ -145,7 +145,7 @@ fn main() -> Int {
 def test_build_cache_invalidates_when_toolchain_stamp_changes(monkeypatch, tmp_path: Path):
     src = tmp_path / "main.astra"
     out = tmp_path / "main.py"
-    src.write_text("fn main() -> Int { return 0; }")
+    src.write_text("fn main() Int{ return 0; }")
     monkeypatch.setattr(build_mod, "_toolchain_stamp", lambda: "toolchain-A")
     st1 = build(str(src), str(out), "py")
     st2 = build(str(src), str(out), "py")
@@ -161,7 +161,7 @@ def test_build_strict_mode_does_not_reject_empty_blocks(tmp_path: Path):
     out = tmp_path / "strict.py"
     src.write_text(
         """
-fn main() -> Int {
+fn main() Int{
   if true {
   } else {
   }
@@ -178,8 +178,8 @@ def test_build_strict_mode_accepts_wildcard_pattern_in_match(tmp_path: Path):
     out = tmp_path / "strict_wildcard.py"
     src.write_text(
         """
-fn main() -> Int {
-  let x = 2;
+fn main() Int{
+  x = 2;
   match x {
     1 => { return 1; }
     _ => { return 0; }
@@ -197,11 +197,11 @@ def test_build_strict_mode_accepts_try_operator(tmp_path: Path):
     out = tmp_path / "strict_try.py"
     src.write_text(
         """
-fn helper(v: Option<Int>) -> Option<Int> {
-  let x = v?;
+fn helper(v Option<Int>) Option<Int>{
+  x = v!;
   return x;
 }
-fn main() -> Int {
+fn main() Int{
   return helper(3) ?? 0;
 }
 """
@@ -219,16 +219,16 @@ enum Result<T, E> {
   Ok(T),
   Err(E),
 }
-fn helper(v Int) -> Result<Int, Int> {
+fn helper(v Int) Result<Int, Int>{
   if v > 0 { return Result.Ok(v); } else {}
   return Result.Err(1);
 }
-fn wrap(v Int) -> Result<Int, Int> {
-  let x = helper(v)?;
+fn wrap(v Int) Result<Int, Int>{
+  x = helper(v)!;
   return Result.Ok(x);
 }
-fn main() -> Int {
-  let _ = wrap(1);
+fn main() Int{
+  _ = wrap(1);
   return 0;
 }
 """
@@ -244,7 +244,7 @@ fn main() -> Int {
 def test_build_native_executable(tmp_path: Path):
     src = tmp_path / "main.astra"
     out = tmp_path / "main.exe"
-    src.write_text("fn main() -> Int { return 7; }")
+    src.write_text("fn main() Int{ return 7; }")
     st = build(str(src), str(out), "native")
     assert st in {"built", "cached"}
     assert out.exists()
@@ -262,9 +262,9 @@ def test_build_native_runtime_builtins_link_and_run(tmp_path: Path):
     out = tmp_path / "main.exe"
     src.write_text(
         """
-fn main() -> Int {
+fn main() Int{
   print("ok");
-  let p = alloc(16);
+  p = alloc(16);
   free(p);
   return 0;
 }
@@ -286,7 +286,7 @@ def test_build_native_runtime_panic_reports_message(tmp_path: Path):
     out = tmp_path / "panic.exe"
     src.write_text(
         """
-fn main() -> Int {
+fn main() Int{
   panic("boom");
   return 0;
 }
@@ -309,13 +309,13 @@ def test_build_native_supports_async_struct_and_defer_loop(tmp_path: Path):
     src.write_text(
         """
 struct Pair { a Int, b Int }
-async fn calc() -> Int {
-  let mut p = Pair(2, 3);
+async fn calc() Int{
+  mut p = Pair(2, 3);
   p.a += 4;
   return p.a + p.b;
 }
-fn main() -> Int {
-  let mut i = 0;
+fn main() Int{
+  mut i = 0;
   while i < 2 {
     defer print("bye");
     i += 1;
@@ -340,8 +340,8 @@ def test_build_native_freestanding_runtime_free_program_links_without_runtime(tm
     out = tmp_path / "k.exe"
     src.write_text(
         """
-fn _start() -> Int {
-  let x = 40 + 2;
+fn _start() Int{
+  x = 40 + 2;
   return x;
 }
 """
@@ -357,7 +357,7 @@ def test_build_freestanding_rejects_runtime_builtins(tmp_path: Path):
     out = tmp_path / "bad.ll"
     src.write_text(
         """
-fn _start() -> Int {
+fn _start() Int{
   print("x");
   return 0;
 }
@@ -370,7 +370,7 @@ fn _start() -> Int {
 def test_build_native_freestanding_requires_start_symbol(tmp_path: Path):
     src = tmp_path / "bad_start.astra"
     out = tmp_path / "bad_start.exe"
-    src.write_text("fn kernel() -> Int { return 0; }")
+    src.write_text("fn kernel() Int{ return 0; }")
     with pytest.raises(SemanticError, match=r"missing _start\(\)"):
         build(str(src), str(out), "native", freestanding=True)
 
@@ -378,7 +378,7 @@ def test_build_native_freestanding_requires_start_symbol(tmp_path: Path):
 def test_build_exe_requires_main_for_hosted_targets(tmp_path: Path):
     src = tmp_path / "mod.astra"
     out = tmp_path / "mod.py"
-    src.write_text("fn helper() -> Int { return 1; }")
+    src.write_text("fn helper() Int{ return 1; }")
     with pytest.raises(SemanticError, match=r"missing main\(\)"):
         build(str(src), str(out), "py", kind="exe")
 
@@ -386,7 +386,7 @@ def test_build_exe_requires_main_for_hosted_targets(tmp_path: Path):
 def test_build_kind_lib_allows_missing_main_and_skips_python_entrypoint(tmp_path: Path):
     src = tmp_path / "lib.astra"
     out = tmp_path / "lib.py"
-    src.write_text("fn helper() -> Int { return 1; }")
+    src.write_text("fn helper() Int{ return 1; }")
     st = build(str(src), str(out), "py", kind="lib")
     assert st in {"built", "cached"}
     text = out.read_text()
@@ -397,7 +397,7 @@ def test_build_kind_lib_allows_missing_main_and_skips_python_entrypoint(tmp_path
 def test_build_kind_lib_freestanding_allows_missing_start(tmp_path: Path):
     src = tmp_path / "lib_fs.astra"
     out = tmp_path / "lib_fs.ll"
-    src.write_text("fn helper() -> Int { return 1; }")
+    src.write_text("fn helper() Int{ return 1; }")
     st = build(str(src), str(out), "llvm", kind="lib", freestanding=True)
     assert st in {"built", "cached"}
     assert out.exists()
@@ -408,8 +408,8 @@ def test_build_freestanding_rejects_external_host_symbols(tmp_path: Path):
     out = tmp_path / "host_dep.ll"
     src.write_text(
         """
-extern c fn host() -> Int;
-fn _start() -> Int {
+extern c fn host() Int;
+fn _start() Int{
   return host();
 }
 """
@@ -423,11 +423,11 @@ def test_build_freestanding_supports_vec_builtins_without_runtime_symbols(tmp_pa
     out = tmp_path / "vec_fs.ll"
     src.write_text(
         """
-fn _start() -> Int {
-  let mut v: Vec<Int> = vec_new() as Vec<Int>;
+fn _start() Int{
+  mut v: Vec<Int> = vec_new() as Vec<Int>;
   drop vec_push(v, 40);
   drop vec_push(v, 2);
-  let got: Option<Int> = vec_get(v, 1);
+  got: Option<Int> = vec_get(v, 1);
   drop vec_set(v, 0, 1);
   return vec_len(v) + (got ?? 0);
 }
@@ -446,9 +446,9 @@ def test_build_freestanding_supports_array_literals_and_struct_constructors(tmp_
     src.write_text(
         """
 struct Pair { a Int, b Int }
-fn _start() -> Int {
-  let p = Pair(2, 3);
-  let xs = vec_from([7, 11, 13]);
+fn _start() Int{
+  p = Pair(2, 3);
+  xs = vec_from([7, 11, 13]);
   return p.a + p.b + (vec_get(xs, 1) ?? 0);
 }
 """
@@ -469,7 +469,7 @@ def test_build_native_supports_non_runtime_builtins(tmp_path: Path):
     out = tmp_path / "builtins.exe"
     src.write_text(
         """
-fn main() -> Int {
+fn main() Int{
   drop read_file("missing.txt");
   drop cwd();
   drop now_unix();
@@ -494,9 +494,9 @@ def test_build_native_supports_string_concatenation(tmp_path: Path):
     out = tmp_path / "concat.exe"
     src.write_text(
         """
-fn main() -> Int {
-  let s = "a" + "b";
-  let t = s + "c";
+fn main() Int{
+  s = "a" + "b";
+  t = s + "c";
   return len(t);
 }
 """
@@ -516,18 +516,18 @@ def test_build_native_json_roundtrip_keeps_map_and_list_shapes(tmp_path: Path):
     out = tmp_path / "json_roundtrip.exe"
     src.write_text(
         """
-fn main() -> Int {
-  let m = map_new();
+fn main() Int{
+  m = map_new();
   map_set(m, "k", 7);
-  let xs = list_new();
+  xs = list_new();
   list_push(xs, 1);
   list_push(xs, 2);
   map_set(m, "xs", xs);
-  let js = to_json(m);
-  let rt = from_json(js);
-  let k = map_get(rt, "k") as Int;
-  let ys = map_get(rt, "xs");
-  let y1 = list_get(ys, 1) as Int;
+  js = to_json(m);
+  rt = from_json(js);
+  k = map_get(rt, "k") as Int;
+  ys = map_get(rt, "xs");
+  y1 = list_get(ys, 1) as Int;
   return k + y1;
 }
 """
@@ -547,10 +547,10 @@ def test_build_native_supports_array_index_get_and_coalesce(tmp_path: Path):
     out = tmp_path / "array_ops.exe"
     src.write_text(
         """
-fn main() -> Int {
-  let a = [10, 20, 30][1];
-  let b: Option<Int> = [1, 2, 3].get(2);
-  let c: Option<Int> = [1, 2].get(9);
+fn main() Int{
+  a = [10, 20, 30][1];
+  b: Option<Int> = [1, 2, 3].get(2);
+  c: Option<Int> = [1, 2].get(9);
   return a + (b ?? 0) + (c ?? 7);
 }
 """
@@ -571,8 +571,8 @@ def test_build_native_supports_layout_queries(tmp_path: Path):
     src.write_text(
         """
 struct P { a Int, b u8 }
-fn main() -> Int {
-  let p = P(1, 2 as u8);
+fn main() Int{
+  p = P(1, 2 as u8);
   return sizeof(P) + alignof(P) + size_of(p.a) + align_of(p.b);
 }
 """
@@ -592,9 +592,9 @@ def test_build_native_shift_out_of_range_traps(tmp_path: Path):
     out = tmp_path / "shift_trap.exe"
     src.write_text(
         """
-fn main() -> Int {
-  let x: u8 = 1 as u8;
-  let s: u8 = 8 as u8;
+fn main() Int{
+  x: u8 = 1 as u8;
+  s: u8 = 8 as u8;
   return (x << s) as Int;
 }
 """
@@ -615,8 +615,8 @@ def test_build_native_supports_packed_struct_bitfield_ops(tmp_path: Path):
     src.write_text(
         """
 @packed struct Header { a: u4, b: u3, c: u1, d: u8 }
-fn main() -> Int {
-  let mut h = Header(3u4, 5u3, 1u1, 9u8);
+fn main() Int{
+  mut h = Header(3u4, 5u3, 1u1, 9u8);
   h.a += 1u4;
   h.d = 7u8;
   return (h.a as Int) + (h.b as Int) + (h.c as Int) + (h.d as Int);
@@ -643,8 +643,8 @@ def test_build_native_supports_packed_struct_fields_above_64_bits(tmp_path: Path
   big: u128,
   tail: u1,
 }
-fn main() -> Int {
-  let mut w = Wide(1u7, 5u128, 1u1);
+fn main() Int{
+  mut w = Wide(1u7, 5u128, 1u1);
   w.big += 2u128;
   w.big <<= 1u128;
   return (w.pad as Int) + (w.big as Int) + (w.tail as Int);
@@ -667,8 +667,8 @@ def test_build_llvm_supports_packed_struct_fields_above_64_bits(tmp_path: Path):
   big: u128,
   tail: u1,
 }
-fn main() -> Int {
-  let mut w = Wide(1u7, 5u128, 1u1);
+fn main() Int{
+  mut w = Wide(1u7, 5u128, 1u1);
   w.big += 2u128;
   w.big <<= 1u128;
   return (w.pad as Int) + (w.big as Int) + (w.tail as Int);
@@ -692,51 +692,51 @@ def test_build_native_supports_extended_runtime_builtins(tmp_path: Path):
     tmpf = tmp_path / "io.txt"
     src.write_text(
         f"""
-fn worker(x: Int) -> Int {{ return x + 1; }}
-fn main() -> Int {{
+fn worker(x Int) Int{{ return x + 1; }}
+fn main() Int{{
   drop args();
   drop arg(0);
-  let t = spawn(worker, 1);
-  let tj = join(t) as Int;
+  t = spawn(worker, 1);
+  tj = join(t) as Int;
 
-  let xs = list_new();
+  xs = list_new();
   drop list_push(xs, 11);
   drop list_push(xs, 22);
-  let a = list_len(xs);
-  let b = list_get(xs, 1) as Int;
+  a = list_len(xs);
+  b = list_get(xs, 1) as Int;
   drop list_set(xs, 0, 5);
 
-  let m = map_new();
+  m = map_new();
   drop map_set(m, 7, 9);
-  let mh = map_has(m, 7);
-  let mg = map_get(m, 7) as Int;
-  let mut bh = 0;
+  mh = map_has(m, 7);
+  mg = map_get(m, 7) as Int;
+  mut bh = 0;
   if mh {{
     bh = 1;
   }}
 
-  let js = to_json(123);
-  let n = from_json(js) as Int;
+  js = to_json(123);
+  n = from_json(js) as Int;
   drop sha256(\"abc\");
   drop hmac_sha256(\"k\", \"v\");
   drop env_get(\"HOME\");
   drop cwd();
 
-  let wf = write_file(\"{tmpf}\", \"x\");
-  let rf = len(read_file(\"{tmpf}\"));
-  let ex1 = file_exists(\"{tmpf}\") as Int;
+  wf = write_file(\"{tmpf}\", \"x\");
+  rf = len(read_file(\"{tmpf}\"));
+  ex1 = file_exists(\"{tmpf}\") as Int;
   drop file_remove(\"{tmpf}\");
-  let ex2 = file_exists(\"{tmpf}\") as Int;
+  ex2 = file_exists(\"{tmpf}\") as Int;
 
-  let tc = tcp_connect(\"127.0.0.1:1\");
-  let ts = tcp_send(tc, \"x\");
-  let tr = len(tcp_recv(tc, 8));
-  let tcl = tcp_close(tc);
+  tc = tcp_connect(\"127.0.0.1:1\");
+  ts = tcp_send(tc, \"x\");
+  tr = len(tcp_recv(tc, 8));
+  tcl = tcp_close(tc);
 
-  let pr = proc_run(\"true\");
+  pr = proc_run(\"true\");
   drop now_unix();
   drop monotonic_ms();
-  let sl = sleep_ms(1);
+  sl = sleep_ms(1);
 
   return a + b + bh + mg + n + wf + rf + ex1 + ex2 + tj + tc + ts + tr + tcl + pr + sl;
 }}
@@ -781,14 +781,14 @@ def test_build_native_tcp_runtime_roundtrip(tmp_path: Path):
     out = tmp_path / "tcp_roundtrip.exe"
     src.write_text(
         f"""
-fn main() -> Int {{
-  let conn = tcp_connect("127.0.0.1:{port}");
+fn main() Int{{
+  conn = tcp_connect("127.0.0.1:{port}");
   if conn < 0 {{
     return 100;
   }}
-  let sent = tcp_send(conn, "ping");
-  let recv_len = len(tcp_recv(conn, 4));
-  let closed = tcp_close(conn);
+  sent = tcp_send(conn, "ping");
+  recv_len = len(tcp_recv(conn, 4));
+  closed = tcp_close(conn);
   return sent + recv_len + closed;
 }}
 """
@@ -809,8 +809,8 @@ def test_build_native_supports_float_mod(tmp_path: Path):
     out = tmp_path / "fmod.exe"
     src.write_text(
         """
-fn main() -> Int {
-  let mut x = 7.5;
+fn main() Int{
+  mut x = 7.5;
   x %= 2.0;
   if x > 1.4 && x < 1.6 {
     return 3;
@@ -834,12 +834,12 @@ def test_build_native_supports_i128_hard_ops_with_runtime_helpers(tmp_path: Path
     out = tmp_path / "i128.exe"
     src.write_text(
         """
-fn main() -> Int {
-  let a: i128 = 20 as i128;
-  let b: i128 = 3 as i128;
-  let m: i128 = a * b;
-  let d: i128 = a / b;
-  let r: i128 = a % b;
+fn main() Int{
+  a: i128 = 20 as i128;
+  b: i128 = 3 as i128;
+  m: i128 = a * b;
+  d: i128 = a / b;
+  r: i128 = a % b;
   return (m as Int) + (d as Int) + (r as Int);
 }
 """
@@ -861,7 +861,7 @@ def test_resolve_overflow_mode_profile_defaults():
 def test_build_cache_key_includes_profile_and_overflow(tmp_path: Path):
     src = tmp_path / "main.astra"
     out = tmp_path / "main.py"
-    src.write_text("fn main() -> Int { return 0; }")
+    src.write_text("fn main() Int{ return 0; }")
     st1 = build(str(src), str(out), "py", profile="debug", overflow="debug")
     st2 = build(str(src), str(out), "py", profile="debug", overflow="debug")
     st3 = build(str(src), str(out), "py", profile="release", overflow="debug")

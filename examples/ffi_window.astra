@@ -1,7 +1,7 @@
 import "sdl2";
 
-fn main() -> i32 {
-    let rc = SDL_Init(0x00000020u32);
+fn main() i32{
+    rc = SDL_Init(0x00000020u32);
     if rc != 0i32 {
         return 1i32;
     }

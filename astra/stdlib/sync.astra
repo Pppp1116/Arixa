@@ -5,15 +5,15 @@
 /// Opaque lock state shape:
 /// - `locked` -> Bool
 /// - `owner` -> Int task id (best-effort)
-fn mutex_new() -> Any {
-    let m = __map_new();
+fn mutex_new() Any{
+    m = __map_new();
     __map_set(m, "locked", false);
     __map_set(m, "owner", -1);
     return m;
 }
 
 /// Acquire lock with a simple cooperative spin loop.
-fn mutex_lock(m Any, owner_tid Int) -> Int {
+fn mutex_lock(m Any, owner_tid Int) Int{
     while (__map_get(m, "locked") as Bool) {
         __sleep_ms(1);
     }
@@ -23,8 +23,8 @@ fn mutex_lock(m Any, owner_tid Int) -> Int {
 }
 
 /// Release lock.
-fn mutex_unlock(m Any, owner_tid Int) -> Int {
-    let owner = __map_get(m, "owner") as Int;
+fn mutex_unlock(m Any, owner_tid Int) Int{
+    owner = __map_get(m, "owner") as Int;
     if owner != owner_tid {
         return 1;
     }

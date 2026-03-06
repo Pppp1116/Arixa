@@ -44,15 +44,15 @@ def test_std_net_runtime_roundtrip_parity(tmp_path) -> None:
     src = f"""
 import "net";
 
-fn main() -> Int {{
-  let conn = tcp_connect("127.0.0.1:{port}");
+fn main() Int{{
+  conn = tcp_connect("127.0.0.1:{port}");
   if conn < 0 {{
     return 101;
   }}
   else {{}}
-  let sent = tcp_send(conn, "ping");
-  let recv_len = len(tcp_recv(conn, 4));
-  let closed = tcp_close(conn);
+  sent = tcp_send(conn, "ping");
+  recv_len = len(tcp_recv(conn, 4));
+  closed = tcp_close(conn);
   if sent == 4 && recv_len == 4 && closed == 0 {{
     return 0;
   }}
@@ -75,11 +75,11 @@ def test_std_net_runtime_error_path_parity(tmp_path) -> None:
     src = """
 import "net";
 
-fn main() -> Int {
-  let conn = tcp_connect("bad-address");
-  let sent = tcp_send(99999, "x");
-  let recv_len = len(tcp_recv(99999, 8));
-  let closed = tcp_close(99999);
+fn main() Int{
+  conn = tcp_connect("bad-address");
+  sent = tcp_send(99999, "x");
+  recv_len = len(tcp_recv(99999, 8));
+  closed = tcp_close(99999);
   if conn == -1 && sent == -1 && recv_len == 0 && closed == 0 {
     return 0;
   }

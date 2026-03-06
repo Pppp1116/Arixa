@@ -2,8 +2,8 @@ from astra.parser import parse
 from astra.semantic import analyze
 
 SRC = '''
-fn main() -> Int {
-  let x = 1 + 2;
+fn main() Int{
+  x = 1 + 2;
   print(x);
   return 0;
 }

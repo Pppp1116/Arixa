@@ -8,7 +8,7 @@ from astra.parser import parse
 
 
 def test_parse_comptime_block():
-    prog = parse("fn main() -> Int { comptime { let x = 1; } return 0; }")
+    prog = parse("fn main() Int{ comptime { x = 1; } return 0; }")
     fn = prog.items[0]
     assert fn.body and fn.body[0].__class__.__name__ == "ComptimeStmt"
 
@@ -18,9 +18,9 @@ def test_comptime_evaluates_function_calls_and_loops(tmp_path: Path):
     out = tmp_path / "c.py"
     src.write_text(
         """
-fn gen(n Int) -> Int {
-  let mut i = 0;
-  let mut acc = 0;
+fn gen(n Int) Int{
+  mut i = 0;
+  mut acc = 0;
   while i < n {
     acc += i;
     i += 1;
@@ -28,9 +28,9 @@ fn gen(n Int) -> Int {
   return acc;
 }
 
-fn main() -> Int {
+fn main() Int{
   comptime {
-    let total = gen(10);
+    total = gen(10);
   }
   return total;
 }
@@ -45,11 +45,11 @@ fn main() -> Int {
 
 def test_comptime_alloc_free(tmp_path: Path):
     src = """
-fn main() -> Int {
+fn main() Int{
   comptime {
-    let p = alloc(32);
+    p = alloc(32);
     free(p);
-    let x = 7;
+    x = 7;
   }
   return x;
 }
@@ -64,7 +64,7 @@ def test_comptime_no_io_allowed(tmp_path: Path):
     out = tmp_path / "bad.py"
     src.write_text(
         """
-fn main() -> Int {
+fn main() Int{
   comptime {
     print("no");
   }
@@ -84,10 +84,10 @@ def test_comptime_match_is_evaluated(tmp_path: Path):
     out = tmp_path / "match.py"
     src.write_text(
         """
-fn main() -> Int {
+fn main() Int{
   comptime {
-    let x = 2;
-    let mut out = 0;
+    x = 2;
+    mut out = 0;
     match x {
       1 => { out = 11; }
       2 => { out = 22; }
@@ -107,11 +107,11 @@ def test_comptime_supports_indirect_function_calls(tmp_path: Path):
     out = tmp_path / "indirect.py"
     src.write_text(
         """
-fn add(a Int, b Int) -> Int { return a + b; }
-fn main() -> Int {
+fn add(a Int, b Int) Int{ return a + b; }
+fn main() Int{
   comptime {
-    let f = add;
-    let z = f(5, 7);
+    f = add;
+    z = f(5, 7);
   }
   return z;
 }
@@ -129,9 +129,9 @@ def test_comptime_skips_non_escaping_runtime_materialization(tmp_path: Path):
     out = tmp_path / "skip_tmp.py"
     src.write_text(
         """
-fn main() -> Int {
+fn main() Int{
   comptime {
-    let internal = 7;
+    internal = 7;
   }
   return 0;
 }

@@ -19,60 +19,48 @@ enum State {
   Busy(Int),
 }
 
-enum Option<T> {
-  None,
-  Some(T),
-}
-
-enum Result<T, E> {
-  Ok(T),
-  Err(E),
-}
-
 type Bytes = Vec<u8>;
 
-unsafe extern "libc.so.6" fn c_abs(x: Int) -> Int;
+unsafe extern "libc.so.6" fn c_abs(x Int) Int;
 
-impl fn id<T>(x: T) -> T {
+fn id<T>(x T) T{
     return x;
 }
-pub async fn worker(n: Int) -> Int {
+pub async fn worker(n Int) Int{
     return n;
 }
-fn main() -> Int {
+fn main() Int{
     return 0;
 }
 ```
 
 Notes:
-- Canonical typed form is `name: Type`.
-- Params/fields still accept legacy `name Type`.
+- Parameter typed form is `name Type` (no `:`).
+- Field/local typed form is `name: Type`.
 - `@packed` is currently supported only on `struct` declarations.
 - `Vec<T>` is a built-in owned growable buffer type used by `Bytes = Vec<u8>`.
 - Legacy module separator `::` is still accepted (`import stdlib::io as io;`).
-- `fn main()` may omit an explicit return type; it defaults to `Int`:
-  - `fn main() { return 0; }` is equivalent to `fn main() -> Int { return 0; }`
-  - this omission is only valid for top-level `main` with zero params (not `impl fn main`)
+- Any function may omit return type; omitted means `Void`.
 
 ## 2. Functions and types
 
 ```astra
-fn add(a: Int, b: Int) -> Int {
+fn add(a Int, b Int) Int{
     return a + b;
 }
-fn wrap(f: fn(Int) -> Int, v: Int) -> Int {
+fn wrap(f fn(Int) -> Int, v Int) Int{
     return f(v);
 }
-fn takes_ref(x: &Int, y: &mut Int) -> Int {
+fn takes_ref(x &Int, y &mut Int) Int{
     return 0;
 }
-fn vec_sum(xs: &[Int]) -> Int {
+fn vec_sum(xs &[Int]) Int{
     return 0;
 }
-fn vec_sum_mut(xs: &mut [Int]) -> Int {
+fn vec_sum_mut(xs &mut [Int]) Int{
     return 0;
 }
-fn text_len(s: &str) -> Int {
+fn text_len(s &str) Int{
     return len(s);
 }
 ```
@@ -81,24 +69,24 @@ Type forms:
 - Primitive scalars/control: `Int`, `Float`, `Bool`, `Any`, `Void`, `Never`
 - Integer families: `iN`/`uN` where `N` is `1..128`, plus `isize`/`usize` aliases
 - Function types: `fn(T1, T2) -> R`
-- Generic types: `Option<User>`, `Result<Int, String>`, `Vec<u8>`
+- Generic/union types: `Vec<u8>`, `User | NotFoundError`, `String?`
 - Borrow types: `&T`, `&mut T`
 - Slice type: `[T]` (unsized; legal as `&[T]`, `&mut [T]`, or behind pointers/DST positions)
 - Plain by-value slice parameters/locals like `[Int]` are rejected in safe surface syntax.
 - Owned bytes alias: `Bytes` (canonical alias of `Vec<u8>`)
 - Core stdlib owned types: `String`, `Vec<T>` (`Bytes = Vec<u8>`)
 - Builtin unsized text type: `str` (legal as `&str` or behind pointers/DST positions)
-- Sugar: `T?` desugars to `Option<T>`
+- Sugar: `T?` desugars to `T | none`
 - Integer literal suffixes are supported (for example `15u4`, `3i7`)
 - Signed `i1` is rejected with a diagnostic hint recommending `u1`
 
 ## 3. Statements
 
 ```astra
-fn main() -> Int {
-  fixed base: i16 = 12;
-  let mut acc = 0;
-  let note: &str = "ok";
+fn main() Int{
+  base: i16 = 12;
+  mut acc = 0;
+  note: &str = "ok";
 
   if acc == 0 {
     acc = base;
@@ -130,28 +118,30 @@ fn main() -> Int {
 ```
 
 Binding rules:
-- `fixed` is immutable.
-- `let mut` is mutable.
+- `name = ...` creates an immutable binding.
+- `mut name = ...` creates a mutable binding.
+- `set name = ...` reassigns an existing mutable binding.
 - Assignment operators: `=`, `+=`, `-=`, `*=`, `/=`, `%=`.
 - Bare expression statements must have type `Void` or `Never`.
 - `drop expr;` consumes `expr` and runs its destructor at that point.
-- Use `let _ = expr;` (or `_ = expr;`) to explicitly ignore/discard a produced value.
-- `return;` is valid only in `-> Void` functions.
+- Use `_ = expr;` to explicitly ignore/discard a produced value.
+- `return;` is valid only in `Void` functions.
+- `return` is for early exit; trailing expression returns implicitly in non-`Void` functions.
 
 ## 4. Expressions
 
 ```astra
-let a = 1 + 2 * 3;
-let b = -a;
-let c = !false;
-let d = arr[0].field;
-let e = call(a, b, c);
-let f = await e;
-let maybe: Option<Int> = none;
-let g = maybe ?? 42;
-let h: Option<Int> = none;
-let bs: Bytes = get_payload();
-let first = bs[0];
+a = 1 + 2 * 3;
+b = -a;
+c = !false;
+d = arr[0].field;
+e = call(a, b, c);
+f = await e;
+maybe: Int | none = none;
+g = maybe ?? 42;
+h: Int? = none;
+bs: Bytes = get_payload();
+first = bs[0];
 ```
 
 Supported operators:
@@ -161,15 +151,13 @@ Supported operators:
 - Logical: `&&`, `||`
 - Null-coalescing: `??`
 
-Option rules:
+Nullable/union rules:
 - `none` does not have a standalone type.
-- `none` is only valid where `Option<T>` is expected.
-- `??` requires left operand `Option<T>` and right operand `T`.
+- `none` is only valid where a nullable union is expected.
+- `??` requires left operand `T | none` and right operand `T`.
 - `??` is short-circuiting; rhs is evaluated only when lhs is `none`.
-- `a?` supports:
-  - `Option<T>` only in functions returning `Option<_>`; it propagates `none`.
-  - `Result<T, E>` only in functions returning `Result<_, E>`; it propagates `Err(E)`.
-- Use `Option<T>` for presence/absence; use `Result<T, E>` for recoverable failures with error detail.
+- `a!` propagates non-success union branches to the caller.
+- Use unions (`A | B | ...`) for absence/error modeling.
 
 Integer utility rules:
 - Type queries: `bitSizeOf(T)`, `maxVal(T)`, `minVal(T)`.
@@ -183,12 +171,12 @@ Borrow checker rules:
 - Mutable borrows are exclusive (no other shared or mutable borrow of the same binding).
 - A binding cannot be mutated while any shared borrow exists.
 - A binding cannot be used directly while a mutable borrow exists (use the reference instead).
-- Mutable borrows require a mutable source binding (`let mut`), not `fixed`.
+- Mutable borrows require a mutable source binding (`mut name = ...`).
 - References carry lifetimes; lifetimes are currently elided in surface syntax.
 - Elision baseline: input reference parameters receive distinct inferred lifetimes unless constrained by return type.
 - Returning a reference requires that the returned lifetime be tied to at least one input reference; otherwise it is rejected.
-- Example (ok): `fn first(xs: &[Int]) -> &Int`
-- Example (error): `fn bad() -> &Int`
+- Example (ok): `fn first(xs &[Int]) &Int`
+- Example (error): `fn bad() &Int`
 
 Text/buffer rules:
 - `String` is an owned stdlib UTF-8 text type (not a primitive scalar).
@@ -200,7 +188,7 @@ Text/buffer rules:
 - `[T]` is an unsized slice DST.
 - `Bytes` aliases `Vec<u8>`.
 - Indexing (`v[i]`, `s[i]`) is bounds-checked and traps/panics on out-of-bounds in safe code.
-- `get(i)`-style APIs return `Option<T>` (`T?`) for non-trapping access.
+- `get(i)`-style APIs return `T | none` (`T?`) for non-trapping access.
 - Direct indexing of `String`/`str` is rejected; index bytes/slices (`Vec<u8>`, `Bytes`, `[u8]`) instead.
 
 Move/copy rules:
@@ -215,14 +203,14 @@ Never rule:
 ## 5. Compile-time blocks
 
 ```astra
-fn fib(n: Int) -> Int {
+fn fib(n Int) Int{
   if n <= 1 { return n; }
   return fib(n - 1) + fib(n - 2);
 }
 
-fn main() -> Int {
+fn main() Int{
   comptime {
-    let k = fib(8);
+    k = fib(8);
   }
   return 0;
 }
@@ -265,11 +253,11 @@ Current x86-64 backend contract (System V ABI oriented):
 ## 7. EBNF snapshot
 
 ```ebnf
-program      = { import_decl | type_decl | struct_decl | enum_decl | extern_fn | fn_decl | impl_fn } ;
-fn_decl      = ["pub"] ["async"] "fn" ident ["<" ident {"," ident} ">"] "(" [param {"," param}] [","] ")" "->" type block ;
-impl_fn      = ["pub"] "impl" ["async"] "fn" ident ["<" ident {"," ident} ">"] "(" [param {"," param}] [","] ")" "->" type block ;
-extern_fn    = ["unsafe"] "extern" string "fn" ident "(" [param {"," param}] ")" "->" type ";" ;
-param        = ident ":" type ;
+program      = { import_decl | type_decl | struct_decl | enum_decl | extern_fn | fn_decl } ;
+fn_decl      = ["pub"] ["async"] ["unsafe"] "fn" ident ["<" ident {"," ident} ">"] "(" [param {"," param}] [","] ")" [type] ["where" where_bound {"," where_bound}] block ;
+extern_fn    = ["unsafe"] "extern" string "fn" ident "(" [param {"," param}] ")" [type] ";" ;
+param        = ["mut"] ident type ;
+where_bound  = ident ":" ident {"+" ident} ;
 type         = postfix_type ;
 postfix_type = primary_type ["?"] ;
 primary_type = ident ["<" type {"," type} ">"]
@@ -277,9 +265,9 @@ primary_type = ident ["<" type {"," type} ">"]
              | "[" type "]"
              | "fn" "(" [type {"," type}] ")" "->" type
              | "(" type ")" ;
-stmt         = let_stmt | fixed_stmt | comptime_stmt | defer_stmt | drop_stmt | return_stmt | if_stmt | while_stmt | for_stmt | match_stmt | assign_stmt | expr ";" ;
-let_stmt     = "let" ["mut"] ident [":" type] "=" expr ";" ;
-fixed_stmt   = "fixed" ident [":" type] "=" expr ";" ;
+stmt         = bind_stmt | set_stmt | comptime_stmt | defer_stmt | drop_stmt | return_stmt | if_stmt | while_stmt | for_stmt | match_stmt | assign_stmt | expr ";" ;
+bind_stmt    = ["mut"] ident [":" type] "=" expr ";" ;
+set_stmt     = "set" expr ("=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=") expr ";" ;
 drop_stmt    = "drop" expr ";" ;
 for_stmt     = "for" ident "in" for_iterable block ;
 for_iterable = range_iterable | expr ;
@@ -298,7 +286,7 @@ add_expr     = mul_expr { ("+" | "-") mul_expr } ;
 mul_expr     = unary_expr { ("*" | "/" | "%") unary_expr } ;
 unary_expr   = ["await"] ( ("-" | "!" | "~" | "*" | "&" ["mut"]) unary_expr | cast_expr ) ;
 cast_expr    = postfix_expr { "as" type } ;
-postfix_expr = atom { "." ident | "[" expr "]" | "(" [expr {"," expr}] ")" | "?" } ;
+postfix_expr = atom { "." ident | "[" expr "]" | "(" [expr {"," expr}] ")" | "!" } ;
 atom         = int | float | string | typed_int | "none" | ident | "(" expr ")" | layout_query | type_query ;
 typed_int    = int int_type_tok ;
 int_type_tok = ("i" | "u") nonzero_digit {digit} ;

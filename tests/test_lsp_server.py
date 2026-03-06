@@ -119,7 +119,7 @@ def test_lsp_initialize_open_change_and_features(tmp_path: Path):
         assert caps["referencesProvider"] is True
         assert caps["renameProvider"] is True
 
-        src = "fn add(x Int) -> Int { return x; }\nfn main() -> Int { let y = add(1); return y; }\n"
+        src = "fn add(x Int) Int{ return x; }\nfn main() Int{ y = add(1); return y; }\n"
         uri = (tmp_path / "a.astra").as_uri()
         proc.send(
             {
@@ -139,7 +139,7 @@ def test_lsp_initialize_open_change_and_features(tmp_path: Path):
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "textDocument/definition",
-                "params": {"textDocument": {"uri": uri}, "position": {"line": 1, "character": 28}},
+                "params": {"textDocument": {"uri": uri}, "position": {"line": 1, "character": 20}},
             }
         )
         d = proc.recv(1.5)
@@ -167,7 +167,7 @@ def test_lsp_initialize_open_change_and_features(tmp_path: Path):
                 "method": "textDocument/rename",
                 "params": {
                     "textDocument": {"uri": uri},
-                    "position": {"line": 1, "character": 42},
+                    "position": {"line": 1, "character": 20},
                     "newName": "sum_it",
                 },
             }
@@ -186,8 +186,8 @@ def test_lsp_initialize_open_change_and_features(tmp_path: Path):
                     "contentChanges": [
                         {
                                 "range": {
-                                    "start": {"line": 1, "character": 31},
-                                    "end": {"line": 1, "character": 32},
+                                    "start": {"line": 1, "character": 23},
+                                    "end": {"line": 1, "character": 24},
                                 },
                                 "text": '"x"',
                         }
@@ -221,7 +221,7 @@ def test_lsp_cancel_request_drops_response(tmp_path: Path):
             {
                 "jsonrpc": "2.0",
                 "method": "textDocument/didOpen",
-                "params": {"textDocument": {"uri": uri, "languageId": "astra", "version": 1, "text": "fn main() -> Int { return 0; }\n"}},
+                "params": {"textDocument": {"uri": uri, "languageId": "astra", "version": 1, "text": "fn main() Int{ return 0; }\n"}},
             }
         )
         proc.recv(1.5)

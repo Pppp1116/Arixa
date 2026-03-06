@@ -97,8 +97,8 @@ _EXPECTS_ARGS_RE = re.compile(r"\bexpects (\d+) args, got (\d+)\b")
 _EXPECTS_ARGUMENT_RE = re.compile(r"\bexpects (\d+) arguments?\b")
 _EXPECTS_AT_LEAST_RE = re.compile(r"\bexpects at least (.+)$")
 _FREESTANDING_BUILTIN_RE = re.compile(r"\bfreestanding mode forbids builtin ([A-Za-z_][A-Za-z0-9_]*)\b")
-_NO_MATCHING_IMPL_RE = re.compile(r"^no matching impl for ([A-Za-z_][A-Za-z0-9_]*)\((.*)\)$")
-_ENTRY_SIG_RE = re.compile(r"^(main|_start)\(\) (must not take parameters|must return Int|cannot be declared with impl)$")
+_NO_MATCHING_IMPL_RE = re.compile(r"^no matching overload for ([A-Za-z_][A-Za-z0-9_]*)\((.*)\)$")
+_ENTRY_SIG_RE = re.compile(r"^(main|_start)\(\) (must not take parameters|must return Int)$")
 _UNKNOWN_FIELD_RE = re.compile(r"\bunknown field ([A-Za-z_][A-Za-z0-9_]*)\b")
 _MISSING_FIELD_RE = re.compile(r"\bmissing field ([A-Za-z_][A-Za-z0-9_]*)\b")
 _EXPECTED_GOT_RE = re.compile(r"^expected (.+), got (.+)$")
@@ -448,7 +448,7 @@ def _code_for(phase: str, message: str) -> str:
             return "E0203"
         if "missing field" in m:
             return "E0204"
-        if "cannot assign to fixed binding" in m:
+        if "cannot assign to immutable binding" in m:
             return "E0104"
         if "assignment to undefined name" in m:
             return "E0200"
@@ -560,8 +560,8 @@ def _friendly_message_for(message: str, code: str) -> str:
     if message.startswith("continue used outside loop"):
         return "`continue` can only be used inside a loop"
 
-    if message.startswith("cannot assign to fixed binding "):
-        name = message.removeprefix("cannot assign to fixed binding ").strip()
+    if message.startswith("cannot assign to immutable binding "):
+        name = message.removeprefix("cannot assign to immutable binding ").strip()
         return f"cannot assign to immutable binding `{name}`"
 
     entry_sig = _ENTRY_SIG_RE.match(message)
@@ -571,7 +571,7 @@ def _friendly_message_for(message: str, code: str) -> str:
             return f"`{name}` must not take parameters"
         if requirement == "must return Int":
             return "`main` must return `Int`"
-        return f"`{name}` cannot be declared with `impl`"
+        return f"`{name}` has an invalid entrypoint declaration"
 
     field_m = _UNKNOWN_FIELD_RE.search(message)
     if field_m is not None:
@@ -594,8 +594,8 @@ def _notes_for(message: str) -> list[DiagNote]:
         out.append(DiagNote(message=f"context: {context}"))
         out.append(DiagNote(message=f"expected: {expected}"))
         out.append(DiagNote(message=f"found: {got}"))
-    if "cannot assign to fixed binding" in message:
-        out.append(DiagNote(message="in Astra, `fixed` bindings are immutable after initialization"))
+    if "cannot assign to immutable binding" in message:
+        out.append(DiagNote(message="in Astra, bindings are immutable unless declared with `mut`"))
     if "mixed int/float" in message:
         out.append(DiagNote(message="Astra does not perform implicit numeric widening between Int and Float"))
     if "cannot resolve import" in message:
@@ -672,7 +672,7 @@ def _suggestions_for(
         elif requirement == "must not take parameters":
             out.append(DiagSuggestion(message=f"remove all parameters from `{name}`"))
         else:
-            out.append(DiagSuggestion(message=f"remove `impl` from `{name}`; entrypoints must be plain functions"))
+            out.append(DiagSuggestion(message=f"entrypoints must be plain functions"))
 
     if "break used outside loop" in m:
         out.append(DiagSuggestion(message="move `break` inside a `while` or `for` loop"))
@@ -790,7 +790,7 @@ def _borrow_related_name(message: str) -> str | None:
 
 
 def _find_binding_declaration_span(lines: list[str], filename: str, start_line: int, name: str) -> DiagSpan | None:
-    decl_re = re.compile(rf"\b(?:let|fixed)\s+(?:mut\s+)?({re.escape(name)})\b")
+    decl_re = re.compile(rf"\b(?:mut\s+)?({re.escape(name)})\s*(?::[^=;]+)?=")
     for idx in range(min(start_line - 2, len(lines) - 1), -1, -1):
         m = decl_re.search(lines[idx])
         if m is None:
@@ -840,7 +840,7 @@ def _refine_primary_span(message: str, span: DiagSpan, source_text: str | None) 
         if name_span is not None:
             return name_span
 
-    assign_m = re.search(r"cannot assign to fixed binding ([A-Za-z_][A-Za-z0-9_]*)", message)
+    assign_m = re.search(r"cannot assign to immutable binding ([A-Za-z_][A-Za-z0-9_]*)", message)
     if assign_m is not None:
         name_span = _name_span(span, assign_m.group(1), source_text)
         if name_span is not None:

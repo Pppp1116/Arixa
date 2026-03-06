@@ -2,7 +2,7 @@
 
 ## Declarations
 
-- Functions: `fn name(args) -> Type { ... }`
+- Functions: `fn name(args) Type{ ... }`
 - Structs: `struct Name { field Type, ... }`
 - Enums: `enum Name { Variant, Variant(T) }`
 - Type aliases: `type Name = Existing;`
@@ -10,7 +10,7 @@
 
 ## Statements
 
-- `let` / `fixed`
+- `name = expr`, `mut name = expr`, `set name = expr`
 - `if` / `else`
 - `while`
 - `for item in iterable { ... }`

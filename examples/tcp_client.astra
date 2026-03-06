@@ -1,14 +1,14 @@
 import std.net;
 
-fn main() -> Int {
-    let conn = tcp_connect("127.0.0.1:8080");
+fn main() Int{
+    conn = tcp_connect("127.0.0.1:8080");
     if conn < 0 {
         print("connect failed");
         return 1;
     }
     else {}
     drop tcp_send(conn, "ping\\n");
-    let reply = tcp_recv(conn, 256);
+    reply = tcp_recv(conn, 256);
     print(reply);
     drop tcp_close(conn);
     return 0;

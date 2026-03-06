@@ -2,7 +2,7 @@ from astra.check import diagnostics_to_json_list, format_diagnostic, run_check_s
 
 
 def test_check_emits_structured_type_mismatch_diagnostic_with_notes():
-    src = 'fn main() -> Int { return "x"; }'
+    src = 'fn main() Int{ return "x"; }'
     res = run_check_source(src, filename="<mem>")
     assert not res.ok
     assert res.diagnostics
@@ -16,9 +16,9 @@ def test_check_emits_structured_type_mismatch_diagnostic_with_notes():
 
 def test_check_collects_multiple_semantic_errors():
     src = """
-fn a() -> Int { return "x"; }
-fn b() -> Int { return true; }
-fn main() -> Int { return 0; }
+fn a() Int{ return "x"; }
+fn b() Int{ return true; }
+fn main() Int{ return 0; }
 """
     res = run_check_source(src, filename="<mem>", collect_errors=True)
     assert not res.ok
@@ -26,7 +26,7 @@ fn main() -> Int { return 0; }
 
 
 def test_check_reports_lex_error_with_phase_code_and_span():
-    src = 'fn main() -> Int { let s = "unterminated; return 0; }'
+    src = 'fn main() Int{ s = "unterminated; return 0; }'
     res = run_check_source(src, filename="mem://lex.astra")
     assert not res.ok
     first = res.diagnostics[0]
@@ -38,7 +38,7 @@ def test_check_reports_lex_error_with_phase_code_and_span():
 
 
 def test_check_reports_parse_error_with_phase_code_and_span():
-    src = "fn main() -> Int { let x = ; return 0; }"
+    src = "fn main() Int{ x = ; return 0; }"
     res = run_check_source(src, filename="mem://parse.astra")
     assert not res.ok
     first = res.diagnostics[0]
@@ -50,7 +50,7 @@ def test_check_reports_parse_error_with_phase_code_and_span():
 
 
 def test_check_reports_c_style_for_as_parse_error():
-    src = "fn main() -> Int { for let i = 0; i < 3; i += 1 { } return 0; }"
+    src = "fn main() Int{ for i = 0; i < 3; i += 1 { } return 0; }"
     res = run_check_source(src, filename="mem://for.astra")
     assert not res.ok
     first = res.diagnostics[0]
@@ -60,7 +60,7 @@ def test_check_reports_c_style_for_as_parse_error():
 
 
 def test_check_reports_missing_semicolon_with_fixit():
-    src = "fn main() -> Int { let x = 1 return 0; }"
+    src = "fn main() Int{ x = 1 return 0; }"
     res = run_check_source(src, filename="mem://semi.astra")
     assert not res.ok
     first = res.diagnostics[0]
@@ -71,7 +71,7 @@ def test_check_reports_missing_semicolon_with_fixit():
 
 
 def test_check_reports_typo_with_edit_distance_suggestion():
-    src = "fn main() -> Int { pritn(1); return 0; }"
+    src = "fn main() Int{ pritn(1); return 0; }"
     res = run_check_source(src, filename="mem://typo.astra")
     assert not res.ok
     first = res.diagnostics[0]
@@ -81,8 +81,8 @@ def test_check_reports_typo_with_edit_distance_suggestion():
 
 def test_check_emits_multi_location_note_for_assignment_mismatch():
     src = """
-fn main() -> Int {
-  let x: Int = 10;
+fn main() Int{
+  mut x: Int = 10;
   x = "hello";
   return 0;
 }
@@ -94,7 +94,7 @@ fn main() -> Int {
 
 
 def test_check_json_payload_contains_required_fields():
-    src = "fn main() -> Int { let x = 1 return 0; }"
+    src = "fn main() Int{ x = 1 return 0; }"
     res = run_check_source(src, filename="mem://json.astra")
     payload = diagnostics_to_json_list(res.diagnostics)
     assert payload
@@ -108,7 +108,7 @@ def test_check_json_payload_contains_required_fields():
 
 
 def test_check_formats_diagnostic_in_rust_like_style():
-    src = "fn main() -> Int { let x = 1 return 0; }"
+    src = "fn main() Int{ x = 1 return 0; }"
     res = run_check_source(src, filename="mem://fmt.astra")
     first = res.diagnostics[0]
     rendered = format_diagnostic(first)
@@ -124,8 +124,8 @@ enum Color {
   Green,
   Blue,
 }
-fn main() -> Int {
-  let c: Color = Color.Red;
+fn main() Int{
+  c: Color = Color.Red;
   match c {
     Color.Red => { return 1; }
     Color.Green => { return 2; }

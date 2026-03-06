@@ -1,9 +1,9 @@
 import std.io;
 
-fn main() -> Int {
-    let text = std.io.read_or("input.txt", "6 7\\\\n");
-    let out = "Loaded bytes: ";
-    let n = len(text);
+fn main() Int{
+    text = std.io.read_or("input.txt", "6 7\\\\n");
+    out = "Loaded bytes: ";
+    n = len(text);
     std.io.write("output.txt", out + __to_json(n));
     print("wrote output.txt");
     return 0;

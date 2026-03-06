@@ -7,12 +7,12 @@ struct Channel {
 }
 
 /// Create a new channel.
-fn channel_new() -> Channel {
+fn channel_new() Channel{
     return Channel(__list_new(), 0, false);
 }
 
 /// Close channel; subsequent sends fail.
-fn channel_close(ch &mut Channel) -> Int {
+fn channel_close(ch &mut Channel) Int{
     ch.closed = true;
     return 0;
 }
@@ -22,7 +22,7 @@ fn channel_close(ch &mut Channel) -> Int {
 /// Returns:
 /// - `0` on success
 /// - `1` when channel is closed
-fn channel_send(ch &mut Channel, value Any) -> Int {
+fn channel_send(ch &mut Channel, value Any) Int{
     if ch.closed {
         return 1;
     }
@@ -33,10 +33,10 @@ fn channel_send(ch &mut Channel, value Any) -> Int {
 /// Receive one value from channel.
 ///
 /// Returns `none` when queue is currently empty.
-fn channel_recv(ch &mut Channel) -> Option<Any> {
-    let n = __list_len(ch.queue);
+fn channel_recv(ch &mut Channel) Option<Any>{
+    n = __list_len(ch.queue);
     if ch.head < n {
-        let out = __list_get(ch.queue, ch.head);
+        out = __list_get(ch.queue, ch.head);
         ch.head += 1;
         return out;
     }

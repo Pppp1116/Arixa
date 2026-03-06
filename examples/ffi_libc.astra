@@ -1,6 +1,6 @@
 import "libc";
 
-fn main() -> i32 {
+fn main() i32{
     exit(0i32);
     return 0i32;
 }

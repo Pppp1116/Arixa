@@ -681,6 +681,10 @@ def _expr(e: Any) -> str:
         return f"({_expr(e.left)} {op} {_expr(e.right)})"
     if isinstance(e, Call):
         name = e.resolved_name or _call_name(e.fn)
+        args = list(e.args)
+        ufcs_receiver = getattr(e, "ufcs_receiver", None)
+        if ufcs_receiver is not None:
+            args = [ufcs_receiver] + args
         if name in {
             "countOnes",
             "__countOnes",
@@ -694,14 +698,14 @@ def _expr(e: Any) -> str:
             "__clz",
             "ctz",
             "__ctz",
-        } and len(e.args) == 1:
-            bits = _known_py_int_bits(e.args[0])
-            return f"{name}({_expr(e.args[0])}, {bits})"
-        if name in {"rotl", "__rotl", "rotr", "__rotr"} and len(e.args) == 2:
-            bits = _known_py_int_bits(e.args[0])
-            return f"{name}({_expr(e.args[0])}, {_expr(e.args[1])}, {bits})"
+        } and len(args) == 1:
+            bits = _known_py_int_bits(args[0])
+            return f"{name}({_expr(args[0])}, {bits})"
+        if name in {"rotl", "__rotl", "rotr", "__rotr"} and len(args) == 2:
+            bits = _known_py_int_bits(args[0])
+            return f"{name}({_expr(args[0])}, {_expr(args[1])}, {bits})"
         name = {"print": "print_", "len": "len_"}.get(name, name)
-        return f"{name}({', '.join(_expr(a) for a in e.args)})"
+        return f"{name}({', '.join(_expr(a) for a in args)})"
     if isinstance(e, IndexExpr):
         return f"({_expr(e.obj)})[{_expr(e.index)}]"
     if isinstance(e, FieldExpr):

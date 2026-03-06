@@ -1902,6 +1902,27 @@ def _compile_struct_init(
 
 
 def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: str) -> _Value:
+    ufcs_receiver = getattr(call, "ufcs_receiver", None)
+    if ufcs_receiver is not None:
+        if call.resolved_name:
+            target_name = call.resolved_name
+        elif isinstance(call.fn, Name):
+            target_name = call.fn.value
+        elif isinstance(call.fn, FieldExpr):
+            target_name = call.fn.field
+        else:
+            raise CodegenError(_diag(call, "cannot resolve UFCS call target"))
+        synthetic = Call(
+            fn=Name(target_name, call.pos, call.line, call.col),
+            args=[ufcs_receiver] + list(call.args),
+            pos=call.pos,
+            line=call.line,
+            col=call.col,
+            resolved_name=call.resolved_name,
+        )
+        setattr(synthetic, "inferred_type", getattr(call, "inferred_type", None))
+        return _compile_call(ctx, state, synthetic, overflow_mode)
+
     if (
         isinstance(call.fn, FieldExpr)
         and isinstance(call.fn.obj, Name)
@@ -2106,6 +2127,18 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
         if isinstance(callee, ir.Function) and sig is not None:
             args: list[ir.Value] = []
             for arg_node, pty in zip(call.args, sig.params):
+                pty_c = _canonical_type(pty)
+                if (
+                    pty_c.startswith("&")
+                    and not (isinstance(arg_node, Unary) and arg_node.op in {"&", "&mut"})
+                    and isinstance(arg_node, Name)
+                    and arg_node.value in state.vars
+                ):
+                    inner = _strip_ref_type(pty_c)
+                    actual = state.var_types.get(arg_node.value, "Any")
+                    if _canonical_type(inner) == _canonical_type(actual):
+                        args.append(state.vars[arg_node.value])
+                        continue
                 a = _compile_expr(ctx, state, arg_node)
                 args.append(_coerce_value(ctx, state, a.value, a.ty, pty, arg_node))
             if len(call.args) != len(sig.params):
@@ -2666,6 +2699,22 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
     b = state.builder
 
     if isinstance(st, LetStmt):
+        if st.reassign_if_exists and st.name in state.vars:
+            _compile_stmt(
+                ctx,
+                state,
+                AssignStmt(
+                    target=Name(st.name, st.pos, st.line, st.col),
+                    op="=",
+                    expr=st.expr,
+                    pos=st.pos,
+                    line=st.line,
+                    col=st.col,
+                    explicit_set=False,
+                ),
+                overflow_mode,
+            )
+            return
         ty = _canonical_type(st.type_name or _expr_type(state, st.expr))
         val = _compile_expr(ctx, state, st.expr, overflow_mode=overflow_mode)
         v = _coerce_value(ctx, state, val.value, val.ty, ty, st)

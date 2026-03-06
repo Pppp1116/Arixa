@@ -3,26 +3,26 @@
 /// Open a TCP connection to `addr`.
 ///
 /// Returns an integer connection handle.
-fn tcp_connect(addr String) -> Int {
+fn tcp_connect(addr String) Int{
     return __tcp_connect(addr);
 }
 
 /// Send raw `data` over connection `conn`.
-fn tcp_send(conn Int, data String) -> Int {
+fn tcp_send(conn Int, data String) Int{
     return __tcp_send(conn, data);
 }
 
 /// Send one text line by appending a newline to `data`.
-fn tcp_send_line(conn Int, data String) -> Int {
+fn tcp_send_line(conn Int, data String) Int{
     return tcp_send(conn, data + "\\\\n");
 }
 
 /// Receive up to `size` bytes from connection `conn`.
-fn tcp_recv(conn Int, size Int) -> String {
+fn tcp_recv(conn Int, size Int) String{
     return __tcp_recv(conn, size);
 }
 
 /// Close connection `conn`.
-fn tcp_close(conn Int) -> Int {
+fn tcp_close(conn Int) Int{
     return __tcp_close(conn);
 }

@@ -12,24 +12,24 @@ from astra.semantic import SemanticError, analyze
 
 
 def test_spawn_builtin_semantic_ok():
-    prog = parse("fn worker(x Int) -> Int { return x; } fn main() -> Int { let t = spawn(worker, 1); return join(t) as Int; }")
+    prog = parse("fn worker(x Int) Int{ return x; } fn main() Int{ t = spawn(worker, 1); return join(t) as Int; }")
     analyze(prog)
 
 
 def test_memory_builtins_semantic_ok():
-    prog = parse("fn main() -> Int { let p = alloc(32); free(p); return 0; }")
+    prog = parse("fn main() Int{ p = alloc(32); free(p); return 0; }")
     analyze(prog)
 
 
 def test_codegen_includes_thread_runtime_helpers():
-    py = to_python(parse("fn main() -> Int { return 0; }"))
+    py = to_python(parse("fn main() Int{ return 0; }"))
     assert "def spawn(fn, *a):" in py
     assert "def join(tid):" in py
     assert "def await_result(v):" in py
 
 
 def test_codegen_includes_memory_runtime_helpers():
-    py = to_python(parse("fn main() -> Int { return 0; }"))
+    py = to_python(parse("fn main() Int{ return 0; }"))
     assert "def alloc(n):" in py
     assert "def free(ptr):" in py
 
@@ -63,19 +63,19 @@ def test_llvm_codegen_supports_struct_literal_and_type_annotation():
 
 
 def test_python_codegen_emits_width_aware_bit_intrinsic_calls():
-    py = to_python(parse("fn main() -> Int { return countOnes(3u4) + leadingZeros(3u4) + trailingZeros(3u4); }"))
+    py = to_python(parse("fn main() Int{ return countOnes(3u4) + leadingZeros(3u4) + trailingZeros(3u4); }"))
     assert "countOnes(__astra_cast(3, 'u4'), 4)" in py
     assert "leadingZeros(__astra_cast(3, 'u4'), 4)" in py
     assert "trailingZeros(__astra_cast(3, 'u4'), 4)" in py
 
 
 def test_python_codegen_freestanding_has_no_auto_main():
-    py = to_python(parse("fn kernel() -> Int { return 0; }"), freestanding=True)
+    py = to_python(parse("fn kernel() Int{ return 0; }"), freestanding=True)
     assert "if __name__ == '__main__':" not in py
 
 
 def test_python_codegen_coalesce_operator():
-    py = to_python(parse("fn main() -> Int { return none ?? 5; }"))
+    py = to_python(parse("fn main() Int{ return none ?? 5; }"))
     assert "lambda __v:" in py
     assert "is not None else 5" in py
 
@@ -85,7 +85,7 @@ def test_defer_executes_on_return(tmp_path: Path):
     out = tmp_path / "d.py"
     src.write_text(
         """
-fn main() -> Int {
+fn main() Int{
   defer print("deferred");
   return 0;
 }
@@ -102,9 +102,9 @@ def test_specialization_codegen_uses_most_specific_impl(tmp_path: Path):
     out = tmp_path / "spec.py"
     src.write_text(
         """
-impl fn sum(x T) -> T { return x; }
-impl fn sum(x Int) -> Int { return x + 1; }
-fn main() -> Int { return sum(1); }
+fn sum(x T) T{ return x; }
+fn sum(x Int) Int{ return x + 1; }
+fn main() Int{ return sum(1); }
 """
     )
     build(str(src), str(out), "py")
@@ -113,14 +113,14 @@ fn main() -> Int { return sum(1); }
 
 
 def test_llvm_ir_has_runtime_entry_and_main():
-    mod = to_llvm_ir(parse("fn main() -> Int { return 0; }"))
+    mod = to_llvm_ir(parse("fn main() Int{ return 0; }"))
     assert_valid_llvm_ir(mod)
     assert "define i32 @main()" in mod
     assert "astra_run_py" not in mod
 
 
 def test_llvm_ir_freestanding_has_start():
-    mod = to_llvm_ir(parse("fn _start() -> Int { return 0; }"), freestanding=True)
+    mod = to_llvm_ir(parse("fn _start() Int{ return 0; }"), freestanding=True)
     assert_valid_llvm_ir(mod)
     assert "define i64 @_start()" in mod
 
@@ -128,7 +128,7 @@ def test_llvm_ir_freestanding_has_start():
 def test_llvm_build_writes_expected_ir(tmp_path: Path):
     src = tmp_path / "prog.astra"
     out = tmp_path / "prog.ll"
-    src.write_text("fn main() -> Int { return 0; }")
+    src.write_text("fn main() Int{ return 0; }")
     build(str(src), str(out), "llvm")
     mod = out.read_text()
     assert_valid_llvm_ir(mod, workdir=tmp_path)
@@ -137,12 +137,12 @@ def test_llvm_build_writes_expected_ir(tmp_path: Path):
 
 def test_llvm_supports_overflow_mode_variants():
     src = """
-fn main() -> Int {
-  let a: i128 = 20 as i128;
-  let b: i128 = 3 as i128;
-  let m: i128 = a * b;
-  let d: i128 = a / b;
-  let r: i128 = a % b;
+fn main() Int{
+  a: i128 = 20 as i128;
+  b: i128 = 3 as i128;
+  m: i128 = a * b;
+  d: i128 = a / b;
+  r: i128 = a % b;
   return (m as Int) + (d as Int) + (r as Int);
 }
 """
@@ -157,8 +157,8 @@ fn main() -> Int {
 def test_llvm_packed_struct_fields_lower_with_bit_ops():
     src = """
 @packed struct Header { a: u4, b: u3, c: u1, d: u8 }
-fn main() -> Int {
-  let mut h = Header(3u4, 5u3, 1u1, 9u8);
+fn main() Int{
+  mut h = Header(3u4, 5u3, 1u1, 9u8);
   h.a += 1u4;
   h.d = 7u8;
   return (h.a as Int) + (h.b as Int) + (h.c as Int) + (h.d as Int);
@@ -180,8 +180,8 @@ def test_llvm_packed_struct_fields_above_64_bits_lower_with_wide_windows():
   big: u128,
   tail: u1,
 }
-fn main() -> Int {
-  let mut w = Wide(1u7, 5u128, 1u1);
+fn main() Int{
+  mut w = Wide(1u7, 5u128, 1u1);
   w.big += 2u128;
   w.big <<= 1u128;
   return (w.pad as Int) + (w.big as Int) + (w.tail as Int);
@@ -196,14 +196,14 @@ fn main() -> Int {
 
 def test_llvm_valid_surface_program_does_not_report_unsupported_diagnostics():
     src = """
-fn add(x: Int, y: Int) -> Int { return x + y; }
-fn main() -> Int {
-  let mut a: u8 = 7 as u8;
+fn add(x Int, y Int) Int{ return x + y; }
+fn main() Int{
+  mut a: u8 = 7 as u8;
   a += 2 as u8;
-  let b = countOnes(a);
-  let c = leadingZeros(a);
-  let d = trailingZeros(a);
-  let e = add(1, 2);
+  b = countOnes(a);
+  c = leadingZeros(a);
+  d = trailingZeros(a);
+  e = add(1, 2);
   if (a as Int) > 0 && e == 3 {
     return b + c + d + e;
   }
@@ -220,9 +220,9 @@ fn main() -> Int {
 
 def test_llvm_shift_ops_emit_runtime_range_guards():
     src = """
-fn main() -> Int {
-  let x: u8 = 1 as u8;
-  let s: u8 = 8 as u8;
+fn main() Int{
+  x: u8 = 1 as u8;
+  s: u8 = 8 as u8;
   return (x << s) as Int;
 }
 """
@@ -234,10 +234,10 @@ fn main() -> Int {
 
 def test_llvm_int_divrem_emit_runtime_guards():
     src = """
-fn divmod(a: Int, b: Int) -> Int {
+fn divmod(a Int, b Int) Int{
   return (a / b) + (a % b);
 }
-fn main() -> Int { return divmod(11, 3); }
+fn main() Int{ return divmod(11, 3); }
 """
     mod = to_llvm_ir(parse(src))
     assert_valid_llvm_ir(mod)
@@ -249,9 +249,9 @@ fn main() -> Int { return divmod(11, 3); }
 
 def test_llvm_float_to_int_casts_use_saturating_intrinsics():
     src = """
-fn main() -> Int {
-  let x: Float = 1.5;
-  let y: u8 = x as u8;
+fn main() Int{
+  x: Float = 1.5;
+  y: u8 = x as u8;
   return (x as Int) + (y as Int);
 }
 """
@@ -265,19 +265,19 @@ fn main() -> Int {
 
 def test_llvm_lowering_covers_extended_runtime_builtins():
     src = """
-fn worker(x: Int) -> Int { return x + 1; }
-fn main() -> Int {
-  let t = spawn(worker, 1);
+fn worker(x Int) Int{ return x + 1; }
+fn main() Int{
+  t = spawn(worker, 1);
   drop join(t);
   drop await_result(1);
   drop args();
   drop arg(0);
-  let xs = list_new();
+  xs = list_new();
   drop list_push(xs, 1);
   drop list_set(xs, 0, 2);
   drop list_get(xs, 0);
   drop list_len(xs);
-  let m = map_new();
+  m = map_new();
   drop map_set(m, 1, 2);
   drop map_has(m, 1);
   drop map_get(m, 1);
@@ -327,7 +327,7 @@ fn main() -> Int {
 
 
 def test_llvm_cross_target_emission():
-    src = parse("fn main() -> Int { return 0; }")
+    src = parse("fn main() Int{ return 0; }")
     for triple in (
         "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-gnu",
@@ -339,12 +339,12 @@ def test_llvm_cross_target_emission():
 
 
 def test_join_of_unknown_tid_allowed_semantically():
-    prog = parse("fn main() -> Int { return join(999) as Int; }")
+    prog = parse("fn main() Int{ return join(999) as Int; }")
     analyze(prog)
 
 
 def test_semantic_allows_module_without_main():
-    prog = parse("fn helper() -> Int { return 1; }")
+    prog = parse("fn helper() Int{ return 1; }")
     analyze(prog)
 
 
@@ -357,7 +357,7 @@ def test_selfhost_source_compiles_to_python(tmp_path: Path):
 
 
 def test_thread_calls_emit_in_python_output():
-    src = "fn worker(x Int) -> Int { return x; } fn main() -> Int { let t = spawn(worker, 3); return join(t) as Int; }"
+    src = "fn worker(x Int) Int{ return x; } fn main() Int{ t = spawn(worker, 3); return join(t) as Int; }"
     py = to_python(parse(src))
     assert "spawn(worker, 3)" in py
     assert "join(t)" in py
@@ -365,11 +365,11 @@ def test_thread_calls_emit_in_python_output():
 
 def test_llvm_any_casts_use_runtime_box_unbox_helpers():
     src = """
-fn main() -> Int {
-  let x: Any = 7;
-  let y: Int = x as Int;
-  let s: Any = "ok";
-  let s2: String = s as String;
+fn main() Int{
+  x: Any = 7;
+  y: Int = x as Int;
+  s: Any = "ok";
+  s2: String = s as String;
   drop len(s2);
   drop to_json(s);
   return y;
@@ -383,7 +383,7 @@ fn main() -> Int {
 
 
 def test_memory_use_after_free_is_semantic_error():
-    prog = parse("fn main() -> Int { let p = alloc(8); free(p); return p; }")
+    prog = parse("fn main() Int{ p = alloc(8); free(p); return p; }")
     try:
         analyze(prog)
         assert False
@@ -392,7 +392,7 @@ def test_memory_use_after_free_is_semantic_error():
 
 
 def test_memory_double_free_is_semantic_error():
-    prog = parse("fn main() -> Int { let p = alloc(8); free(p); free(p); return 0; }")
+    prog = parse("fn main() Int{ p = alloc(8); free(p); free(p); return 0; }")
     try:
         analyze(prog)
         assert False
@@ -401,12 +401,12 @@ def test_memory_double_free_is_semantic_error():
 
 
 def test_memory_move_semantics_for_owned_handles():
-    prog = parse("fn main() -> Int { let p = alloc(8); let q = p; free(q); return 0; }")
+    prog = parse("fn main() Int{ p = alloc(8); q = p; free(q); return 0; }")
     analyze(prog)
 
 
 def test_memory_leak_detection_is_semantic_error():
-    prog = parse("fn main() -> Int { let p = alloc(8); return 0; }")
+    prog = parse("fn main() Int{ p = alloc(8); return 0; }")
     try:
         analyze(prog)
         assert False
@@ -415,7 +415,7 @@ def test_memory_leak_detection_is_semantic_error():
 
 
 def test_break_outside_loop_is_semantic_error():
-    prog = parse("fn main() -> Int { break; return 0; }")
+    prog = parse("fn main() Int{ break; return 0; }")
     try:
         analyze(prog)
         assert False
@@ -424,7 +424,7 @@ def test_break_outside_loop_is_semantic_error():
 
 
 def test_return_type_mismatch_is_semantic_error():
-    prog = parse('fn main() -> Int { return "bad"; }')
+    prog = parse('fn main() Int{ return "bad"; }')
     try:
         analyze(prog)
         assert False
@@ -433,7 +433,7 @@ def test_return_type_mismatch_is_semantic_error():
 
 
 def test_non_exhaustive_bool_match_is_semantic_error():
-    prog = parse("fn main() -> Int { let b = true; match b { true => { return 1; } } return 0; }")
+    prog = parse("fn main() Int{ b = true; match b { true => { return 1; } } return 0; }")
     try:
         analyze(prog)
         assert False
@@ -446,7 +446,7 @@ def test_for_in_is_lowered_with_index_step_codegen(tmp_path: Path):
     out = tmp_path / "for.py"
     src.write_text(
         """
-fn main() -> Int {
+fn main() Int{
   for x in 0..3 {
     print(x);
   }
@@ -465,8 +465,8 @@ def test_match_codegen_executes_branch(tmp_path: Path):
     out = tmp_path / "m.py"
     src.write_text(
         """
-fn main() -> Int {
-  let x = 2;
+fn main() Int{
+  x = 2;
   match x {
     1 => { return 10; }
     2 => { return 22; }
@@ -484,7 +484,7 @@ def test_emit_ir_writes_llvm_text(tmp_path: Path):
     src = tmp_path / "ir.astra"
     out = tmp_path / "ir.py"
     ir = tmp_path / "ir.ll"
-    src.write_text("fn main() -> Int { let x = 1 + 2; return x; }")
+    src.write_text("fn main() Int{ x = 1 + 2; return x; }")
     build(str(src), str(out), "py", emit_ir=str(ir))
     text = ir.read_text()
     assert "define i32 @main()" in text

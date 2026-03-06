@@ -59,10 +59,10 @@ def test_astpm_lock_resolves_semver_constraints(monkeypatch, tmp_path: Path):
 
     pkg_v1 = tmp_path / "pkgdemo-v1"
     pkg_v1.mkdir()
-    (pkg_v1 / "pkgdemo.astra").write_text("fn v() -> Int { return 1; }\n")
+    (pkg_v1 / "pkgdemo.astra").write_text("fn v() Int{ return 1; }\n")
     pkg_v2 = tmp_path / "pkgdemo-v2"
     pkg_v2.mkdir()
-    (pkg_v2 / "pkgdemo.astra").write_text("fn v() -> Int { return 2; }\n")
+    (pkg_v2 / "pkgdemo.astra").write_text("fn v() Int{ return 2; }\n")
 
     reg = tmp_path / "packages.json"
     _write_multi_registry(reg, "pkgdemo", {"1.2.0": str(pkg_v1), "1.9.3": str(pkg_v2), "2.1.0": str(pkg_v2)})
@@ -88,14 +88,14 @@ def test_astpm_lock_includes_transitive_dependencies(monkeypatch, tmp_path: Path
     dep_repo = tmp_path / "dep_repo"
     dep_repo.mkdir()
     (dep_repo / "Astra.toml").write_text('[package]\nname = "dep"\nversion = "1.4.0"\n')
-    (dep_repo / "dep.astra").write_text("fn dep_ping() -> Int { return 1; }\n")
+    (dep_repo / "dep.astra").write_text("fn dep_ping() Int{ return 1; }\n")
 
     root_repo = tmp_path / "root_repo"
     root_repo.mkdir()
     (root_repo / "Astra.toml").write_text(
         '[package]\nname = "root"\nversion = "1.0.0"\n[dependencies]\ndep = "^1.0.0"\n'
     )
-    (root_repo / "root.astra").write_text("fn root_ping() -> Int { return 2; }\n")
+    (root_repo / "root.astra").write_text("fn root_ping() Int{ return 2; }\n")
 
     reg = tmp_path / "packages.json"
     reg.write_text(
@@ -124,7 +124,7 @@ def test_astpm_add_remove_cycle(monkeypatch, tmp_path: Path):
     (pkg_repo / "Astra.toml").write_text(
         "[package]\nname = \"sdl2\"\nversion = \"2.0.0\"\n[native]\nlibs = [\"SDL2\"]\n"
     )
-    (pkg_repo / "sdl2.astra").write_text('@link("SDL2") extern fn SDL_Init(flags: u32) -> i32;\n')
+    (pkg_repo / "sdl2.astra").write_text('@link("SDL2") extern fn SDL_Init(flags u32) i32;\n')
 
     reg = tmp_path / "packages.json"
     _write_registry(reg, "sdl2", str(pkg_repo), "2.0.0")
@@ -149,10 +149,10 @@ def test_import_resolution_uses_installed_package_cache(monkeypatch, tmp_path: P
     project.mkdir(parents=True)
     cache = tmp_path / "cache"
     (project / "Astra.toml").write_text('name = "demo"\n[dependencies]\npkgdemo = "2.0.0"\n')
-    (project / "main.astra").write_text('import "pkgdemo";\nfn main() -> Int { return 0; }\n')
+    (project / "main.astra").write_text('import "pkgdemo";\nfn main() Int{ return 0; }\n')
     pkg_dir = cache / "pkgdemo" / "2.0.0"
     pkg_dir.mkdir(parents=True)
-    (pkg_dir / "pkgdemo.astra").write_text('@link("pkgdemo") extern fn demo_init(flags: u32) -> i32;\n')
+    (pkg_dir / "pkgdemo.astra").write_text('@link("pkgdemo") extern fn demo_init(flags u32) i32;\n')
     monkeypatch.setenv("ASTRA_PKG_HOME", str(cache))
 
     resolved = resolve_import_path(ImportDecl(path=[], source="pkgdemo"), str(project / "main.astra"))
@@ -180,10 +180,10 @@ def test_import_resolution_prefers_lockfile_version(monkeypatch, tmp_path: Path)
             }
         )
     )
-    (project / "main.astra").write_text('import "pkgdemo";\nfn main() -> Int { return 0; }\n')
+    (project / "main.astra").write_text('import "pkgdemo";\nfn main() Int{ return 0; }\n')
     pkg_dir = cache / "pkgdemo" / "1.9.3"
     pkg_dir.mkdir(parents=True)
-    (pkg_dir / "pkgdemo.astra").write_text("fn ping() -> Int { return 0; }\n")
+    (pkg_dir / "pkgdemo.astra").write_text("fn ping() Int{ return 0; }\n")
 
     resolved = resolve_import_path(ImportDecl(path=[], source="pkgdemo"), str(project / "main.astra"))
     assert resolved == (pkg_dir / "pkgdemo.astra").resolve()
@@ -198,14 +198,14 @@ def test_build_with_dependency_auto_adds_native_link_flags(monkeypatch, tmp_path
     (project / "Astra.toml").write_text(
         '[project]\nname = "app"\nversion = "0.1.0"\n[dependencies]\npkgdemo = "2.0.0"\n'
     )
-    (project / "main.astra").write_text('import "pkgdemo";\nfn main() -> Int { return demo_init(0u32); }\n')
+    (project / "main.astra").write_text('import "pkgdemo";\nfn main() Int{ return demo_init(0u32); }\n')
 
     pkg_dir = cache / "pkgdemo" / "2.0.0"
     pkg_dir.mkdir(parents=True)
     (pkg_dir / "Astra.toml").write_text(
         "[package]\nname = \"pkgdemo\"\nversion = \"2.0.0\"\n[native]\nlibs = [\"demoffi\"]\n"
     )
-    (pkg_dir / "pkgdemo.astra").write_text('@link("demoffi") extern fn demo_init(flags: u32) -> i32;\n')
+    (pkg_dir / "pkgdemo.astra").write_text('@link("demoffi") extern fn demo_init(flags u32) i32;\n')
 
     seen_cmds: list[list[str]] = []
 
@@ -240,14 +240,14 @@ def test_build_uses_project_package_link_overrides(monkeypatch, tmp_path: Path):
         '[dependencies]\npkgdemo = "2.0.0"\n'
         '[package.pkgdemo]\nlink.linux = ["demo_override"]\npkg_config = "demoffi"\n'
     )
-    (project / "main.astra").write_text('import "pkgdemo";\nfn main() -> Int { return demo_init(0u32); }\n')
+    (project / "main.astra").write_text('import "pkgdemo";\nfn main() Int{ return demo_init(0u32); }\n')
 
     pkg_dir = cache / "pkgdemo" / "2.0.0"
     pkg_dir.mkdir(parents=True)
     (pkg_dir / "Astra.toml").write_text(
         "[package]\nname = \"pkgdemo\"\nversion = \"2.0.0\"\n[native]\nlibs = [\"demoffi\"]\n"
     )
-    (pkg_dir / "pkgdemo.astra").write_text('extern fn demo_init(flags: u32) -> Int;\n')
+    (pkg_dir / "pkgdemo.astra").write_text('extern fn demo_init(flags u32) Int;\n')
 
     seen_cmds: list[list[str]] = []
 
@@ -286,7 +286,7 @@ def test_astpm_verify_checks_cached_checksum(monkeypatch, tmp_path: Path, capsys
 
     pkg_dir = cache / "pkgdemo" / "1.0.0"
     pkg_dir.mkdir(parents=True)
-    (pkg_dir / "pkgdemo.astra").write_text("fn ping() -> Int { return 0; }\n")
+    (pkg_dir / "pkgdemo.astra").write_text("fn ping() Int{ return 0; }\n")
     digest = astra.pkg._dir_digest(pkg_dir)
     (project / "Astra.lock").write_text(
         json.dumps(

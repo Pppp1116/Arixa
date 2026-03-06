@@ -47,12 +47,12 @@ CASES: list[tuple[str, str, int]] = [
     (
         "comptime_match_indirect_call",
         """
-fn add(a: Int, b: Int) -> Int { return a + b; }
-fn main() -> Int {
+fn add(a Int, b Int) Int{ return a + b; }
+fn main() Int{
   comptime {
-    let f = add;
-    let x = f(7, 9);
-    let mut y = 0;
+    f = add;
+    x = f(7, 9);
+    mut y = 0;
     match x {
       15 => { y = 1; }
       16 => { y = 3; }
@@ -71,8 +71,8 @@ fn main() -> Int {
   big: u128,
   tail: u1,
 }
-fn main() -> Int {
-  let mut w = Wide(2u7, 3u128, 1u1);
+fn main() Int{
+  mut w = Wide(2u7, 3u128, 1u1);
   w.big += 5u128;
   w.big <<= 1u128;
   return (w.pad as Int) + (w.big as Int) + (w.tail as Int);
@@ -83,8 +83,8 @@ fn main() -> Int {
     (
         "for_forms_and_defer",
         """
-fn main() -> Int {
-  let mut acc = 0;
+fn main() Int{
+  mut acc = 0;
   for i in 0..3 {
     defer print("tick");
     acc += i;
@@ -100,12 +100,12 @@ fn main() -> Int {
     (
         "vec_option_coalesce",
         """
-fn main() -> Int {
-  let mut v: Vec<Int> = vec_new() as Vec<Int>;
+fn main() Int{
+  mut v: Vec<Int> = vec_new() as Vec<Int>;
   drop vec_push(v, 10);
   drop vec_push(v, 20);
-  let a: Option<Int> = vec_get(v, 0);
-  let b: Option<Int> = vec_get(v, 99);
+  a: Option<Int> = vec_get(v, 0);
+  b: Option<Int> = vec_get(v, 99);
   return (a ?? 0) + (b ?? 3) + vec_len(v);
 }
 """,
@@ -114,11 +114,11 @@ fn main() -> Int {
     (
         "bit_intrinsics_widths",
         """
-fn main() -> Int {
-  let x: u4 = 3u4;
-  let c = countOnes(x);
-  let l = leadingZeros(x);
-  let t = trailingZeros(x);
+fn main() Int{
+  x: u4 = 3u4;
+  c = countOnes(x);
+  l = leadingZeros(x);
+  t = trailingZeros(x);
   return c + l + t;
 }
 """,
@@ -127,12 +127,12 @@ fn main() -> Int {
     (
         "fn_ptr_and_casts",
         """
-fn mul(a: Int, b: Int) -> Int { return a * b; }
-fn main() -> Int {
-  let f = mul;
-  let x = f(5, 7);
-  let y: u8 = 9 as u8;
-  let z: Int = y as Int;
+fn mul(a Int, b Int) Int{ return a * b; }
+fn main() Int{
+  f = mul;
+  x = f(5, 7);
+  y: u8 = 9 as u8;
+  z: Int = y as Int;
   return x + z;
 }
 """,
@@ -142,8 +142,8 @@ fn main() -> Int {
         "layout_queries",
         """
 struct P { a: Int, b: u8 }
-fn main() -> Int {
-  let p = P(1, 2 as u8);
+fn main() Int{
+  p = P(1, 2 as u8);
   return sizeof(P) + alignof(P) + size_of(p.a) + align_of(p.b);
 }
 """,
@@ -152,8 +152,8 @@ fn main() -> Int {
     (
         "bool_match_control",
         """
-fn main() -> Int {
-  let b = true;
+fn main() Int{
+  b = true;
   match b {
     true => { return 7; }
     false => { return 9; }
@@ -217,7 +217,7 @@ def test_heavy_randomized_arithmetic_matrix_py_backend(tmp_path: Path):
     rng = random.Random(1337)
     for i in range(80):
         expr, expected = _gen_expr(rng, depth=3)
-        src = f"fn main() -> Int {{ return {expr}; }}\n"
+        src = f"fn main() Int{{ return {expr}; }}\n"
         rc = _run_py(tmp_path, f"rand_py_{i}", src)
         assert rc == (expected % 256)
 
@@ -226,6 +226,6 @@ def test_heavy_randomized_arithmetic_matrix_llvm_builds(tmp_path: Path):
     rng = random.Random(7331)
     for i in range(60):
         expr, _expected = _gen_expr(rng, depth=3)
-        src = f"fn main() -> Int {{ return {expr}; }}\n"
+        src = f"fn main() Int{{ return {expr}; }}\n"
         ir = _run_llvm_validate(tmp_path, f"rand_llvm_{i}", src)
         assert "define i32 @main()" in ir
