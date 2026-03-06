@@ -58,6 +58,7 @@ class FnDecl:
     unsafe: bool = False
     symbol: str = ""
     doc: str = ""
+    where_bounds: list[tuple[str, str]] = field(default_factory=list)
     pos: int = 0
     line: int = 0
     col: int = 0
@@ -252,6 +253,28 @@ class TypeAliasDecl:
 
 
 @dataclass
+class TraitDecl:
+    """AST node representing trait declaration."""
+    name: str
+    methods: list[tuple[str, list[tuple[str, str]], str]]
+    pub: bool = False
+    doc: str = ""
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class TraitImplDecl:
+    """AST node representing `impl Trait for Type` declaration."""
+    trait_name: str
+    target_type: str
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
 class MatchStmt:
     """AST node representing match stmt.
     
@@ -433,6 +456,31 @@ class WildcardPattern:
     
     This type is part of Astra's public compiler/tooling surface.
     """
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class OrPattern:
+    """AST node representing `p1 | p2 | ...` match pattern alternatives.
+
+    This type is part of Astra's public compiler/tooling surface.
+    """
+    patterns: list[Any]
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class GuardedPattern:
+    """AST node representing `pattern if <expr>` in match arms.
+
+    This type is part of Astra's public compiler/tooling surface.
+    """
+    pattern: Any
+    guard: Any
     pos: int = 0
     line: int = 0
     col: int = 0

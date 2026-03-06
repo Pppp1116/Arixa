@@ -1,3 +1,4 @@
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -19,8 +20,8 @@ fn main() -> Int {
     )
     build(str(src), str(out), "py")
     code = out.read_text()
-    assert "a =" not in code
-    assert "b =" not in code
+    assert re.search(r"(?m)^    a =", code) is None
+    assert re.search(r"(?m)^    b =", code) is None
 
 
 def test_dead_let_with_side_effect_is_preserved_as_expr(tmp_path: Path):
@@ -36,7 +37,7 @@ fn main() -> Int {
     )
     build(str(src), str(out), "py")
     code = out.read_text()
-    assert "x =" not in code
+    assert re.search(r"(?m)^    x =", code) is None
     cp = subprocess.run([sys.executable, str(out)], capture_output=True, text=True, timeout=2)
     assert cp.returncode == 0
     assert "7" in cp.stdout
@@ -125,9 +126,10 @@ fn main() -> Int {
     build(str(src), str(out), "py")
     code = out.read_text()
     assert "return 12" in code
-    assert "a =" not in code
-    assert "b =" not in code
-    assert "c =" not in code
+    user_main = code.split("def main(", 1)[1]
+    assert "a =" not in user_main
+    assert "b =" not in user_main
+    assert "c =" not in user_main
 
 
 def test_local_cse_reuses_identical_pure_expression(tmp_path: Path):

@@ -136,6 +136,10 @@ def _fmt_expr(e, cfg: FormatConfig, *, indent: int = 0) -> str:
         return e.value
     if isinstance(e, WildcardPattern):
         return "_"
+    if isinstance(e, OrPattern):
+        return " | ".join(_fmt_expr(p, cfg, indent=indent) for p in e.patterns)
+    if isinstance(e, GuardedPattern):
+        return f"{_fmt_expr(e.pattern, cfg, indent=indent)} if {_fmt_expr(e.guard, cfg, indent=indent)}"
     if isinstance(e, AwaitExpr):
         return f"await {_fmt_expr_with_prec(e.expr, cfg, _PREC_UNARY)}"
     if isinstance(e, TryExpr):
@@ -185,6 +189,10 @@ def _fmt_expr(e, cfg: FormatConfig, *, indent: int = 0) -> str:
     if isinstance(e, AlignOfValueExpr):
         return f"align_of({_fmt_expr(e.expr, cfg, indent=indent)})"
     raise ValueError(f"formatter: unsupported expression node {type(e).__name__}")
+
+
+def _fmt_match_pattern(pat, cfg: FormatConfig, *, indent: int = 0) -> str:
+    return _fmt_expr(pat, cfg, indent=indent)
 
 
 def _fmt_block(prefix: str, body: list, ind: int, cfg: FormatConfig) -> list[str]:
@@ -237,7 +245,7 @@ def _fmt_stmt(st, ind: int, cfg: FormatConfig) -> list[str]:
     if isinstance(st, MatchStmt):
         out = [f"{p}match {_fmt_expr(st.expr, cfg, indent=ind)} {{"]
         for pat, body in st.arms:
-            head = f"{_indent(ind + 1, cfg)}{_fmt_expr(pat, cfg, indent=ind + 1)} =>"
+            head = f"{_indent(ind + 1, cfg)}{_fmt_match_pattern(pat, cfg, indent=ind + 1)} =>"
             if not body:
                 out.append(f"{head} {{}}")
                 continue
@@ -321,12 +329,19 @@ def _fmt_item(item, cfg: FormatConfig) -> list[str]:
         async_kw = "async " if item.async_fn else ""
         unsafe_kw = "unsafe " if item.unsafe else ""
         sig = ", ".join(f"{n} {type_text(t)}" for n, t in item.params)
-        fn_head = f"{pub}{impl_kw}{async_kw}{unsafe_kw}fn {item.name}({sig}) -> {type_text(item.ret)}"
+        where_text = ""
+        if item.where_bounds:
+            groups: dict[str, list[str]] = {}
+            for tvar, tr in item.where_bounds:
+                groups.setdefault(tvar, []).append(tr)
+            parts = [f"{tv}: {' + '.join(bounds)}" for tv, bounds in groups.items()]
+            where_text = f" where {', '.join(parts)}"
+        fn_head = f"{pub}{impl_kw}{async_kw}{unsafe_kw}fn {item.name}({sig}) -> {type_text(item.ret)}{where_text}"
         if len(fn_head) > cfg.line_width and item.params:
             out.append(f"{pub}{impl_kw}{async_kw}{unsafe_kw}fn {item.name}(")
             for n, t in item.params:
                 out.append(f"{_indent(1, cfg)}{n} {type_text(t)},")
-            fn_head = f") -> {type_text(item.ret)}"
+            fn_head = f") -> {type_text(item.ret)}{where_text}"
         if not item.body:
             out.append(f"{fn_head} {{}}")
             return out
@@ -335,6 +350,19 @@ def _fmt_item(item, cfg: FormatConfig) -> list[str]:
             out.extend(_fmt_stmt(st, 1, cfg))
         out.append("}")
         return out
+    if isinstance(item, TraitDecl):
+        out = []
+        if item.doc:
+            out.extend([f"/// {line}" for line in item.doc.splitlines()])
+        pub = "pub " if item.pub else ""
+        out.append(f"{pub}trait {item.name} {{")
+        for mname, params, ret in item.methods:
+            sig = ", ".join(f"{n} {type_text(t)}" for n, t in params)
+            out.append(f"{_indent(1, cfg)}fn {mname}({sig}) -> {type_text(ret)};")
+        out.append("}")
+        return out
+    if isinstance(item, TraitImplDecl):
+        return [f"impl {item.trait_name} for {type_text(item.target_type)};"]
     raise ValueError(f"formatter: unsupported top-level node {type(item).__name__}")
 
 

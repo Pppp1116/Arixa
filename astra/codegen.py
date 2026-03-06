@@ -74,6 +74,9 @@ def to_python(
         "_astra_next_ptr = 1",
         "_astra_threads = {}",
         "_astra_next_tid = 1",
+        "_astra_atomics = {}",
+        "_astra_next_atomic = 1",
+        "_astra_atomic_lock = threading.Lock()",
         "_astra_sockets = {}",
         "_astra_next_sock = 1",
         "_astra_libs = {}",
@@ -141,27 +144,62 @@ def to_python(
         "    global _astra_next_tid",
         "    tid = _astra_next_tid",
         "    _astra_next_tid += 1",
-        "    state = {'done': False, 'result': 0}",
-        "    try:",
-        "        out = fn(*a)",
-        "        if inspect.isawaitable(out):",
-        "            out = asyncio.run(out)",
-        "        state['result'] = out",
-        "    except Exception:",
-        "        state['result'] = 0",
-        "    finally:",
-        "        state['done'] = True",
+        "    state = {'done': False, 'result': 0, 'thread': None}",
+        "    def _runner():",
+        "        try:",
+        "            out = fn(*a)",
+        "            if inspect.isawaitable(out):",
+        "                out = asyncio.run(out)",
+        "            state['result'] = out",
+        "        except Exception:",
+        "            state['result'] = 0",
+        "        finally:",
+        "            state['done'] = True",
+        "    th = threading.Thread(target=_runner, daemon=False)",
+        "    state['thread'] = th",
         "    _astra_threads[tid] = state",
+        "    th.start()",
         "    return tid",
         "def join(tid):",
         "    state = _astra_threads.get(int(tid))",
         "    if state is None:",
         "        return 0",
+        "    th = state.get('thread')",
+        "    if th is not None:",
+        "        th.join()",
         "    return state['result']",
         "def await_result(v):",
         "    if inspect.isawaitable(v):",
         "        return asyncio.run(v)",
         "    return v",
+        "def atomic_int_new(v):",
+        "    global _astra_next_atomic",
+        "    with _astra_atomic_lock:",
+        "        h = _astra_next_atomic",
+        "        _astra_next_atomic += 1",
+        "        _astra_atomics[h] = int(v)",
+        "    return h",
+        "def atomic_load(h):",
+        "    with _astra_atomic_lock:",
+        "        return int(_astra_atomics.get(int(h), 0))",
+        "def atomic_store(h, v):",
+        "    with _astra_atomic_lock:",
+        "        _astra_atomics[int(h)] = int(v)",
+        "    return 0",
+        "def atomic_fetch_add(h, delta):",
+        "    with _astra_atomic_lock:",
+        "        key = int(h)",
+        "        old = int(_astra_atomics.get(key, 0))",
+        "        _astra_atomics[key] = old + int(delta)",
+        "    return old",
+        "def atomic_compare_exchange(h, expected, desired):",
+        "    with _astra_atomic_lock:",
+        "        key = int(h)",
+        "        cur = int(_astra_atomics.get(key, 0))",
+        "        if cur == int(expected):",
+        "            _astra_atomics[key] = int(desired)",
+        "            return True",
+        "    return False",
         "def list_new(): return []",
         "def list_push(xs, v): xs.append(v); return 0",
         "def list_get(xs, i): return xs[int(i)]",
@@ -193,21 +231,33 @@ def to_python(
         "    _astra_sockets[sid] = s",
         "    return sid",
         "def tcp_connect(addr):",
-        "    host, port = str(addr).rsplit(':', 1)",
-        "    s = socket.create_connection((host, int(port)), timeout=5.0)",
-        "    return _sock_new(s)",
+        "    try:",
+        "        host, port = str(addr).rsplit(':', 1)",
+        "        s = socket.create_connection((host, int(port)), timeout=5.0)",
+        "        return _sock_new(s)",
+        "    except Exception:",
+        "        return -1",
         "def tcp_send(sid, data):",
         "    s = _astra_sockets.get(int(sid))",
-        "    if s is None: return 1",
-        "    return s.send(str(data).encode())",
+        "    if s is None: return -1",
+        "    try:",
+        "        return s.send(str(data).encode())",
+        "    except Exception:",
+        "        return -1",
         "def tcp_recv(sid, n):",
         "    s = _astra_sockets.get(int(sid))",
         "    if s is None: return ''",
-        "    return s.recv(max(1, int(n))).decode(errors='replace')",
+        "    try:",
+        "        return s.recv(max(1, int(n))).decode(errors='replace')",
+        "    except Exception:",
+        "        return ''",
         "def tcp_close(sid):",
         "    s = _astra_sockets.pop(int(sid), None)",
-        "    if s is None: return 1",
-        "    s.close()",
+        "    if s is None: return 0",
+        "    try:",
+        "        s.close()",
+        "    except Exception:",
+        "        return -1",
         "    return 0",
         "def to_json(v): return json.dumps(v, sort_keys=True)",
         "def from_json(s): return json.loads(s)",
@@ -254,46 +304,96 @@ def to_python(
         "    v = int(x) & mask",
         "    k = int(n) % width",
         "    return ((v >> k) | (v << ((width - k) % width))) & mask",
-        "def __list_new(): return list_new()",
-        "def __list_push(xs, v): return list_push(xs, v)",
-        "def __list_get(xs, i): return list_get(xs, i)",
-        "def __list_set(xs, i, v): return list_set(xs, i, v)",
-        "def __list_len(xs): return list_len(xs)",
-        "def __vec_new(): return vec_new()",
-        "def __vec_from(xs): return vec_from(xs)",
-        "def __vec_len(xs): return vec_len(xs)",
-        "def __vec_get(xs, i): return vec_get(xs, i)",
-        "def __vec_set(xs, i, v): return vec_set(xs, i, v)",
-        "def __vec_push(xs, v): return vec_push(xs, v)",
-        "def __map_new(): return map_new()",
-        "def __map_has(m, k): return map_has(m, k)",
-        "def __map_get(m, k): return map_get(m, k)",
-        "def __map_set(m, k, v): return map_set(m, k, v)",
-        "def __file_exists(p): return file_exists(p)",
-        "def __file_remove(p): return file_remove(p)",
-        "def __tcp_connect(addr): return tcp_connect(addr)",
-        "def __tcp_send(sid, data): return tcp_send(sid, data)",
-        "def __tcp_recv(sid, n): return tcp_recv(sid, n)",
-        "def __tcp_close(sid): return tcp_close(sid)",
-        "def __to_json(v): return to_json(v)",
-        "def __from_json(s): return from_json(s)",
-        "def __sha256(s): return sha256(s)",
-        "def __hmac_sha256(k, s): return hmac_sha256(k, s)",
-        "def __proc_exit(code): return proc_exit(code)",
-        "def __env_get(k): return env_get(k)",
-        "def __cwd(): return cwd()",
-        "def __proc_run(cmd): return proc_run(cmd)",
-        "def __now_unix(): return now_unix()",
-        "def __monotonic_ms(): return monotonic_ms()",
-        "def __sleep_ms(ms): return sleep_ms(ms)",
-        "def __countOnes(x, bits=64): return countOnes(x, bits)",
-        "def __leadingZeros(x, bits=64): return leadingZeros(x, bits)",
-        "def __trailingZeros(x, bits=64): return trailingZeros(x, bits)",
-        "def __popcnt(x, bits=64): return popcnt(x, bits)",
-        "def __clz(x, bits=64): return clz(x, bits)",
-        "def __ctz(x, bits=64): return ctz(x, bits)",
-        "def __rotl(x, n, bits=64): return rotl(x, n, bits)",
-        "def __rotr(x, n, bits=64): return rotr(x, n, bits)",
+        "_astra_host_list_new = list_new",
+        "_astra_host_list_push = list_push",
+        "_astra_host_list_get = list_get",
+        "_astra_host_list_set = list_set",
+        "_astra_host_list_len = list_len",
+        "_astra_host_vec_new = vec_new",
+        "_astra_host_vec_from = vec_from",
+        "_astra_host_vec_len = vec_len",
+        "_astra_host_vec_get = vec_get",
+        "_astra_host_vec_set = vec_set",
+        "_astra_host_vec_push = vec_push",
+        "_astra_host_map_new = map_new",
+        "_astra_host_map_has = map_has",
+        "_astra_host_map_get = map_get",
+        "_astra_host_map_set = map_set",
+        "_astra_host_file_exists = file_exists",
+        "_astra_host_file_remove = file_remove",
+        "_astra_host_tcp_connect = tcp_connect",
+        "_astra_host_tcp_send = tcp_send",
+        "_astra_host_tcp_recv = tcp_recv",
+        "_astra_host_tcp_close = tcp_close",
+        "_astra_host_to_json = to_json",
+        "_astra_host_from_json = from_json",
+        "_astra_host_sha256 = sha256",
+        "_astra_host_hmac_sha256 = hmac_sha256",
+        "_astra_host_proc_exit = proc_exit",
+        "_astra_host_env_get = env_get",
+        "_astra_host_cwd = cwd",
+        "_astra_host_proc_run = proc_run",
+        "_astra_host_now_unix = now_unix",
+        "_astra_host_monotonic_ms = monotonic_ms",
+        "_astra_host_sleep_ms = sleep_ms",
+        "_astra_host_countOnes = countOnes",
+        "_astra_host_leadingZeros = leadingZeros",
+        "_astra_host_trailingZeros = trailingZeros",
+        "_astra_host_popcnt = popcnt",
+        "_astra_host_clz = clz",
+        "_astra_host_ctz = ctz",
+        "_astra_host_rotl = rotl",
+        "_astra_host_rotr = rotr",
+        "_astra_host_atomic_int_new = atomic_int_new",
+        "_astra_host_atomic_load = atomic_load",
+        "_astra_host_atomic_store = atomic_store",
+        "_astra_host_atomic_fetch_add = atomic_fetch_add",
+        "_astra_host_atomic_compare_exchange = atomic_compare_exchange",
+        "def __list_new(): return _astra_host_list_new()",
+        "def __list_push(xs, v): return _astra_host_list_push(xs, v)",
+        "def __list_get(xs, i): return _astra_host_list_get(xs, i)",
+        "def __list_set(xs, i, v): return _astra_host_list_set(xs, i, v)",
+        "def __list_len(xs): return _astra_host_list_len(xs)",
+        "def __vec_new(): return _astra_host_vec_new()",
+        "def __vec_from(xs): return _astra_host_vec_from(xs)",
+        "def __vec_len(xs): return _astra_host_vec_len(xs)",
+        "def __vec_get(xs, i): return _astra_host_vec_get(xs, i)",
+        "def __vec_set(xs, i, v): return _astra_host_vec_set(xs, i, v)",
+        "def __vec_push(xs, v): return _astra_host_vec_push(xs, v)",
+        "def __map_new(): return _astra_host_map_new()",
+        "def __map_has(m, k): return _astra_host_map_has(m, k)",
+        "def __map_get(m, k): return _astra_host_map_get(m, k)",
+        "def __map_set(m, k, v): return _astra_host_map_set(m, k, v)",
+        "def __file_exists(p): return _astra_host_file_exists(p)",
+        "def __file_remove(p): return _astra_host_file_remove(p)",
+        "def __tcp_connect(addr): return _astra_host_tcp_connect(addr)",
+        "def __tcp_send(sid, data): return _astra_host_tcp_send(sid, data)",
+        "def __tcp_recv(sid, n): return _astra_host_tcp_recv(sid, n)",
+        "def __tcp_close(sid): return _astra_host_tcp_close(sid)",
+        "def __to_json(v): return _astra_host_to_json(v)",
+        "def __from_json(s): return _astra_host_from_json(s)",
+        "def __sha256(s): return _astra_host_sha256(s)",
+        "def __hmac_sha256(k, s): return _astra_host_hmac_sha256(k, s)",
+        "def __proc_exit(code): return _astra_host_proc_exit(code)",
+        "def __env_get(k): return _astra_host_env_get(k)",
+        "def __cwd(): return _astra_host_cwd()",
+        "def __proc_run(cmd): return _astra_host_proc_run(cmd)",
+        "def __now_unix(): return _astra_host_now_unix()",
+        "def __monotonic_ms(): return _astra_host_monotonic_ms()",
+        "def __sleep_ms(ms): return _astra_host_sleep_ms(ms)",
+        "def __countOnes(x, bits=64): return _astra_host_countOnes(x, bits)",
+        "def __leadingZeros(x, bits=64): return _astra_host_leadingZeros(x, bits)",
+        "def __trailingZeros(x, bits=64): return _astra_host_trailingZeros(x, bits)",
+        "def __popcnt(x, bits=64): return _astra_host_popcnt(x, bits)",
+        "def __clz(x, bits=64): return _astra_host_clz(x, bits)",
+        "def __ctz(x, bits=64): return _astra_host_ctz(x, bits)",
+        "def __rotl(x, n, bits=64): return _astra_host_rotl(x, n, bits)",
+        "def __rotr(x, n, bits=64): return _astra_host_rotr(x, n, bits)",
+        "def __atomic_int_new(v): return _astra_host_atomic_int_new(v)",
+        "def __atomic_load(h): return _astra_host_atomic_load(h)",
+        "def __atomic_store(h, v): return _astra_host_atomic_store(h, v)",
+        "def __atomic_fetch_add(h, delta): return _astra_host_atomic_fetch_add(h, delta)",
+        "def __atomic_compare_exchange(h, expected, desired): return _astra_host_atomic_compare_exchange(h, expected, desired)",
         "def _astra_load_lib(name):",
         "    if name in _astra_libs:",
         "        return _astra_libs[name]",
@@ -547,6 +647,10 @@ def _expr(e: Any) -> str:
         return e.value
     if isinstance(e, WildcardPattern):
         raise CodegenError(_diag(e, "wildcard pattern `_` is only valid in match arms"))
+    if isinstance(e, OrPattern):
+        raise CodegenError(_diag(e, "or-patterns are only valid in match arms"))
+    if isinstance(e, GuardedPattern):
+        raise CodegenError(_diag(e, "match guards are only valid in match arms"))
     if isinstance(e, AwaitExpr):
         return f"await_result({_expr(e.expr)})"
     if isinstance(e, TryExpr):
@@ -636,6 +740,28 @@ def _target_expr(t: Any) -> str:
     return _expr(t)
 
 
+def _match_cond_py(match_value_name: str, pat: Any) -> str:
+    if isinstance(pat, WildcardPattern):
+        return "True"
+    if isinstance(pat, OrPattern):
+        conds = [_match_cond_py(match_value_name, p) for p in pat.patterns]
+        if not conds:
+            return "False"
+        return f"({' or '.join(conds)})"
+    if isinstance(pat, GuardedPattern):
+        base = _match_cond_py(match_value_name, pat.pattern)
+        return f"(({base}) and ({_expr(pat.guard)}))"
+    return f"{match_value_name} == {_expr(pat)}"
+
+
+def _has_unconditional_wildcard(pat: Any) -> bool:
+    if isinstance(pat, WildcardPattern):
+        return True
+    if isinstance(pat, GuardedPattern):
+        return False
+    return False
+
+
 def _stmt_py(st: Any, ind: int) -> list[str]:
     p = "    " * ind
     if isinstance(st, LetStmt):
@@ -676,19 +802,13 @@ def _stmt_py(st: Any, ind: int) -> list[str]:
                 lines.extend(_stmt_py(s, ind + 1))
         return lines
     if isinstance(st, MatchStmt):
-        lines = [f"{p}__match_value_{ind} = {_expr(st.expr)}"]
+        match_name = f"__match_value_{ind}"
+        lines = [f"{p}{match_name} = {_expr(st.expr)}"]
         has_wildcard = False
         for idx, (pat, body) in enumerate(st.arms):
-            if isinstance(pat, WildcardPattern):
-                has_wildcard = True
-                head = "if" if idx == 0 else "else"
-                if head == "if":
-                    lines.append(f"{p}if True:")
-                else:
-                    lines.append(f"{p}else:")
-            else:
-                head = "if" if idx == 0 else "elif"
-                lines.append(f"{p}{head} __match_value_{ind} == {_expr(pat)}:")
+            has_wildcard = has_wildcard or _has_unconditional_wildcard(pat)
+            head = "if" if idx == 0 else "elif"
+            lines.append(f"{p}{head} {_match_cond_py(match_name, pat)}:")
             if body:
                 for s in body:
                     lines.extend(_stmt_py(s, ind + 1))

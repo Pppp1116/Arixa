@@ -29,6 +29,8 @@ FLOAT_TYPES = {"f32", "f64"}
 PRIMITIVES = {"Int", "isize", "usize", "Float", "f32", "f64", "String", "str", "Bool", "Any", "Void", "Never", "Bytes"}
 COPY_SCALAR_TYPES = {"Float", "f32", "f64", "Bool"}
 NONE_LIT_TYPE = "<none>"
+_TRAIT_IMPLS_STACK: list[dict[str, set[str]]] = [{}]
+_KNOWN_TRAITS_STACK: list[set[str]] = [set()]
 
 
 def _is_option_type(typ: Any) -> bool:
@@ -135,6 +137,23 @@ def _canonical_type(typ: Any) -> str:
     return t
 
 
+def _substitute_typevars(typ: Any, bindings: dict[str, str]) -> str:
+    t = type_text(typ).strip()
+    if t in bindings:
+        return _canonical_type(bindings[t])
+    if t.startswith("&mut "):
+        return f"&mut {_substitute_typevars(t[5:], bindings)}"
+    if t.startswith("&"):
+        return f"&{_substitute_typevars(t[1:], bindings)}"
+    if _is_slice_type(t):
+        return f"[{_substitute_typevars(_slice_inner(t), bindings)}]"
+    parsed = _parse_parametric_type(t)
+    if parsed is not None:
+        base, args = parsed
+        return f"{base}<{', '.join(_substitute_typevars(a, bindings) for a in args)}>"
+    return _canonical_type(t)
+
+
 def _int_info(typ: str) -> tuple[int, bool] | None:
     parsed = parse_int_type_name(_canonical_type(typ))
     if parsed is None:
@@ -228,6 +247,11 @@ BUILTIN_SIGS: dict[str, BuiltinSig] = {
     "arg": BuiltinSig(["Int"], "String"),
     "spawn": BuiltinSig(None, "Int"),
     "join": BuiltinSig(["Int"], "Any"),
+    "__atomic_int_new": BuiltinSig(["Int"], "Int"),
+    "__atomic_load": BuiltinSig(["Int"], "Int"),
+    "__atomic_store": BuiltinSig(["Int", "Int"], "Int"),
+    "__atomic_fetch_add": BuiltinSig(["Int", "Int"], "Int"),
+    "__atomic_compare_exchange": BuiltinSig(["Int", "Int", "Int"], "Bool"),
     "alloc": BuiltinSig(["Int"], "Int"),
     "free": BuiltinSig(["Int"], "Void"),
     "await_result": BuiltinSig(["Any"], "Any"),
@@ -979,6 +1003,10 @@ def _typed(node: Any, typ: str) -> str:
     return typ
 
 
+def _current_trait_impls() -> dict[str, set[str]]:
+    return _TRAIT_IMPLS_STACK[-1] if _TRAIT_IMPLS_STACK else {}
+
+
 def _specialization_score(
     decl: FnDecl | ExternFnDecl,
     arg_types: list[str],
@@ -1015,6 +1043,16 @@ def _specialization_score(
         constrained += 1
         if pty == aty:
             exact += 1
+    where_bounds = list(getattr(decl, "where_bounds", []))
+    if where_bounds:
+        trait_impls = _current_trait_impls()
+        for tvar, trait_name in where_bounds:
+            concrete = bindings.get(tvar)
+            if concrete is None:
+                return None
+            have = trait_impls.get(trait_name, set())
+            if _canonical_type(concrete) not in have:
+                return None
     impl_bonus = 1 if getattr(decl, "is_impl", False) else 0
     return (exact, constrained, -wildcards, impl_bonus)
 
@@ -1143,6 +1181,8 @@ def analyze(
         fn_groups: dict[str, list[FnDecl | ExternFnDecl]] = {}
         structs: dict[str, StructDecl] = {}
         enums: dict[str, EnumDecl] = {}
+        traits: dict[str, TraitDecl] = {}
+        trait_impl_items: list[tuple[TraitImplDecl, str]] = []
         global_scope: dict[str, str] = {}
         global_fixed_scope: dict[str, bool] = {}
         imported_seen: set[str] = set()
@@ -1182,6 +1222,12 @@ def analyze(
                             if c != "Bool" and not _is_int_type(c):
                                 raise SemanticError(_diag(item_filename, item.line, item.col, "packed struct fields must be integer or bool types"))
                     structs[item.name] = item
+                    continue
+                if isinstance(item, TraitDecl):
+                    traits[item.name] = item
+                    continue
+                if isinstance(item, TraitImplDecl):
+                    trait_impl_items.append((item, item_filename))
                     continue
                 if isinstance(item, TypeAliasDecl):
                     _validate_decl_type(item.target, item_filename, item.line, item.col)
@@ -1228,6 +1274,57 @@ def analyze(
                 _record(err)
                 continue
 
+        trait_impls: dict[str, set[str]] = {name: set() for name in traits}
+        for impl_decl, impl_filename in trait_impl_items:
+            if impl_decl.trait_name not in traits:
+                _record(
+                    SemanticError(
+                        _diag(
+                            impl_filename,
+                            impl_decl.line,
+                            impl_decl.col,
+                            f"unknown trait {impl_decl.trait_name} in impl declaration",
+                        )
+                    )
+                )
+                continue
+            trait_impls.setdefault(impl_decl.trait_name, set()).add(_canonical_type(impl_decl.target_type))
+
+        for decls in fn_groups.values():
+            for fn in decls:
+                if not isinstance(fn, FnDecl):
+                    continue
+                known_types = set(PRIMITIVES) | set(structs.keys()) | set(enums.keys())
+                type_vars = set(fn.generics)
+                for _, pty in fn.params:
+                    if _is_typevar(pty, known_types):
+                        type_vars.add(pty)
+                if _is_typevar(fn.ret, known_types):
+                    type_vars.add(fn.ret)
+                for tvar, trait_name in getattr(fn, "where_bounds", []):
+                    if tvar not in type_vars:
+                        _record(
+                            SemanticError(
+                                _diag(
+                                    getattr(fn, "_source_filename", filename),
+                                    fn.line,
+                                    fn.col,
+                                    f"where-clause type variable {tvar} is not declared in function generics",
+                                )
+                            )
+                        )
+                    if trait_name not in traits:
+                        _record(
+                            SemanticError(
+                                _diag(
+                                    getattr(fn, "_source_filename", filename),
+                                    fn.line,
+                                    fn.col,
+                                    f"unknown trait {trait_name} in where clause",
+                                )
+                            )
+                        )
+
         prog.ffi_libs = set(sorted(ffi_libs))
 
         for name, decls in fn_groups.items():
@@ -1265,16 +1362,22 @@ def analyze(
             except SemanticError as err:
                 _record(err)
 
-        for decls in fn_groups.values():
-            for fn in decls:
-                if isinstance(fn, ExternFnDecl):
-                    continue
-                try:
-                    fn_filename = getattr(fn, "_source_filename", filename)
-                    _analyze_fn(fn, fn_groups, structs, enums, fn_filename, global_scope, global_fixed_scope)
-                except SemanticError as err:
-                    _record(err)
-                    continue
+        _KNOWN_TRAITS_STACK.append(set(traits.keys()))
+        _TRAIT_IMPLS_STACK.append({k: set(v) for k, v in trait_impls.items()})
+        try:
+            for decls in fn_groups.values():
+                for fn in decls:
+                    if isinstance(fn, ExternFnDecl):
+                        continue
+                    try:
+                        fn_filename = getattr(fn, "_source_filename", filename)
+                        _analyze_fn(fn, fn_groups, structs, enums, fn_filename, global_scope, global_fixed_scope)
+                    except SemanticError as err:
+                        _record(err)
+                        continue
+        finally:
+            _TRAIT_IMPLS_STACK.pop()
+            _KNOWN_TRAITS_STACK.pop()
         if errors:
             raise SemanticError("\n".join(errors))
     finally:
@@ -1396,6 +1499,34 @@ def _check_block(
         )
     borrow.release_scope(borrow_scopes[-1])
     move.release_scope(move_scopes[-1])
+
+
+def _flatten_or_pattern(pat: Any) -> list[Any]:
+    if isinstance(pat, OrPattern):
+        out: list[Any] = []
+        for p in pat.patterns:
+            out.extend(_flatten_or_pattern(p))
+        return out
+    return [pat]
+
+
+def _split_match_pattern(pat: Any) -> tuple[list[Any], Any | None]:
+    if isinstance(pat, GuardedPattern):
+        return _flatten_or_pattern(pat.pattern), pat.guard
+    return _flatten_or_pattern(pat), None
+
+
+def _enum_variant_name_for_pattern(pat: Any, enum_name: str) -> str | None:
+    if isinstance(pat, FieldExpr) and isinstance(pat.obj, Name) and pat.obj.value == enum_name:
+        return pat.field
+    if (
+        isinstance(pat, Call)
+        and isinstance(pat.fn, FieldExpr)
+        and isinstance(pat.fn.obj, Name)
+        and pat.fn.obj.value == enum_name
+    ):
+        return pat.fn.field
+    return None
 
 
 def _check_stmt(
@@ -1734,43 +1865,73 @@ def _check_stmt(
                 subject_enum_decl = enums[parsed_subject[0]]
         seen_wildcard = False
         for idx, (pat, body) in enumerate(st.arms):
-            if isinstance(pat, WildcardPattern):
+            patterns, guard_expr = _split_match_pattern(pat)
+            if guard_expr is not None:
+                gty = _infer(
+                    guard_expr,
+                    scopes,
+                    fixed_scopes,
+                    fn_groups,
+                    structs,
+                    enums,
+                    owned,
+                    borrow,
+                    move,
+                    filename,
+                    fn_name,
+                    unsafe_ok,
+                )
+                _require_type(filename, st.line, st.col, "Bool", gty, "match guard")
+
+            wildcard_count = sum(1 for p in patterns if isinstance(p, WildcardPattern))
+            if wildcard_count > 0 and len(patterns) > 1:
+                raise SemanticError(
+                    _diag(filename, pat.line, pat.col, "wildcard pattern `_` cannot be combined with `|` alternatives")
+                )
+            has_unconditional_wildcard = wildcard_count == 1 and guard_expr is None
+            if has_unconditional_wildcard:
                 if seen_wildcard:
                     raise SemanticError(_diag(filename, pat.line, pat.col, "duplicate wildcard match arm"))
                 if idx != len(st.arms) - 1:
                     raise SemanticError(_diag(filename, pat.line, pat.col, "wildcard match arm must be last"))
                 seen_wildcard = True
-                pty = subject_ty
-            else:
-                pty = _infer(pat, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+
+            for alt_pat in patterns:
+                if isinstance(alt_pat, WildcardPattern):
+                    continue
+                pty = _infer(
+                    alt_pat,
+                    scopes,
+                    fixed_scopes,
+                    fn_groups,
+                    structs,
+                    enums,
+                    owned,
+                    borrow,
+                    move,
+                    filename,
+                    fn_name,
+                    unsafe_ok,
+                )
                 if subject_ty != "Any":
                     _require_type(filename, st.line, st.col, subject_ty, pty, "match pattern")
-                if isinstance(pat, BoolLit):
-                    if pat.value in seen_bool:
-                        value_text = "true" if pat.value else "false"
-                        raise SemanticError(_diag(filename, pat.line, pat.col, f"duplicate Bool match arm for {value_text}"))
-                    seen_bool.add(pat.value)
-                if subject_enum_decl is not None:
+                if guard_expr is None and isinstance(alt_pat, BoolLit):
+                    if alt_pat.value in seen_bool:
+                        value_text = "true" if alt_pat.value else "false"
+                        raise SemanticError(_diag(filename, alt_pat.line, alt_pat.col, f"duplicate Bool match arm for {value_text}"))
+                    seen_bool.add(alt_pat.value)
+                if guard_expr is None and subject_enum_decl is not None:
                     enum_name = subject_enum_decl.name
-                    variant_name: str | None = None
-                    if isinstance(pat, FieldExpr) and isinstance(pat.obj, Name) and pat.obj.value == enum_name:
-                        variant_name = pat.field
-                    elif (
-                        isinstance(pat, Call)
-                        and isinstance(pat.fn, FieldExpr)
-                        and isinstance(pat.fn.obj, Name)
-                        and pat.fn.obj.value == enum_name
-                    ):
-                        variant_name = pat.fn.field
+                    variant_name = _enum_variant_name_for_pattern(alt_pat, enum_name)
                     if variant_name is not None:
                         known = {name for name, _ in subject_enum_decl.variants}
                         if variant_name not in known:
                             raise SemanticError(
-                                _diag(filename, pat.line, pat.col, f"unknown enum variant {enum_name}.{variant_name}")
+                                _diag(filename, alt_pat.line, alt_pat.col, f"unknown enum variant {enum_name}.{variant_name}")
                             )
                         if variant_name in seen_enum_variants:
                             raise SemanticError(
-                                _diag(filename, pat.line, pat.col, f"duplicate enum match arm for {enum_name}.{variant_name}")
+                                _diag(filename, alt_pat.line, alt_pat.col, f"duplicate enum match arm for {enum_name}.{variant_name}")
                             )
                         seen_enum_variants.add(variant_name)
             arm_scopes = scopes + [{}]
@@ -1842,6 +2003,10 @@ def _infer(
 ):
     if isinstance(e, WildcardPattern):
         raise SemanticError(_diag(filename, e.line, e.col, "wildcard pattern `_` is only valid in match arms"))
+    if isinstance(e, OrPattern):
+        raise SemanticError(_diag(filename, e.line, e.col, "or-patterns are only valid in match arms"))
+    if isinstance(e, GuardedPattern):
+        raise SemanticError(_diag(filename, e.line, e.col, "match guards are only valid in match arms"))
     if isinstance(e, BoolLit):
         return _typed(e, "Bool")
     if isinstance(e, NilLit):
@@ -2286,15 +2451,22 @@ def _infer_call(
                     )
             elif len(e.args) != len(decl.params):
                 raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects {len(decl.params)} args, got {len(e.args)}"))
+            type_bindings: dict[str, str] = {}
             for i, ((_, pty), arg) in enumerate(zip(decl.params, e.args)):
                 aty = arg_types[i]
+                if _is_typevar(pty, known_types):
+                    bound = type_bindings.get(pty)
+                    if bound is None:
+                        type_bindings[pty] = aty
+                    elif not _same_type(bound, aty):
+                        raise SemanticError(_diag(filename, arg.line, arg.col, f"inconsistent generic binding for {pty}: {bound} vs {aty}"))
                 if not _is_typevar(pty, known_types):
                     _require_type(filename, arg.line, arg.col, pty, aty, f"arg {i} for {name}")
                 if not _is_ref_type(pty) and pty != "Any" and not _is_typevar(pty, known_types):
                     _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
             if isinstance(decl, FnDecl):
                 e.resolved_name = decl.symbol or decl.name
-            return decl.ret
+            return _substitute_typevars(decl.ret, type_bindings)
         local = _lookup(name, scopes)
         if local is not None:
             setattr(e.fn, "inferred_type", local)

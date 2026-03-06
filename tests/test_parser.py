@@ -15,6 +15,7 @@ from astra.ast import (
     FieldExpr,
     FnDecl,
     ForStmt,
+    GuardedPattern,
     ImportDecl,
     IndexExpr,
     LetStmt,
@@ -23,10 +24,13 @@ from astra.ast import (
     MaxValTypeExpr,
     MinValTypeExpr,
     Name,
+    OrPattern,
     RangeExpr,
     SizeOfTypeExpr,
     SizeOfValueExpr,
     StructDecl,
+    TraitDecl,
+    TraitImplDecl,
     TypeAliasDecl,
     TryExpr,
     Unary,
@@ -126,6 +130,51 @@ def test_parse_match_accepts_wildcard_pattern():
     m = fn.body[1]
     assert isinstance(m, MatchStmt)
     assert isinstance(m.arms[0][0], WildcardPattern)
+
+
+def test_parse_match_or_pattern_and_guard():
+    src = """
+fn main() -> Int {
+  let x = 2;
+  match x {
+    1 | 2 if x == 2 => { return 7; }
+    _ => { return 0; }
+  }
+  return 0;
+}
+"""
+    prog = parse(src)
+    fn = prog.items[0]
+    m = fn.body[1]
+    assert isinstance(m, MatchStmt)
+    pat = m.arms[0][0]
+    assert isinstance(pat, GuardedPattern)
+    assert isinstance(pat.pattern, OrPattern)
+    assert len(pat.pattern.patterns) == 2
+
+
+def test_parse_trait_where_and_trait_impl():
+    src = """
+trait Show {
+  fn show(x Self) -> String;
+}
+
+impl Show for Int;
+
+fn wrap<T>(x T) -> T where T: Show {
+  return x;
+}
+"""
+    prog = parse(src)
+    assert isinstance(prog.items[0], TraitDecl)
+    assert prog.items[0].name == "Show"
+    assert isinstance(prog.items[1], TraitImplDecl)
+    assert prog.items[1].trait_name == "Show"
+    assert prog.items[1].target_type == "Int"
+    fn = prog.items[2]
+    assert isinstance(fn, FnDecl)
+    assert fn.generics == ["T"]
+    assert fn.where_bounds == [("T", "Show")]
 
 
 def test_import_supports_dotted_module_and_string_forms():

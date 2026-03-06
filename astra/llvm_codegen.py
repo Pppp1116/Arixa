@@ -838,10 +838,22 @@ def _declare_runtime(ctx: _ModuleCtx, name: str) -> ir.Function:
         fnty = ir.FunctionType(i64, [])
     elif name == "astra_arg":
         fnty = ir.FunctionType(i8p, [i64])
+    elif name == "astra_spawn_start":
+        fnty = ir.FunctionType(i64, [i64, i64])
     elif name == "astra_spawn_store":
         fnty = ir.FunctionType(i64, [i64])
     elif name == "astra_join":
         fnty = ir.FunctionType(i64, [i64])
+    elif name == "astra_atomic_int_new":
+        fnty = ir.FunctionType(i64, [i64])
+    elif name == "astra_atomic_load":
+        fnty = ir.FunctionType(i64, [i64])
+    elif name == "astra_atomic_store":
+        fnty = ir.FunctionType(i64, [i64, i64])
+    elif name == "astra_atomic_fetch_add":
+        fnty = ir.FunctionType(i64, [i64, i64])
+    elif name == "astra_atomic_compare_exchange":
+        fnty = ir.FunctionType(i1, [i64, i64, i64])
     elif name == "astra_list_new":
         fnty = ir.FunctionType(i64, [])
     elif name == "astra_list_push":
@@ -1262,6 +1274,31 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
     def _as_any_i64(v: _Value, node: Any) -> ir.Value:
         return _coerce_value(ctx, state, v.value, v.ty, "Any", node)
 
+    def _spawn_entry_wrapper(arity: int) -> ir.Function:
+        key = f"__astra_spawn_entry_i64_{arity}"
+        existing = ctx.fn_map.get(key)
+        if isinstance(existing, ir.Function):
+            return existing
+        payload_i64p = i64.as_pointer()
+        wrapper = ir.Function(ctx.module, ir.FunctionType(i64, [i64]), name=key)
+        ctx.fn_map[key] = wrapper
+        wb = ir.IRBuilder(wrapper.append_basic_block("entry"))
+        payload_ptr = wb.inttoptr(wrapper.args[0], payload_i64p)
+        fn_bits_ptr = wb.gep(payload_ptr, [ir.Constant(i64, 0)])
+        fn_bits = wb.load(fn_bits_ptr)
+        worker_ty = ir.FunctionType(i64, [i64 for _ in range(arity)])
+        worker_ptr = wb.inttoptr(fn_bits, worker_ty.as_pointer())
+        args: list[ir.Value] = []
+        for idx in range(arity):
+            arg_ptr = wb.gep(payload_ptr, [ir.Constant(i64, idx + 1)])
+            args.append(wb.load(arg_ptr))
+        free_fn = _declare_runtime(ctx, "astra_free")
+        payload_size = ir.Constant(i64, (arity + 1) * 8)
+        wb.call(free_fn, [wrapper.args[0], payload_size, ir.Constant(i64, 8)])
+        out = wb.call(worker_ptr, args)
+        wb.ret(out)
+        return wrapper
+
     if base == "vec_new":
         if len(call.args) != 0:
             raise CodegenError(_diag(call, "vec_new expects 0 arguments"))
@@ -1477,13 +1514,35 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
     if base == "spawn":
         if len(call.args) < 1:
             raise CodegenError(_diag(call, "spawn expects at least a function argument"))
-        pseudo = Call(fn=call.args[0], args=call.args[1:], pos=call.pos, line=call.line, col=call.col)
-        resolved = getattr(call, "spawn_resolved_name", None)
-        if isinstance(resolved, str):
-            pseudo.resolved_name = resolved
-        out = _compile_call(ctx, state, pseudo, overflow_mode=overflow_mode)
-        fn = _declare_runtime(ctx, "astra_spawn_store")
-        tid = b.call(fn, [_as_any_i64(out, call)])
+        _declare_runtime(ctx, "astra_spawn_store")
+        worker = _compile_expr(ctx, state, call.args[0], overflow_mode=overflow_mode)
+        parsed = _parse_fn_type(worker.ty)
+        if parsed is None:
+            raise CodegenError(_diag(call, "spawn expects function value as arg 0"))
+        worker_param_tys, worker_ret_ty = parsed
+        if len(worker_param_tys) != len(call.args) - 1:
+            raise CodegenError(
+                _diag(call, f"spawn worker expects {len(worker_param_tys)} args, got {len(call.args) - 1}")
+            )
+        if _canonical_type(worker_ret_ty) != "Int":
+            raise CodegenError(_diag(call, "spawn currently requires worker return type Int"))
+        for idx, pty in enumerate(worker_param_tys):
+            if _canonical_type(pty) != "Int":
+                raise CodegenError(_diag(call.args[idx + 1], "spawn currently supports only Int worker parameters"))
+        arity = len(worker_param_tys)
+        payload_ptr_i8 = _alloc_bytes(ctx, state, ir.Constant(i64, (arity + 1) * 8), ir.Constant(i64, 8), call)
+        payload_ptr = b.bitcast(payload_ptr_i8, i64.as_pointer())
+        worker_ptr_i8 = _as_i8_ptr(state, worker.value, call.args[0])
+        worker_bits = b.ptrtoint(worker_ptr_i8, i64)
+        b.store(worker_bits, b.gep(payload_ptr, [ir.Constant(i64, 0)]))
+        for idx, arg_node in enumerate(call.args[1:]):
+            av = _compile_expr(ctx, state, arg_node, overflow_mode=overflow_mode)
+            ai64 = _as_i64(av, arg_node)
+            b.store(ai64, b.gep(payload_ptr, [ir.Constant(i64, idx + 1)]))
+        wrapper = _spawn_entry_wrapper(arity)
+        wrapper_bits = b.ptrtoint(wrapper, i64)
+        fn = _declare_runtime(ctx, "astra_spawn_start")
+        tid = b.call(fn, [wrapper_bits, b.ptrtoint(payload_ptr_i8, i64)])
         return _Value(tid, "Int")
 
     if base == "join":
@@ -1493,6 +1552,53 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
         fn = _declare_runtime(ctx, "astra_join")
         out = b.call(fn, [_as_i64(t, call.args[0])])
         return _Value(out, "Any")
+
+    if base == "atomic_int_new":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "atomic_int_new expects 1 argument"))
+        v = _compile_expr(ctx, state, call.args[0])
+        fn = _declare_runtime(ctx, "astra_atomic_int_new")
+        out = b.call(fn, [_as_i64(v, call.args[0])])
+        return _Value(out, "Int")
+
+    if base == "atomic_load":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "atomic_load expects 1 argument"))
+        h = _compile_expr(ctx, state, call.args[0])
+        fn = _declare_runtime(ctx, "astra_atomic_load")
+        out = b.call(fn, [_as_i64(h, call.args[0])])
+        return _Value(out, "Int")
+
+    if base == "atomic_store":
+        if len(call.args) != 2:
+            raise CodegenError(_diag(call, "atomic_store expects 2 arguments"))
+        h = _compile_expr(ctx, state, call.args[0])
+        v = _compile_expr(ctx, state, call.args[1])
+        fn = _declare_runtime(ctx, "astra_atomic_store")
+        out = b.call(fn, [_as_i64(h, call.args[0]), _as_i64(v, call.args[1])])
+        return _Value(out, "Int")
+
+    if base == "atomic_fetch_add":
+        if len(call.args) != 2:
+            raise CodegenError(_diag(call, "atomic_fetch_add expects 2 arguments"))
+        h = _compile_expr(ctx, state, call.args[0])
+        d = _compile_expr(ctx, state, call.args[1])
+        fn = _declare_runtime(ctx, "astra_atomic_fetch_add")
+        out = b.call(fn, [_as_i64(h, call.args[0]), _as_i64(d, call.args[1])])
+        return _Value(out, "Int")
+
+    if base == "atomic_compare_exchange":
+        if len(call.args) != 3:
+            raise CodegenError(_diag(call, "atomic_compare_exchange expects 3 arguments"))
+        h = _compile_expr(ctx, state, call.args[0])
+        expected = _compile_expr(ctx, state, call.args[1])
+        desired = _compile_expr(ctx, state, call.args[2])
+        fn = _declare_runtime(ctx, "astra_atomic_compare_exchange")
+        out = b.call(
+            fn,
+            [_as_i64(h, call.args[0]), _as_i64(expected, call.args[1]), _as_i64(desired, call.args[2])],
+        )
+        return _Value(out, "Bool")
 
     if base == "list_new":
         if len(call.args) != 0:
@@ -1945,6 +2051,11 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
             "__spawn",
             "__join",
             "__await_result",
+            "__atomic_int_new",
+            "__atomic_load",
+            "__atomic_store",
+            "__atomic_fetch_add",
+            "__atomic_compare_exchange",
             "__list_new",
             "__list_push",
             "__list_get",
@@ -2031,6 +2142,10 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
     b = state.builder
     if isinstance(e, WildcardPattern):
         raise CodegenError(_diag(e, "wildcard pattern `_` is only valid in match arms"))
+    if isinstance(e, OrPattern):
+        raise CodegenError(_diag(e, "or-patterns are only valid in match arms"))
+    if isinstance(e, GuardedPattern):
+        raise CodegenError(_diag(e, "match guards are only valid in match arms"))
     if isinstance(e, BoolLit):
         return _Value(ir.Constant(ir.IntType(1), 1 if e.value else 0), "Bool")
     if isinstance(e, NilLit):
@@ -2506,6 +2621,47 @@ def _collect_defer_sites(stmts: list[Any], out: list[DeferStmt]) -> None:
             _collect_defer_sites(st.body, out)
 
 
+def _compile_match_condition(
+    ctx: _ModuleCtx,
+    state: _FnState,
+    subj: _Value,
+    pat: Any,
+    overflow_mode: str,
+) -> ir.Value:
+    b = state.builder
+    if isinstance(pat, WildcardPattern):
+        return ir.Constant(ir.IntType(1), 1)
+    if isinstance(pat, GuardedPattern):
+        cond = _compile_match_condition(ctx, state, subj, pat.pattern, overflow_mode)
+        fn = state.fn_ir
+        no_guard_block = b.block
+        guard_block = fn.append_basic_block("match_guard")
+        merge_block = fn.append_basic_block("match_guard_end")
+        b.cbranch(cond, guard_block, merge_block)
+
+        b.position_at_end(guard_block)
+        g = _compile_expr(ctx, state, pat.guard, overflow_mode=overflow_mode)
+        gv = _coerce_value(ctx, state, g.value, g.ty, "Bool", pat.guard)
+        b.branch(merge_block)
+        guard_done = b.block
+
+        b.position_at_end(merge_block)
+        phi = b.phi(ir.IntType(1))
+        phi.add_incoming(ir.Constant(ir.IntType(1), 0), no_guard_block)
+        phi.add_incoming(gv, guard_done)
+        return phi
+    if isinstance(pat, OrPattern):
+        out = ir.Constant(ir.IntType(1), 0)
+        for alt in pat.patterns:
+            out = b.or_(out, _compile_match_condition(ctx, state, subj, alt, overflow_mode))
+        return out
+    pv = _compile_expr(ctx, state, pat, overflow_mode=overflow_mode)
+    pvv = _coerce_value(ctx, state, pv.value, pv.ty, subj.ty, pat)
+    if isinstance(subj.value.type, (ir.FloatType, ir.DoubleType)):
+        return b.fcmp_ordered("==", subj.value, pvv)
+    return b.icmp_unsigned("==", subj.value, pvv)
+
+
 def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str) -> None:
     b = state.builder
 
@@ -2890,17 +3046,9 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
         for i, (pat, body) in enumerate(st.arms):
             state.builder.position_at_end(cur_check)
             arm_block = fn.append_basic_block(f"match_arm_{i}")
-            if isinstance(pat, WildcardPattern):
-                state.builder.branch(arm_block)
-            else:
-                next_block = fn.append_basic_block(f"match_next_{i}")
-                pv = _compile_expr(ctx, state, pat, overflow_mode=overflow_mode)
-                pvv = _coerce_value(ctx, state, pv.value, pv.ty, subj.ty, pat)
-                if isinstance(subj.value.type, (ir.FloatType, ir.DoubleType)):
-                    cmpv = state.builder.fcmp_ordered("==", subj.value, pvv)
-                else:
-                    cmpv = state.builder.icmp_unsigned("==", subj.value, pvv)
-                state.builder.cbranch(cmpv, arm_block, next_block)
+            next_block = fn.append_basic_block(f"match_next_{i}")
+            cmpv = _compile_match_condition(ctx, state, subj, pat, overflow_mode)
+            state.builder.cbranch(cmpv, arm_block, next_block)
 
             state.builder.position_at_end(arm_block)
             for sub in body:
@@ -2909,15 +3057,11 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
                     break
             if not _is_terminated(state):
                 state.builder.branch(end_block)
-            if isinstance(pat, WildcardPattern):
-                cur_check = None
-                break
             cur_check = next_block
 
-        if cur_check is not None:
-            state.builder.position_at_end(cur_check)
-            if not _is_terminated(state):
-                state.builder.branch(end_block)
+        state.builder.position_at_end(cur_check)
+        if not _is_terminated(state):
+            state.builder.branch(end_block)
         state.builder.position_at_end(end_block)
         return
 

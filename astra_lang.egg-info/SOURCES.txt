@@ -28,6 +28,9 @@ astra/profiler.py
 astra/runtime.py
 astra/semantic.py
 astra/assets/runtime/llvm_runtime.c
+astra/stdlib/atomic.astra
+astra/stdlib/c.astra
+astra/stdlib/channel.astra
 astra/stdlib/collections.astra
 astra/stdlib/core.astra
 astra/stdlib/crypto.astra
@@ -38,6 +41,8 @@ astra/stdlib/net.astra
 astra/stdlib/process.astra
 astra/stdlib/serde.astra
 astra/stdlib/str.astra
+astra/stdlib/sync.astra
+astra/stdlib/thread.astra
 astra/stdlib/time.astra
 astra/stdlib/vec.astra
 astra/stdlib/bindings/libc.astra
@@ -71,6 +76,7 @@ tests/test_layout_dynamic_int.py
 tests/test_lexer.py
 tests/test_lsp_server.py
 tests/test_main_default_return.py
+tests/test_match_runtime.py
 tests/test_mega_demo.py
 tests/test_metamorphic_runtime.py
 tests/test_module_resolver.py
@@ -81,8 +87,12 @@ tests/test_parser.py
 tests/test_pkg.py
 tests/test_property_fuzz.py
 tests/test_semantic.py
+tests/test_std_concurrency_runtime.py
+tests/test_std_net_runtime.py
 tests/test_stdlib_modules.py
 tests/test_tooling_inprocess.py
 tests/test_tools.py
+tests/test_trait_where_runtime.py
+tests/test_try_runtime.py
 tests/test_vscode_extension.py
 tests/test_x86_assembly_verification.py

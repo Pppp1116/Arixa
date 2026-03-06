@@ -2,7 +2,7 @@
 
 Source: `stdlib/thread.astra`
 
-Status: `experimental` (hosted runtime wrapper)
+Status: `partial` (runtime-backed threads)
 
 Functions:
 
@@ -14,4 +14,5 @@ Functions:
 Notes:
 
 - Task IDs are runtime handles.
-- API is cooperative and runtime-dependent.
+- Native backend executes `spawn` work on OS threads and blocks in `join`.
+- Worker signatures are currently `fn() -> Int` and `fn(Int) -> Int` via `spawn0`/`spawn1`.

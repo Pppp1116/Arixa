@@ -14,9 +14,9 @@ Status labels:
 | Area | Status | Current State | Next Concrete Step | Acceptance Criteria |
 | --- | --- | --- | --- | --- |
 | Syntax and parsing | stable | Core syntax, async/await keywords, unsafe, generics, match are parsed. | Keep grammar docs synced with parser changes. | Parser + formatter + syntax docs updated in same PR. |
-| Semantic typing | partial | Strong baseline checks and integer strictness exist. | Add trait/interface constraints (`where`, bounded generics). | New constrained-generic tests pass; invalid impl overlap rejected. |
-| Generics | partial | Parametric + impl specialization exists without trait bounds/coherence model. | Introduce trait declarations and constrained resolution. | Coherence and method resolution tests pass. |
-| Pattern matching | partial | Wildcard + Bool + enum-variant exhaustiveness checks are implemented (without deep destructuring/guards). | Implement ADT destructuring, guard/or-pattern coverage checker. | Exhaustiveness/redundancy suite for enums and nested patterns passes. |
+| Semantic typing | partial | Strong baseline checks and integer strictness exist, including `trait` declarations, `impl Trait for Type` markers, and `where`-bounded call resolution for generic impl functions. | Add trait method requirements and coherence diagnostics for conflicting trait impls. | New constrained-generic tests pass; invalid impl overlap rejected. |
+| Generics | partial | Parametric + impl specialization exists with `where` trait bounds for overload resolution and return-type substitution from inferred type vars. | Expand to full coherence rules and richer trait-driven method resolution. | Coherence and method resolution tests pass. |
+| Pattern matching | partial | Wildcard + Bool + enum-variant exhaustiveness checks are implemented with `|` alternatives and `if` guards (without deep ADT destructuring). | Implement ADT destructuring and deeper nested-pattern coverage checker. | Exhaustiveness/redundancy suite for enums and nested patterns passes. |
 | Ownership/borrow safety | partial | Move checks + borrow state + basic lifetime-like return rule implemented. | Extend region/lifetime reasoning and diagnostics. | Borrow/lifetime regression suite covers escapes and aliasing edge cases. |
 | Error handling ergonomics | partial | `Option`/`Result` enums exist; `?` supports `Option<T>` and `Result<T, E>` in semantic analysis plus Python and LLVM/native lowering. | Add richer `Result` ergonomics (`map`, `and_then`, pattern destructuring) and diagnostics polish. | `?` behavior is parity-tested for `Option`/`Result` across Python and native backends. |
 | Compile-time evaluation | experimental | `comptime` infra exists and is tested for basic cases. | Expand deterministic CTFE boundaries + diagnostics. | CTFE failure diagnostics include stable spans and notes. |
@@ -28,7 +28,7 @@ Status labels:
 | Python backend | partial | Broad hosted feature support; fast dev loop backend. | Keep behavior aligned with documented semantics. | Golden semantic behavior stays consistent across releases. |
 | LLVM IR backend | partial | Extensive IR lowering and validation pipeline. | Continue parity hardening for hosted runtime APIs. | Backend parity tests cover builtins used by stdlib wrappers. |
 | Native runtime helpers | partial | Runtime includes memory, file/process/time helpers and TCP on POSIX. | Implement platform shims for non-POSIX networking. | Native network tests pass on Linux/macOS and have explicit Windows status. |
-| Async/concurrency runtime | experimental | `spawn/join/await_result` surface exists; not a full async scheduler model. | Decide and document final threading/async contract. | Docs + runtime + tests converge on one model. |
+| Async/concurrency runtime | partial | Native `spawn/join` uses real OS threads for Int worker signatures; `await_result` remains lightweight without a full async scheduler contract. | Finalize scheduler/runtime contract for async beyond thread spawn/join. | Async/threading docs and stress tests cover the finalized model. |
 | Cross-platform target matrix | partial | LLVM target triple support exists, runtime is mostly POSIX-oriented. | Define tier targets + CI matrix. | CI executes core suite on declared tier-1 targets. |
 
 ## Tooling and Ecosystem
@@ -47,8 +47,8 @@ Status labels:
 | --- | --- | --- | --- | --- |
 | `std.core` / checked numerics | stable | `Option`/`Result` and checked int helpers exist. | Add ergonomic sugar support (`?`) from language side. | Core error-handling examples compile and pass. |
 | Collections | experimental | Dynamic list/map wrappers over runtime `Any`. | Add typed containers + iterator abstractions. | Typed container API has unit + semantic tests. |
-| Concurrency helpers | experimental | `std.thread`, `std.sync`, `std.channel`, and `std.atomic` provide hosted/cooperative APIs. | Upgrade wrappers to true runtime-backed primitives with stronger guarantees. | Concurrency API behavior is parity-tested on Python/native backends with stress tests. |
-| Networking | experimental | TCP helper wrappers implemented for hosted backends. | Add richer socket/error model and non-blocking options. | TCP tests include connect/send/recv/close success + failures. |
+| Concurrency helpers | partial | `std.thread` spawn/join and `std.atomic` are runtime-backed (OS threads + seq-cst atomics); `std.sync`/`std.channel` are still cooperative wrappers. | Replace cooperative sync/channel wrappers with runtime-backed primitives. | Thread/atomic behavior and sync/channel semantics are parity-tested with stress coverage. |
+| Networking | experimental | TCP helper wrappers implemented for hosted backends with cross-backend parity coverage for connect/send/recv/close success + failure paths. | Add richer socket/error model and non-blocking options. | TCP tests include connect/send/recv/close success + failures. |
 | Serde | experimental | JSON serialize/deserialize wrappers for dynamic values. | Add typed decode and derive hooks. | Typed serde roundtrip tests and diagnostics pass. |
 | Crypto | experimental | SHA-256 and HMAC-SHA256 wrappers. | Add RNG/KDF/AEAD APIs with safer typed contracts. | Crypto API tests include misuse-resistant paths. |
 | Math | stable | Pure integer helper functions. | Expand float/trig utilities as separate stable module. | Math docs + tests for new APIs pass in hosted/freestanding modes. |

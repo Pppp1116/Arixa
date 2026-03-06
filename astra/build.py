@@ -38,6 +38,7 @@ from astra.ast import (
     FieldExpr,
     FnDecl,
     ForStmt,
+    GuardedPattern,
     IfStmt,
     ImportDecl,
     IndexExpr,
@@ -51,10 +52,13 @@ from astra.ast import (
     Program,
     RangeExpr,
     ReturnStmt,
+    OrPattern,
     SizeOfTypeExpr,
     SizeOfValueExpr,
     StructDecl,
     StructLit,
+    TraitDecl,
+    TraitImplDecl,
     TryExpr,
     TypeAliasDecl,
     TypeAnnotated,
@@ -404,7 +408,7 @@ def _dependency_native_link_data(src_file: Path) -> tuple[set[str], list[str]]:
     return libs, link_args
 
 
-_STRICT_TOP_LEVEL = {FnDecl, StructDecl, EnumDecl, TypeAliasDecl, ImportDecl, ExternFnDecl, LetStmt}
+_STRICT_TOP_LEVEL = {FnDecl, StructDecl, EnumDecl, TraitDecl, TraitImplDecl, TypeAliasDecl, ImportDecl, ExternFnDecl, LetStmt}
 _STRICT_STMTS = {LetStmt, AssignStmt, ReturnStmt, ExprStmt, DropStmt, IfStmt, MatchStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, ComptimeStmt, DeferStmt, UnsafeStmt}
 _STRICT_EXPRS = {
     Literal,
@@ -430,6 +434,8 @@ _STRICT_EXPRS = {
     SizeOfValueExpr,
     AlignOfValueExpr,
     WildcardPattern,
+    OrPattern,
+    GuardedPattern,
     RangeExpr,
 }
 _STRICT_UNARY_OPS = {"-", "!", "~", "&", "&mut", "*"}
@@ -503,6 +509,14 @@ def _strict_walk_expr(e: object, errs: list[str]) -> None:
         return
     if isinstance(e, CastExpr):
         _strict_walk_expr(e.expr, errs)
+        return
+    if isinstance(e, OrPattern):
+        for p in e.patterns:
+            _strict_walk_expr(p, errs)
+        return
+    if isinstance(e, GuardedPattern):
+        _strict_walk_expr(e.pattern, errs)
+        _strict_walk_expr(e.guard, errs)
         return
     if isinstance(e, RangeExpr):
         _strict_walk_expr(e.start, errs)
@@ -639,7 +653,7 @@ def _build_native_llvm(
                 raise RuntimeError(
                     f"CODEGEN {src_file}:1:1: missing runtime source; set ASTRA_RUNTIME_C_PATH or install bundled runtime"
                 )
-            cmd = [clang, opt_flag, str(ll_path), str(runtime_c), "-lm", "-o", str(out)]
+            cmd = [clang, opt_flag, str(ll_path), str(runtime_c), "-lm", "-pthread", "-o", str(out)]
         if link_libs:
             for lib in sorted(set(link_libs)):
                 if lib:

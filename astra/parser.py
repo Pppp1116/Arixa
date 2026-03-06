@@ -152,6 +152,7 @@ class Parser:
             "impl",
             "struct",
             "enum",
+            "trait",
             "type",
             "import",
             "extern",
@@ -276,6 +277,20 @@ class Parser:
                 self._err("@packed is only valid on struct declarations")
                 raise ParseError(self.errors[-1])
             return self.parse_enum(is_pub, doc)
+        if self.cur().kind == "trait":
+            if link_libs:
+                self._err("@link is only valid on extern function declarations")
+                raise ParseError(self.errors[-1])
+            if is_unsafe or is_async:
+                self._err("trait cannot be prefixed with unsafe/async")
+                raise ParseError(self.errors[-1])
+            if is_impl:
+                self._err("impl cannot prefix trait declarations")
+                raise ParseError(self.errors[-1])
+            if is_packed:
+                self._err("@packed is only valid on struct declarations")
+                raise ParseError(self.errors[-1])
+            return self.parse_trait(is_pub, doc)
         if self.cur().kind == "type":
             if link_libs:
                 self._err("@link is only valid on extern function declarations")
@@ -300,6 +315,11 @@ class Parser:
                 self._err("@link is only valid on extern function declarations")
                 raise ParseError(self.errors[-1])
             return self.parse_fn(is_pub, is_async, doc, is_impl=is_impl, is_unsafe=is_unsafe)
+        if is_impl and self.cur().kind == "IDENT":
+            if is_pub or is_unsafe or is_async or link_libs or is_packed:
+                self._err("trait impls cannot be combined with declaration modifiers or attributes")
+                raise ParseError(self.errors[-1])
+            return self.parse_trait_impl()
         if self.cur().kind in {"let", "fixed"}:
             if link_libs or is_packed or is_pub or is_unsafe or is_async or is_impl:
                 self._err("top-level bindings cannot use declaration modifiers or attributes")
@@ -353,6 +373,20 @@ class Parser:
             generics.append(self.eat("IDENT").text)
         self.eat(">")
         return generics
+
+    def _parse_where_bounds(self) -> list[tuple[str, str]]:
+        bounds: list[tuple[str, str]] = []
+        if not self.opt("where"):
+            return bounds
+        while True:
+            tvar = self.eat("IDENT").text
+            self.eat(":")
+            bounds.append((tvar, self.eat("IDENT").text))
+            while self.opt("+"):
+                bounds.append((tvar, self.eat("IDENT").text))
+            if not self.opt(","):
+                break
+        return bounds
 
     def _parse_params(self, *, allow_variadic: bool = False) -> tuple[list[tuple[str, str]], bool]:
         params: list[tuple[str, str]] = []
@@ -463,6 +497,7 @@ class Parser:
         else:
             self._err("expected -> return type", self.cur())
             raise ParseError(self.errors[-1])
+        where_bounds = self._parse_where_bounds()
         body = self.parse_block()
         return FnDecl(
             name,
@@ -475,6 +510,7 @@ class Parser:
             async_fn=is_async,
             unsafe=is_unsafe,
             doc=doc,
+            where_bounds=where_bounds,
             pos=fn_tok.pos,
             line=fn_tok.line,
             col=fn_tok.col,
@@ -547,6 +583,37 @@ class Parser:
         target = self.parse_type()
         self.opt(";")
         return TypeAliasDecl(name, generics, target, tok.pos, tok.line, tok.col)
+
+    def parse_trait(self, is_pub: bool = False, doc: str = "") -> TraitDecl:
+        tok = self.eat("trait")
+        name = self.eat("IDENT").text
+        self.eat("{")
+        methods: list[tuple[str, list[tuple[str, str]], str]] = []
+        while self.cur().kind != "}":
+            self.eat("fn")
+            mname = self.eat("IDENT").text
+            _ = self._parse_generics()
+            params, _ = self._parse_params()
+            self.eat("->")
+            ret = self.parse_type()
+            self.eat(";")
+            methods.append((mname, params, ret))
+        self.eat("}")
+        return TraitDecl(name, methods, pub=is_pub, doc=doc, pos=tok.pos, line=tok.line, col=tok.col)
+
+    def parse_trait_impl(self) -> TraitImplDecl:
+        tok = self.eat("IDENT")
+        trait_name = tok.text
+        self.eat("for")
+        target_type = self.parse_type()
+        if self.opt(";"):
+            return TraitImplDecl(trait_name, target_type, tok.pos, tok.line, tok.col)
+        self.eat("{")
+        if self.cur().kind != "}":
+            self._err("trait impl bodies are not yet supported; use `impl Trait for Type;` or empty braces")
+            raise ParseError(self.errors[-1])
+        self.eat("}")
+        return TraitImplDecl(trait_name, target_type, tok.pos, tok.line, tok.col)
 
     def parse_type(self):
         """Parse the `type` grammar production from the token stream.
@@ -766,17 +833,36 @@ class Parser:
         self.eat("{")
         arms: list[tuple[Any, list[Any]]] = []
         while self.cur().kind != "}":
-            if self.cur().kind == "IDENT" and self.cur().text == "_":
-                wtok = self.eat("IDENT")
-                pattern = WildcardPattern(wtok.pos, wtok.line, wtok.col)
-            else:
-                pattern = self.parse_expr()
+            pattern = self.parse_match_pattern()
             self.eat("=>")
             body = self.parse_block()
             arms.append((pattern, body))
             self.opt(",")
         self.eat("}")
         return MatchStmt(expr, arms, tok.pos, tok.line, tok.col)
+
+    def parse_match_pattern(self):
+        """Parse one match arm pattern, including `|` alternatives and optional guard."""
+        first = self.parse_match_pattern_atom()
+        patterns = [first]
+        while self.opt("|"):
+            patterns.append(self.parse_match_pattern_atom())
+        pattern: Any = patterns[0]
+        if len(patterns) > 1:
+            pattern = OrPattern(patterns, first.pos, first.line, first.col)
+        if self.opt("if"):
+            if_tok = self.toks[self.i - 1]
+            guard = self.parse_expr()
+            pattern = GuardedPattern(pattern, guard, if_tok.pos, if_tok.line, if_tok.col)
+        return pattern
+
+    def parse_match_pattern_atom(self):
+        """Parse one pattern alternative inside a match arm."""
+        if self.cur().kind == "IDENT" and self.cur().text == "_":
+            wtok = self.eat("IDENT")
+            return WildcardPattern(wtok.pos, wtok.line, wtok.col)
+        # Keep `|` available for match-pattern alternatives.
+        return self.parse_expr(5)
 
     def parse_expr(self, min_prec: int = 1):
         """Parse the `expr` grammar production from the token stream.

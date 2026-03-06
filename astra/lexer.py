@@ -26,6 +26,8 @@ KEYWORDS = {
     "await",
     "unsafe",
     "impl",
+    "trait",
+    "where",
     "match",
     "defer",
     "drop",

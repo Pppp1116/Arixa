@@ -6,7 +6,7 @@ PYTEST := $(ASTRA_BIN)/pytest
 
 ASTRA_SOURCES := $(shell find . -name '*.astra' -print)
 
-.PHONY: help venv fmt fmt-check lint test e2e bundle-vscode bundle-toolchain all
+.PHONY: help venv bootstrap fmt fmt-check lint test e2e bundle-vscode bundle-toolchain all
 
 help:
 	@echo "Available targets:"
@@ -14,7 +14,7 @@ help:
 	@echo "  fmt        - format all .astra sources in-place"
 	@echo "  fmt-check  - check formatting of all .astra sources"
 	@echo "  lint       - run astra linter on all .astra sources"
-	@echo "  test       - run astra CLI tests and full pytest suite"
+	@echo "  test       - run astra CLI tests and full pytest suite (auto-bootstraps .venv)"
 	@echo "  e2e        - run e2e tests via 'astra test --kind e2e' (if configured)"
 	@echo "  bundle-vscode   - refresh bundled compiler snapshot used by VS Code extension"
 	@echo "  bundle-toolchain - build portable compiler bundle into dist/toolchain/"
@@ -24,23 +24,30 @@ venv:
 	python -m venv $(ASTRA_VENV)
 	$(ASTRA_BIN)/python -m pip install -e ".[dev]"
 
-fmt:
+bootstrap:
+	@if [ ! -x "$(ASTRA)" ] || [ ! -x "$(PYTEST)" ]; then \
+	  echo "Bootstrapping $(ASTRA_VENV) with project dev dependencies..."; \
+	  python -m venv $(ASTRA_VENV); \
+	  $(ASTRA_BIN)/python -m pip install -e ".[dev]"; \
+	fi
+
+fmt: bootstrap
 	$(ASTRA) fmt $(ASTRA_SOURCES)
 
-fmt-check:
+fmt-check: bootstrap
 	$(ASTRA) fmt --check $(ASTRA_SOURCES)
 
-lint:
+lint: bootstrap
 	@for f in $(ASTRA_SOURCES); do \
 	  echo "lint $$f"; \
 	  $(ASTLINT) $$f || exit $$?; \
 	done
 
-test:
+test: bootstrap
 	$(ASTRA) test
 	$(PYTEST)
 
-e2e:
+e2e: bootstrap
 	$(ASTRA) test --kind e2e
 
 bundle-vscode:

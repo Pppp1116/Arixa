@@ -223,7 +223,7 @@ def test_try_operator_requires_option_operand():
         analyze(parse(src))
         assert False
     except SemanticError as e:
-        assert "`?` expects Option<T> operand" in str(e)
+        assert "`?` expects Option<T> or Result<T, E> operand" in str(e)
 
 
 def test_try_operator_requires_option_return_type():
@@ -411,6 +411,38 @@ fn main() -> Int {
         assert "duplicate enum match arm for Color.Red" in str(e)
 
 
+def test_match_guarded_bool_arms_do_not_count_for_exhaustiveness():
+    src = """
+fn main() -> Int {
+  let b = true;
+  match b {
+    true if false => { return 1; }
+    false => { return 0; }
+  }
+  return 0;
+}
+"""
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "non-exhaustive match for Bool" in str(e)
+
+
+def test_match_or_pattern_bool_is_exhaustive():
+    src = "fn main() -> Int { let b = true; match b { true | false => { return 1; } } return 0; }"
+    analyze(parse(src))
+
+
+def test_match_wildcard_cannot_be_combined_with_or_pattern():
+    src = "fn main() -> Int { let b = true; match b { _ | true => { return 1; } false => { return 0; } } return 0; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "wildcard pattern `_` cannot be combined with `|` alternatives" in str(e)
+
+
 def test_specialization_prefers_concrete_impl():
     src = """
 impl fn sum(x T) -> T { return x; }
@@ -434,6 +466,39 @@ fn main() -> Int { return pick(1); }
         assert False
     except SemanticError as e:
         assert "ambiguous impl" in str(e)
+
+
+def test_where_clause_trait_bound_allows_matching_impl():
+    src = """
+trait Show {}
+impl Show for Int;
+impl fn wrap(x T) -> T where T: Show { return x; }
+fn main() -> Int { return wrap(9); }
+"""
+    analyze(parse(src))
+
+
+def test_where_clause_trait_bound_rejects_non_impl_type():
+    src = """
+trait Show {}
+impl Show for Int;
+impl fn wrap(x T) -> T where T: Show { return x; }
+fn main() -> Int { return wrap(1.5); }
+"""
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "no matching impl for wrap(Float)" in str(e)
+
+
+def test_where_clause_rejects_unknown_trait():
+    src = "impl fn wrap(x T) -> T where T: MissingTrait { return x; } fn main() -> Int { return 0; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "unknown trait MissingTrait in where clause" in str(e)
 
 
 def test_function_references_infer_function_pointer_type():

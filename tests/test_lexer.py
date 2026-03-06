@@ -6,7 +6,7 @@ def kinds(src: str) -> list[str]:
 
 
 def test_new_keywords_and_bool():
-    ks = kinds("for break continue struct enum type import let fixed mut pub extern async await unsafe impl match defer drop comptime none true false")
+    ks = kinds("for break continue struct enum trait type import let fixed mut pub extern async await unsafe impl where match defer drop comptime none true false")
     assert "for" in ks
     assert "break" in ks
     assert "continue" in ks
@@ -15,6 +15,8 @@ def test_new_keywords_and_bool():
     assert "await" in ks
     assert "unsafe" in ks
     assert "impl" in ks
+    assert "trait" in ks
+    assert "where" in ks
     assert "fixed" in ks
     assert "none" in ks
     assert "defer" in ks

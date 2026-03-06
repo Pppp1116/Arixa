@@ -21,5 +21,8 @@ Backend support:
 Notes:
 
 - Address format: `host:port` or `[ipv6]:port`
-- Return values are low-level status/byte counts (`-1` indicates error)
+- Return values are low-level status/byte counts:
+  - `tcp_connect`/`tcp_send`: `-1` indicates error
+  - `tcp_recv`: returns an empty string on invalid handle or receive failure
+  - `tcp_close`: invalid handles are treated as already closed (`0`)
 - API is synchronous and connection-handle based

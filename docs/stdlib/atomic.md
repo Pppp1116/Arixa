@@ -2,7 +2,7 @@
 
 Source: `stdlib/atomic.astra`
 
-Status: `experimental` (hosted compatibility API)
+Status: `partial` (runtime-backed API)
 
 Types:
 
@@ -18,4 +18,5 @@ Functions:
 
 Notes:
 
-- Current implementation is not hardware-atomic; it provides a stable API surface.
+- Native runtime uses real atomic operations with sequential consistency.
+- Python backend uses a lock-backed implementation for deterministic behavior.

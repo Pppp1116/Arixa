@@ -7,6 +7,18 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <stdatomic.h>
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <pthread.h>
+#include <sched.h>
+#endif
+#if !defined(_WIN32)
+#include <netdb.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#endif
 
 #if defined(__GNUC__) || defined(__clang__)
 typedef __int128 i128;
@@ -858,12 +870,61 @@ uintptr_t astra_arg(uintptr_t i) {
 
 typedef struct {
   uintptr_t value;
+  bool joined;
+  bool has_thread;
+#if defined(_WIN32)
+  HANDLE thread;
+#else
+  pthread_t thread;
+#endif
   bool used;
 } SpawnEntry;
 
 static SpawnEntry *g_spawn = NULL;
 static size_t g_spawn_cap = 0;
 static uintptr_t g_next_tid = 1;
+#if defined(_WIN32)
+static SRWLOCK g_spawn_lock = SRWLOCK_INIT;
+#define ASTRA_SPAWN_LOCK() AcquireSRWLockExclusive(&g_spawn_lock)
+#define ASTRA_SPAWN_UNLOCK() ReleaseSRWLockExclusive(&g_spawn_lock)
+#else
+static pthread_mutex_t g_spawn_lock = PTHREAD_MUTEX_INITIALIZER;
+#define ASTRA_SPAWN_LOCK() ((void)pthread_mutex_lock(&g_spawn_lock))
+#define ASTRA_SPAWN_UNLOCK() ((void)pthread_mutex_unlock(&g_spawn_lock))
+#endif
+
+typedef uintptr_t (*AstraSpawnEntryFn)(uintptr_t);
+
+typedef struct {
+  AstraSpawnEntryFn fn;
+  uintptr_t arg;
+} AstraSpawnThunkArg;
+
+#if defined(_WIN32)
+static DWORD WINAPI astra_spawn_trampoline(LPVOID opaque) {
+  AstraSpawnThunkArg *ctx = (AstraSpawnThunkArg *)opaque;
+  if (ctx == NULL || ctx->fn == NULL) {
+    free(ctx);
+    return 0;
+  }
+  AstraSpawnEntryFn fn = ctx->fn;
+  uintptr_t arg = ctx->arg;
+  free(ctx);
+  return (DWORD)fn(arg);
+}
+#else
+static void *astra_spawn_trampoline(void *opaque) {
+  AstraSpawnThunkArg *ctx = (AstraSpawnThunkArg *)opaque;
+  if (ctx == NULL || ctx->fn == NULL) {
+    free(ctx);
+    return (void *)0;
+  }
+  AstraSpawnEntryFn fn = ctx->fn;
+  uintptr_t arg = ctx->arg;
+  free(ctx);
+  return (void *)fn(arg);
+}
+#endif
 
 static bool astra_spawn_reserve(size_t want) {
   if (g_spawn_cap >= want) {
@@ -879,6 +940,11 @@ static bool astra_spawn_reserve(size_t want) {
   }
   for (size_t i = g_spawn_cap; i < next; i++) {
     p[i].value = 0;
+    p[i].joined = true;
+    p[i].has_thread = false;
+#if defined(_WIN32)
+    p[i].thread = NULL;
+#endif
     p[i].used = false;
   }
   g_spawn = p;
@@ -886,23 +952,173 @@ static bool astra_spawn_reserve(size_t want) {
   return true;
 }
 
+uintptr_t astra_spawn_start(uintptr_t fn_ptr, uintptr_t arg) {
+  if (fn_ptr == 0) {
+    return 0;
+  }
+  AstraSpawnThunkArg *ctx = (AstraSpawnThunkArg *)malloc(sizeof(AstraSpawnThunkArg));
+  if (ctx == NULL) {
+    return 0;
+  }
+  ctx->fn = (AstraSpawnEntryFn)fn_ptr;
+  ctx->arg = arg;
+
+  uintptr_t tid = 0;
+  ASTRA_SPAWN_LOCK();
+  tid = g_next_tid++;
+  size_t idx = (size_t)tid;
+  if (!astra_spawn_reserve(idx + 1)) {
+    ASTRA_SPAWN_UNLOCK();
+    free(ctx);
+    return 0;
+  }
+  g_spawn[idx].used = true;
+  g_spawn[idx].joined = false;
+  g_spawn[idx].has_thread = true;
+  g_spawn[idx].value = 0;
+  ASTRA_SPAWN_UNLOCK();
+
+#if defined(_WIN32)
+  HANDLE thread = CreateThread(NULL, 0, astra_spawn_trampoline, (LPVOID)ctx, 0, NULL);
+  if (thread == NULL) {
+    ASTRA_SPAWN_LOCK();
+    g_spawn[idx].used = false;
+    g_spawn[idx].joined = true;
+    g_spawn[idx].has_thread = false;
+    ASTRA_SPAWN_UNLOCK();
+    free(ctx);
+    return 0;
+  }
+  ASTRA_SPAWN_LOCK();
+  g_spawn[idx].thread = thread;
+  ASTRA_SPAWN_UNLOCK();
+#else
+  pthread_t th;
+  if (pthread_create(&th, NULL, astra_spawn_trampoline, (void *)ctx) != 0) {
+    ASTRA_SPAWN_LOCK();
+    g_spawn[idx].used = false;
+    g_spawn[idx].joined = true;
+    g_spawn[idx].has_thread = false;
+    ASTRA_SPAWN_UNLOCK();
+    free(ctx);
+    return 0;
+  }
+  ASTRA_SPAWN_LOCK();
+  g_spawn[idx].thread = th;
+  ASTRA_SPAWN_UNLOCK();
+#endif
+  return tid;
+}
+
 uintptr_t astra_spawn_store(uintptr_t value) {
+  ASTRA_SPAWN_LOCK();
   uintptr_t tid = g_next_tid++;
   size_t idx = (size_t)tid;
   if (!astra_spawn_reserve(idx + 1)) {
+    ASTRA_SPAWN_UNLOCK();
     return 0;
   }
   g_spawn[idx].value = value;
+  g_spawn[idx].joined = true;
+  g_spawn[idx].has_thread = false;
   g_spawn[idx].used = true;
+  ASTRA_SPAWN_UNLOCK();
   return tid;
 }
 
 uintptr_t astra_join(uintptr_t tid) {
   size_t idx = (size_t)tid;
+  ASTRA_SPAWN_LOCK();
   if (idx >= g_spawn_cap || !g_spawn[idx].used) {
+    ASTRA_SPAWN_UNLOCK();
     return astra_any_box_i64(0);
   }
-  return g_spawn[idx].value;
+  if (g_spawn[idx].joined) {
+    uintptr_t done_value = g_spawn[idx].value;
+    ASTRA_SPAWN_UNLOCK();
+    return done_value;
+  }
+  bool has_thread = g_spawn[idx].has_thread;
+#if defined(_WIN32)
+  HANDLE th = g_spawn[idx].thread;
+#else
+  pthread_t th = g_spawn[idx].thread;
+#endif
+  ASTRA_SPAWN_UNLOCK();
+
+  uintptr_t worker_raw = 0;
+  if (has_thread) {
+#if defined(_WIN32)
+    DWORD wait_rc = WaitForSingleObject(th, INFINITE);
+    if (wait_rc != WAIT_OBJECT_0) {
+      return astra_any_box_i64(0);
+    }
+    DWORD code = 0;
+    if (!GetExitCodeThread(th, &code)) {
+      CloseHandle(th);
+      return astra_any_box_i64(0);
+    }
+    CloseHandle(th);
+    worker_raw = (uintptr_t)code;
+#else
+    void *ret_ptr = NULL;
+    if (pthread_join(th, &ret_ptr) != 0) {
+      return astra_any_box_i64(0);
+    }
+    worker_raw = (uintptr_t)ret_ptr;
+#endif
+  }
+  uintptr_t boxed = astra_any_box_i64((int64_t)worker_raw);
+  ASTRA_SPAWN_LOCK();
+  g_spawn[idx].value = boxed;
+  g_spawn[idx].joined = true;
+  g_spawn[idx].has_thread = false;
+  ASTRA_SPAWN_UNLOCK();
+  return boxed;
+}
+
+typedef struct {
+  _Atomic int64_t value;
+} AstraAtomicInt;
+
+static AstraAtomicInt *astra_atomic_ptr(uintptr_t handle) {
+  AstraAtomicInt *cell = (AstraAtomicInt *)handle;
+  if (cell == NULL) {
+    astra_trap();
+  }
+  return cell;
+}
+
+uintptr_t astra_atomic_int_new(int64_t value) {
+  AstraAtomicInt *cell = (AstraAtomicInt *)malloc(sizeof(AstraAtomicInt));
+  if (cell == NULL) {
+    return 0;
+  }
+  atomic_init(&cell->value, value);
+  return (uintptr_t)cell;
+}
+
+int64_t astra_atomic_load(uintptr_t handle) {
+  AstraAtomicInt *cell = astra_atomic_ptr(handle);
+  return atomic_load_explicit(&cell->value, memory_order_seq_cst);
+}
+
+int64_t astra_atomic_store(uintptr_t handle, int64_t value) {
+  AstraAtomicInt *cell = astra_atomic_ptr(handle);
+  atomic_store_explicit(&cell->value, value, memory_order_seq_cst);
+  return 0;
+}
+
+int64_t astra_atomic_fetch_add(uintptr_t handle, int64_t delta) {
+  AstraAtomicInt *cell = astra_atomic_ptr(handle);
+  return atomic_fetch_add_explicit(&cell->value, delta, memory_order_seq_cst);
+}
+
+_Bool astra_atomic_compare_exchange(uintptr_t handle, int64_t expected, int64_t desired) {
+  AstraAtomicInt *cell = astra_atomic_ptr(handle);
+  int64_t want = expected;
+  return atomic_compare_exchange_strong_explicit(
+      &cell->value, &want, desired, memory_order_seq_cst, memory_order_seq_cst);
 }
 
 _Bool astra_file_exists(uintptr_t path_ptr) {
@@ -921,26 +1137,225 @@ uintptr_t astra_file_remove(uintptr_t path_ptr) {
   return remove(path) == 0 ? 0 : (uintptr_t)-1;
 }
 
+typedef struct {
+  int fd;
+  bool used;
+} SocketEntry;
+
+static SocketEntry *g_sockets = NULL;
+static size_t g_sockets_cap = 0;
+static uintptr_t g_next_sid = 1;
+
+static bool astra_socket_reserve(size_t want) {
+  if (g_sockets_cap >= want) {
+    return true;
+  }
+  size_t next = g_sockets_cap == 0 ? 8 : g_sockets_cap * 2;
+  while (next < want) {
+    next *= 2;
+  }
+  SocketEntry *p = (SocketEntry *)realloc(g_sockets, next * sizeof(SocketEntry));
+  if (p == NULL) {
+    return false;
+  }
+  for (size_t i = g_sockets_cap; i < next; i++) {
+    p[i].fd = -1;
+    p[i].used = false;
+  }
+  g_sockets = p;
+  g_sockets_cap = next;
+  return true;
+}
+
+static int astra_socket_fd(uintptr_t sid) {
+  size_t idx = (size_t)sid;
+  if (idx >= g_sockets_cap || !g_sockets[idx].used) {
+    return -1;
+  }
+  return g_sockets[idx].fd;
+}
+
+static char *astra_dup_slice(const char *src, size_t n) {
+  char *out = (char *)malloc(n + 1);
+  if (out == NULL) {
+    return NULL;
+  }
+  memcpy(out, src, n);
+  out[n] = '\0';
+  return out;
+}
+
+static bool astra_split_host_port(const char *addr, char **host_out, char **port_out) {
+  if (addr == NULL || host_out == NULL || port_out == NULL) {
+    return false;
+  }
+  *host_out = NULL;
+  *port_out = NULL;
+
+  const char *host_start = addr;
+  const char *host_end = NULL;
+  const char *port_start = NULL;
+
+  if (addr[0] == '[') {
+    const char *close = strchr(addr, ']');
+    if (close == NULL || close[1] != ':') {
+      return false;
+    }
+    host_start = addr + 1;
+    host_end = close;
+    port_start = close + 2;
+  } else {
+    const char *sep = strrchr(addr, ':');
+    if (sep == NULL) {
+      return false;
+    }
+    host_end = sep;
+    port_start = sep + 1;
+  }
+
+  if (host_end <= host_start || port_start[0] == '\0') {
+    return false;
+  }
+
+  size_t host_len = (size_t)(host_end - host_start);
+  size_t port_len = strlen(port_start);
+  char *host = astra_dup_slice(host_start, host_len);
+  char *port = astra_dup_slice(port_start, port_len);
+  if (host == NULL || port == NULL) {
+    free(host);
+    free(port);
+    return false;
+  }
+  *host_out = host;
+  *port_out = port;
+  return true;
+}
+
 uintptr_t astra_tcp_connect(uintptr_t addr_ptr) {
+#if defined(_WIN32)
   (void)addr_ptr;
   return (uintptr_t)-1;
+#else
+  const char *addr = (const char *)addr_ptr;
+  char *host = NULL;
+  char *port = NULL;
+  if (!astra_split_host_port(addr, &host, &port)) {
+    return (uintptr_t)-1;
+  }
+
+  struct addrinfo hints;
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+
+  struct addrinfo *res = NULL;
+  int gai = getaddrinfo(host, port, &hints, &res);
+  free(host);
+  free(port);
+  if (gai != 0 || res == NULL) {
+    if (res != NULL) {
+      freeaddrinfo(res);
+    }
+    return (uintptr_t)-1;
+  }
+
+  int fd = -1;
+  for (struct addrinfo *it = res; it != NULL; it = it->ai_next) {
+    fd = socket(it->ai_family, it->ai_socktype, it->ai_protocol);
+    if (fd < 0) {
+      continue;
+    }
+    if (connect(fd, it->ai_addr, it->ai_addrlen) == 0) {
+      break;
+    }
+    close(fd);
+    fd = -1;
+  }
+  freeaddrinfo(res);
+  if (fd < 0) {
+    return (uintptr_t)-1;
+  }
+
+  uintptr_t sid = g_next_sid++;
+  size_t idx = (size_t)sid;
+  if (!astra_socket_reserve(idx + 1)) {
+    close(fd);
+    return (uintptr_t)-1;
+  }
+  g_sockets[idx].fd = fd;
+  g_sockets[idx].used = true;
+  return sid;
+#endif
 }
 
 uintptr_t astra_tcp_send(uintptr_t sid, uintptr_t data_ptr) {
+#if defined(_WIN32)
   (void)sid;
   (void)data_ptr;
   return (uintptr_t)-1;
+#else
+  int fd = astra_socket_fd(sid);
+  const char *data = (const char *)data_ptr;
+  if (fd < 0 || data == NULL) {
+    return (uintptr_t)-1;
+  }
+  size_t len = strlen(data);
+  if (len == 0) {
+    return 0;
+  }
+  ssize_t sent = send(fd, data, len, 0);
+  if (sent < 0) {
+    return (uintptr_t)-1;
+  }
+  return (uintptr_t)sent;
+#endif
 }
 
 uintptr_t astra_tcp_recv(uintptr_t sid, uintptr_t n) {
+#if defined(_WIN32)
   (void)sid;
   (void)n;
   return (uintptr_t)astra_strdup_s("");
+#else
+  int fd = astra_socket_fd(sid);
+  if (fd < 0) {
+    return (uintptr_t)astra_strdup_s("");
+  }
+  size_t want = (size_t)n;
+  if (want == 0) {
+    want = 1;
+  }
+  char *buf = (char *)astra_heap_alloc(want + 1);
+  if (buf == NULL) {
+    return (uintptr_t)astra_strdup_s("");
+  }
+  ssize_t got = recv(fd, buf, want, 0);
+  if (got <= 0) {
+    buf[0] = '\0';
+    return (uintptr_t)buf;
+  }
+  buf[(size_t)got] = '\0';
+  return (uintptr_t)buf;
+#endif
 }
 
 uintptr_t astra_tcp_close(uintptr_t sid) {
+#if defined(_WIN32)
   (void)sid;
   return 0;
+#else
+  size_t idx = (size_t)sid;
+  if (idx >= g_sockets_cap || !g_sockets[idx].used) {
+    return 0;
+  }
+  int fd = g_sockets[idx].fd;
+  g_sockets[idx].fd = -1;
+  g_sockets[idx].used = false;
+  if (fd < 0) {
+    return 0;
+  }
+  return close(fd) == 0 ? 0 : (uintptr_t)-1;
+#endif
 }
 
 static uint64_t astra_fnv1a(const char *s) {

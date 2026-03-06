@@ -468,6 +468,15 @@ class _Evaluator:
             raise ComptimeError(_diag(self.filename, node.line, node.col, f"cannot cast to {ty}"))
         return _truncate_int(iv, bits, signed)
 
+    def _match_pattern(self, pat: Any, subj: object, env: dict[str, object], env_types: dict[str, str]) -> bool:
+        if isinstance(pat, WildcardPattern):
+            return True
+        if isinstance(pat, OrPattern):
+            return any(self._match_pattern(p, subj, env, env_types) for p in pat.patterns)
+        if isinstance(pat, GuardedPattern):
+            return self._match_pattern(pat.pattern, subj, env, env_types) and bool(self.eval_expr(pat.guard, env, env_types))
+        return subj == self.eval_expr(pat, env, env_types)
+
     def exec_stmt(self, st, env, env_types: dict[str, str]):
         self._tick(st)
         if isinstance(st, LetStmt):
@@ -522,8 +531,7 @@ class _Evaluator:
         if isinstance(st, MatchStmt):
             subj = self.eval_expr(st.expr, env, env_types)
             for pat, body in st.arms:
-                pv = self.eval_expr(pat, env, env_types)
-                if subj != pv:
+                if not self._match_pattern(pat, subj, env, env_types):
                     continue
                 for s in body:
                     sig = self.exec_stmt(s, env, env_types)
@@ -703,6 +711,14 @@ def _collect_runtime_name_uses_expr(expr: Any, out: set[str]) -> None:
         return
     if isinstance(expr, FieldExpr):
         _collect_runtime_name_uses_expr(expr.obj, out)
+        return
+    if isinstance(expr, OrPattern):
+        for p in expr.patterns:
+            _collect_runtime_name_uses_expr(p, out)
+        return
+    if isinstance(expr, GuardedPattern):
+        _collect_runtime_name_uses_expr(expr.pattern, out)
+        _collect_runtime_name_uses_expr(expr.guard, out)
         return
     if isinstance(expr, ArrayLit):
         for e in expr.elements:

@@ -50,3 +50,38 @@ fn main() -> Int {
         backends=("py", "native"),
     )
     assert_same_stdout_and_exit(results, expected_stdout="", expected_returncode=7)
+
+
+def test_spawn_returns_before_join(tmp_path) -> None:
+    src = '''
+import "thread";
+import "time";
+
+fn worker(ms Int) -> Int {
+  let _ = sleep_ms(ms);
+  return 7;
+}
+
+fn main() -> Int {
+  let t0 = monotonic_ms();
+  let tid = spawn1(worker, 200);
+  let t1 = monotonic_ms();
+  let out: Int = join_task(tid) as Int;
+  if out != 7 {
+    return 2;
+  }
+  else {}
+  if (t1 - t0) >= 180 {
+    return 1;
+  }
+  else {}
+  return 0;
+}
+'''
+    results = compile_and_run_program(
+        tmp_path,
+        name="std_spawn_returns_before_join",
+        src_text=src,
+        backends=("py", "native"),
+    )
+    assert_same_stdout_and_exit(results, expected_stdout="", expected_returncode=0)
