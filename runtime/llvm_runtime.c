@@ -18,6 +18,7 @@
 #include <netdb.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #endif
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -1942,7 +1943,20 @@ uintptr_t astra_proc_run(uintptr_t cmd_ptr) {
     return (uintptr_t)-1;
   }
   int rc = system(cmd);
+  if (rc < 0) {
+    return (uintptr_t)-1;
+  }
+#if defined(_WIN32)
   return (uintptr_t)rc;
+#else
+  if (WIFEXITED(rc)) {
+    return (uintptr_t)WEXITSTATUS(rc);
+  }
+  if (WIFSIGNALED(rc)) {
+    return (uintptr_t)(128 + WTERMSIG(rc));
+  }
+  return (uintptr_t)rc;
+#endif
 }
 
 uintptr_t astra_now_unix(void) {

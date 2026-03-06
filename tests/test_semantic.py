@@ -1028,6 +1028,24 @@ def test_mutable_borrow_requires_mutable_binding():
         assert "cannot mutably borrow immutable binding x" in str(e)
 
 
+def test_move_while_shared_borrow_is_rejected():
+    src = "struct S { v Int } fn main() Int{ x = S(1); r = &x; y = x; return 0; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "cannot move x while it is immutably borrowed" in str(e)
+
+
+def test_move_while_mutable_borrow_is_rejected():
+    src = "struct S { v Int } fn main() Int{ mut x = S(1); r = &mut x; y = x; return 0; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "cannot use x while it is mutably borrowed" in str(e)
+
+
 def test_ref_return_without_ref_param_is_rejected():
     src = "fn bad() &Int{ x = 1; return &x; } fn main() Int{ return 0; }"
     try:
@@ -1049,6 +1067,24 @@ def test_ref_return_must_tie_to_ref_param():
 def test_ref_return_alias_of_ref_param_is_allowed():
     src = "fn f(xs &Int) &Int{ y = xs; return y; } fn main() Int{ return 0; }"
     analyze(parse(src))
+
+
+def test_inner_scope_reference_cannot_escape_via_outer_binding_if():
+    src = "fn main() Int{ x = 1; mut p = &x; if true { y = 2; p = &y; } return *p; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "reference p cannot outlive borrowed value y" in str(e)
+
+
+def test_inner_scope_reference_cannot_escape_via_outer_binding_while():
+    src = "fn main() Int{ x = 1; mut p = &x; while true { y = 2; p = &y; break; } return *p; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "reference p cannot outlive borrowed value y" in str(e)
 
 
 def test_use_after_move_is_rejected_for_non_copy_values():

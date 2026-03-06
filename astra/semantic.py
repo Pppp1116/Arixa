@@ -597,6 +597,12 @@ class _BorrowState:
         if name in self.mutable_borrowed:
             raise SemanticError(_diag(filename, line, col, f"cannot mutate {name} while it is mutably borrowed"))
 
+    def ensure_can_move(self, name: str, filename: str, line: int, col: int):
+        if self.shared_counts.get(name, 0) > 0:
+            raise SemanticError(_diag(filename, line, col, f"cannot move {name} while it is immutably borrowed"))
+        if name in self.mutable_borrowed:
+            raise SemanticError(_diag(filename, line, col, f"cannot move {name} while it is mutably borrowed"))
+
 
 class _MoveState:
     def __init__(self):
@@ -835,8 +841,17 @@ def _require_compound_assign_compat(filename: str, line: int, col: int, op: str,
     raise SemanticError(_diag(filename, line, col, f"unsupported assignment operator {op}"))
 
 
-def _consume_if_move_name(expr: Any, expr_ty: str, move: _MoveState, filename: str, line: int, col: int):
+def _consume_if_move_name(
+    expr: Any,
+    expr_ty: str,
+    borrow: _BorrowState,
+    move: _MoveState,
+    filename: str,
+    line: int,
+    col: int,
+):
     if isinstance(expr, Name) and not _is_copy_type(expr_ty):
+        borrow.ensure_can_move(expr.value, filename, line, col)
         move.consume(expr.value, filename, line, col)
 
 
@@ -857,6 +872,29 @@ def _lookup(name: str, scopes: list[dict[str, str]]) -> str | None:
         if name in scope:
             return scope[name]
     return None
+
+
+def _scope_index(name: str, scopes: list[dict[str, str]]) -> int | None:
+    for i in range(len(scopes) - 1, -1, -1):
+        if name in scopes[i]:
+            return i
+    return None
+
+
+def _ensure_ref_owner_outlives_binding(
+    owner: str,
+    ref_name: str,
+    scopes: list[dict[str, str]],
+    filename: str,
+    line: int,
+    col: int,
+):
+    owner_i = _scope_index(owner, scopes)
+    ref_i = _scope_index(ref_name, scopes)
+    if owner_i is None or ref_i is None:
+        return
+    if owner_i > ref_i:
+        raise SemanticError(_diag(filename, line, col, f"reference {ref_name} cannot outlive borrowed value {owner}"))
 
 
 def _assign(name: str, typ: str, scopes: list[dict[str, str]], filename: str, line: int, col: int):
@@ -1920,7 +1958,7 @@ def _check_stmt(
     if isinstance(st, LetStmt):
         if st.name == "_":
             ty = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
-            _consume_if_move_name(st.expr, ty, move, filename, st.line, st.col)
+            _consume_if_move_name(st.expr, ty, borrow, move, filename, st.line, st.col)
             return
         ty = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
         if ty == NONE_LIT_TYPE and st.type_name is None:
@@ -1972,6 +2010,7 @@ def _check_stmt(
             if isinstance(st.expr, Unary) and st.expr.op in {"&", "&mut"} and isinstance(st.expr.expr, Name):
                 owner = st.expr.expr.value
                 owner_mut = bool(_lookup_mut(owner, mut_scopes))
+                _ensure_ref_owner_outlives_binding(owner, st.name, scopes, filename, st.line, st.col)
                 borrow.bind_ref(st.name, owner, st.expr.op == "&mut", owner_mut, filename, st.line, st.col)
             elif isinstance(st.expr, Name):
                 src_ref = borrow.ref_bindings.get(st.expr.value)
@@ -1980,12 +2019,13 @@ def _check_stmt(
                         raise SemanticError(_diag(filename, st.line, st.col, "cannot copy mutable reference"))
                     owner_mut = bool(_lookup_mut(src_ref.owner, mut_scopes))
                     origin = borrow.ref_origins.get(st.expr.value)
+                    _ensure_ref_owner_outlives_binding(src_ref.owner, st.name, scopes, filename, st.line, st.col)
                     borrow.bind_ref(st.name, src_ref.owner, False, owner_mut, filename, st.line, st.col, origin=origin)
                 elif st.expr.value in ref_param_names:
                     borrow.ref_origins[st.name] = st.expr.value
         if isinstance(st.expr, Name):
             owned.assign_name(st.name, st.expr.value, Span.at(filename, st.line, st.col))
-        _consume_if_move_name(st.expr, ty, move, filename, st.line, st.col)
+        _consume_if_move_name(st.expr, ty, borrow, move, filename, st.line, st.col)
         if _is_alloc_call(st.expr):
             owned.track_alloc(st.name)
         return
@@ -2014,6 +2054,7 @@ def _check_stmt(
                 if isinstance(st.expr, Unary) and st.expr.op in {"&", "&mut"} and isinstance(st.expr.expr, Name):
                     owner = st.expr.expr.value
                     owner_mut = bool(_lookup_mut(owner, mut_scopes))
+                    _ensure_ref_owner_outlives_binding(owner, st.target.value, scopes, filename, st.line, st.col)
                     borrow.bind_ref(st.target.value, owner, st.expr.op == "&mut", owner_mut, filename, st.line, st.col)
                 elif isinstance(st.expr, Name):
                     src_ref = borrow.ref_bindings.get(st.expr.value)
@@ -2022,6 +2063,7 @@ def _check_stmt(
                             raise SemanticError(_diag(filename, st.line, st.col, "cannot copy mutable reference"))
                         owner_mut = bool(_lookup_mut(src_ref.owner, mut_scopes))
                         origin = borrow.ref_origins.get(st.expr.value)
+                        _ensure_ref_owner_outlives_binding(src_ref.owner, st.target.value, scopes, filename, st.line, st.col)
                         borrow.bind_ref(st.target.value, src_ref.owner, False, owner_mut, filename, st.line, st.col, origin=origin)
                     else:
                         borrow.release_ref(st.target.value)
@@ -2035,7 +2077,7 @@ def _check_stmt(
                 owned.assign_name(st.target.value, st.expr.value, Span.at(filename, st.line, st.col))
             else:
                 owned._require_reassigned_after_drop(st.target.value, Span.at(filename, st.line, st.col))
-            _consume_if_move_name(st.expr, rhs, move, filename, st.line, st.col)
+            _consume_if_move_name(st.expr, rhs, borrow, move, filename, st.line, st.col)
             _assign(st.target.value, lhs, scopes, filename, st.line, st.col)
             move.reinitialize(st.target.value)
             return
@@ -2052,7 +2094,7 @@ def _check_stmt(
         if isinstance(st.expr, Name):
             owned.invalidate(st.expr.value)
         if st.expr is not None:
-            _consume_if_move_name(st.expr, expr_ty, move, filename, st.line, st.col)
+            _consume_if_move_name(st.expr, expr_ty, borrow, move, filename, st.line, st.col)
         return
     if isinstance(st, BreakStmt):
         if loop_depth <= 0:
@@ -2494,7 +2536,7 @@ def _check_stmt(
         return
     if isinstance(st, DropStmt):
         expr_ty = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
-        _consume_if_move_name(st.expr, expr_ty, move, filename, st.line, st.col)
+        _consume_if_move_name(st.expr, expr_ty, borrow, move, filename, st.line, st.col)
         if isinstance(st.expr, Name):
             if st.expr.value in owned.owners:
                 setattr(st, "drop_free", True)
@@ -2544,6 +2586,9 @@ def _infer(
         if local is not None:
             move.check_use(e.value, filename, e.line, e.col)
             borrow.check_read(e.value, filename, e.line, e.col)
+            ref_info = borrow.ref_bindings.get(e.value)
+            if ref_info is not None:
+                move.check_use(ref_info.owner, filename, e.line, e.col)
             if owned is not None:
                 owned.check_use(e.value, Span.at(filename, e.line, e.col))
             return _typed(e, local)
@@ -2911,7 +2956,7 @@ def _infer_call(
                 aty = arg_types[i]
                 _require_type(filename, arg.line, arg.col, expected, aty, f"arg {i} for {name}")
                 if not _is_ref_type(expected) and expected != "Any":
-                    _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
+                    _consume_if_move_name(arg, aty, borrow, move, filename, arg.line, arg.col)
                 _require_send(aty, structs, filename, arg.line, arg.col, f"spawn arg {i}")
                 if _is_ref_type(aty):
                     _require_sync(_strip_ref(aty), structs, filename, arg.line, arg.col, f"spawn arg {i}")
@@ -3004,7 +3049,7 @@ def _infer_call(
                 if not _is_typevar(pty, known_types):
                     _require_type(filename, arg.line, arg.col, pty, aty, f"arg {i} for {name}")
                 if not _is_ref_type(pty) and pty != "Any" and not _is_typevar(pty, known_types):
-                    _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
+                    _consume_if_move_name(arg, aty, borrow, move, filename, arg.line, arg.col)
             if isinstance(decl, FnDecl):
                 e.resolved_name = decl.symbol or decl.name
             return _substitute_typevars(decl.ret, type_bindings)
@@ -3023,7 +3068,7 @@ def _infer_call(
                 aty = arg_types[i]
                 _require_type(filename, arg.line, arg.col, expected, aty, f"arg {i} for {name}")
                 if not _is_ref_type(expected) and expected != "Any":
-                    _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
+                    _consume_if_move_name(arg, aty, borrow, move, filename, arg.line, arg.col)
             return ret_ty
         if name in structs:
             fields = structs[name].fields
@@ -3032,7 +3077,7 @@ def _infer_call(
             for i, ((_, fty), arg) in enumerate(zip(fields, e.args)):
                 aty = arg_types[i]
                 _require_type(filename, arg.line, arg.col, fty, aty, f"struct field for {name}")
-                _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
+                _consume_if_move_name(arg, aty, borrow, move, filename, arg.line, arg.col)
             return name
         sig = BUILTIN_SIGS.get(name)
         if sig is not None:
@@ -3088,7 +3133,7 @@ def _infer_call(
                 else:
                     _require_type(filename, arg.line, arg.col, expected, aty, f"arg {i} for {enum_decl.name}.{e.fn.field}")
                 if not _is_ref_type(aty):
-                    _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
+                    _consume_if_move_name(arg, aty, borrow, move, filename, arg.line, arg.col)
             if enum_decl.generics:
                 bound = [type_bindings.get(tp, fn_ret_defaults.get(tp, "Any")) for tp in enum_decl.generics]
                 return f"{enum_decl.name}<{', '.join(bound)}>"
@@ -3125,7 +3170,7 @@ def _infer_call(
                     continue
                 _require_type(filename, arg.line, arg.col, pty, aty, f"arg {i} for {ufcs_name}")
                 if not _is_ref_type(pty) and pty != "Any" and not _is_typevar(pty, known_types):
-                    _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
+                    _consume_if_move_name(arg, aty, borrow, move, filename, arg.line, arg.col)
             if isinstance(decl, FnDecl):
                 e.resolved_name = decl.symbol or decl.name
             setattr(e, "ufcs_receiver", e.fn.obj)
@@ -3155,7 +3200,7 @@ def _infer_call(
         aty = arg_types[i]
         _require_type(filename, arg.line, arg.col, expected, aty, f"arg {i} for function pointer call")
         if not _is_ref_type(expected) and expected != "Any":
-            _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
+            _consume_if_move_name(arg, aty, borrow, move, filename, arg.line, arg.col)
     return ret_ty
 
 

@@ -88,7 +88,9 @@ tests/test_pkg.py
 tests/test_property_fuzz.py
 tests/test_semantic.py
 tests/test_std_concurrency_runtime.py
+tests/test_std_crypto_serde_runtime.py
 tests/test_std_net_runtime.py
+tests/test_std_process_runtime.py
 tests/test_stdlib_modules.py
 tests/test_syntax_migration.py
 tests/test_tooling_inprocess.py
