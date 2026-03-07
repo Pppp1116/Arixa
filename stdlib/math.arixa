@@ -104,3 +104,321 @@ fn sign_int(x Int) Int {
     else {}
     return 0;
 }
+
+// Float operations
+
+/// Return the smaller of two floats.
+fn min_float(a Float, b Float) Float {
+    if a < b {
+        return a;
+    }
+    else {}
+    return b;
+}
+
+/// Return the larger of two floats.
+fn max_float(a Float, b Float) Float {
+    if a > b {
+        return a;
+    }
+    else {}
+    return b;
+}
+
+/// Clamp `x` into the inclusive range `[lo, hi]`.
+fn clamp_float(x Float, lo Float, hi Float) Float {
+    if x < lo {
+        return lo;
+    }
+    else {}
+    if x > hi {
+        return hi;
+    }
+    else {}
+    return x;
+}
+
+/// Return absolute value of `x`.
+fn abs_float(x Float) Float {
+    if x < 0.0 {
+        return -x;
+    }
+    else {}
+    return x;
+}
+
+/// Return square root of `x`.
+/// Returns `none` if `x` is negative.
+fn sqrt(x Float) Float? {
+    if x < 0.0 {
+        return none;
+    }
+    else {}
+    return __sqrt_impl(x);
+}
+
+/// Return `x` raised to the power of `y`.
+fn pow(x Float, y Float) Float {
+    return __pow_impl(x, y);
+}
+
+/// Return natural logarithm of `x`.
+/// Returns `none` if `x` <= 0.
+fn log(x Float) Float? {
+    if x <= 0.0 {
+        return none;
+    }
+    else {}
+    return __log_impl(x);
+}
+
+/// Return base-10 logarithm of `x`.
+/// Returns `none` if `x` <= 0.
+fn log10(x Float) Float? {
+    if x <= 0.0 {
+        return none;
+    }
+    else {}
+    return __log10_impl(x);
+}
+
+/// Return exponential function e^x.
+fn exp(x Float) Float {
+    return __exp_impl(x);
+}
+
+/// Round `x` to nearest integer.
+fn round(x Float) Int {
+    return __round_impl(x);
+}
+
+/// Round `x` down to nearest integer.
+fn floor(x Float) Int {
+    return __floor_impl(x);
+}
+
+/// Round `x` up to nearest integer.
+fn ceil(x Float) Int {
+    return __ceil_impl(x);
+}
+
+// Trigonometric functions
+
+/// Return sine of `x` (in radians).
+fn sin(x Float) Float {
+    return __sin_impl(x);
+}
+
+/// Return cosine of `x` (in radians).
+fn cos(x Float) Float {
+    return __cos_impl(x);
+}
+
+/// Return tangent of `x` (in radians).
+fn tan(x Float) Float {
+    return __tan_impl(x);
+}
+
+/// Return arcsine of `x` (in radians).
+/// Returns `none` if `x` is outside [-1, 1].
+fn asin(x Float) Float? {
+    if x < -1.0 || x > 1.0 {
+        return none;
+    }
+    else {}
+    return __asin_impl(x);
+}
+
+/// Return arccosine of `x` (in radians).
+/// Returns `none` if `x` is outside [-1, 1].
+fn acos(x Float) Float? {
+    if x < -1.0 || x > 1.0 {
+        return none;
+    }
+    else {}
+    return __acos_impl(x);
+}
+
+/// Return arctangent of `x` (in radians).
+fn atan(x Float) Float {
+    return __atan_impl(x);
+}
+
+/// Return arctangent of y/x (in radians), using quadrant information.
+fn atan2(y Float, x Float) Float {
+    return __atan2_impl(y, x);
+}
+
+// Hyperbolic functions
+
+/// Return hyperbolic sine of `x`.
+fn sinh(x Float) Float {
+    return __sinh_impl(x);
+}
+
+/// Return hyperbolic cosine of `x`.
+fn cosh(x Float) Float {
+    return __cosh_impl(x);
+}
+
+/// Return hyperbolic tangent of `x`.
+fn tanh(x Float) Float {
+    return __tanh_impl(x);
+}
+
+// Statistical functions
+
+/// Calculate mean of integer array.
+/// Returns `none` if array is empty.
+fn mean_int(data Vec<Int>) Float? {
+    n = vec_len(data);
+    if n == 0 {
+        return none;
+    }
+    else {}
+    
+    mut sum = 0;
+    mut i = 0;
+    while i < n {
+        val = vec_get(data, i);
+        if val != none {
+            sum += (val as Int?);
+        }
+        else {}
+        i += 1;
+    }
+    
+    return sum as Float / n as Float;
+}
+
+/// Calculate median of integer array.
+/// Returns `none` if array is empty.
+fn median_int(data Vec<Int>) Float? {
+    n = vec_len(data);
+    if n == 0 {
+        return none;
+    }
+    else {}
+    
+    // Create a copy and sort it
+    sorted = vec_new() as Vec<Int>;
+    mut i = 0;
+    while i < n {
+        val = vec_get(data, i);
+        if val != none {
+            vec_push(sorted, (val as Int?));
+        }
+        else {}
+        i += 1;
+    }
+    
+    // Sort the array (using a simple bubble sort for now)
+    bubble_sort_int(sorted);
+    
+    if n % 2 == 1 {
+        // Odd number of elements
+        mid_val = vec_get(sorted, n / 2);
+        if mid_val != none {
+            return (mid_val as Int?) as Float;
+        }
+        else {
+            return none;
+        }
+    }
+    else {
+        // Even number of elements
+        val1 = vec_get(sorted, n / 2 - 1);
+        val2 = vec_get(sorted, n / 2);
+        
+        if val1 != none && val2 != none {
+            return ((val1 as Int?) + (val2 as Int?)) as Float / 2.0;
+        }
+        else {
+            return none;
+        }
+    }
+}
+
+/// Calculate standard deviation of integer array.
+/// Returns `none` if array is empty.
+fn std_dev_int(data Vec<Int>) Float? {
+    mean = mean_int(data);
+    if mean == none {
+        return none;
+    }
+    else {}
+    
+    n = vec_len(data);
+    if n == 0 {
+        return none;
+    }
+    else {}
+    
+    mut sum_sq_diff = 0.0;
+    mut i = 0;
+    while i < n {
+        val = vec_get(data, i);
+        if val != none {
+            diff = (val as Int?) as Float - (mean as Float?);
+            sum_sq_diff += diff * diff;
+        }
+        else {}
+        i += 1;
+    }
+    
+    variance = sum_sq_diff / n as Float;
+    return sqrt(variance);
+}
+
+// Constants
+
+/// Mathematical constant π.
+const PI = 3.14159265358979323846;
+
+/// Mathematical constant e.
+const E = 2.71828182845904523536;
+
+/// Golden ratio φ.
+const GOLDEN_RATIO = 1.61803398874989484820;
+
+// Utility functions
+
+/// Convert degrees to radians.
+fn degrees_to_radians(degrees Float) Float {
+    return degrees * PI / 180.0;
+}
+
+/// Convert radians to degrees.
+fn radians_to_degrees(radians Float) Float {
+    return radians * 180.0 / PI;
+}
+
+/// Check if two floats are approximately equal within tolerance.
+fn approx_equal(a Float, b Float, tolerance Float) Bool {
+    return abs_float(a - b) <= tolerance;
+}
+
+/// Linear interpolation between a and b.
+fn lerp(a Float, b Float, t Float) Float {
+    return a + t * (b - a);
+}
+
+// Runtime implementation functions
+extern fn __sqrt_impl(x Float) Float;
+extern fn __pow_impl(x Float, y Float) Float;
+extern fn __log_impl(x Float) Float;
+extern fn __log10_impl(x Float) Float;
+extern fn __exp_impl(x Float) Float;
+extern fn __round_impl(x Float) Int;
+extern fn __floor_impl(x Float) Int;
+extern fn __ceil_impl(x Float) Int;
+extern fn __sin_impl(x Float) Float;
+extern fn __cos_impl(x Float) Float;
+extern fn __tan_impl(x Float) Float;
+extern fn __asin_impl(x Float) Float;
+extern fn __acos_impl(x Float) Float;
+extern fn __atan_impl(x Float) Float;
+extern fn __atan2_impl(y Float, x Float) Float;
+extern fn __sinh_impl(x Float) Float;
+extern fn __cosh_impl(x Float) Float;
+extern fn __tanh_impl(x Float) Float;

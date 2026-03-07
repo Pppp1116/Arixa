@@ -26,9 +26,9 @@ fn stack_pop(stack Stack<T>) T? {
         return none;
     }
     else {}
-    result = stack.data[n - 1];
-    // Note: This is a simplified pop - in a real implementation
-    // we'd need a way to shrink the vector
+    result = vec_get(stack.data, n - 1);
+    // Remove the last element to properly shrink the vector
+    vec_remove(stack.data, n - 1);
     return result;
 }
 
@@ -102,6 +102,25 @@ fn queue_is_empty(queue Queue<T>) Bool {
 /// Get size of `queue`.
 fn queue_size(queue Queue<T>) Int {
     return vec_len(queue.data) - queue.head;
+}
+
+/// Compact queue to reclaim unused memory.
+///
+/// This should be called periodically to prevent memory leaks.
+fn queue_compact(queue Queue<T>) {
+    if queue.head > 0 {
+        mut new_data = vec_new() as Vec<T>;
+        mut i = queue.head;
+        while i < vec_len(queue.data) {
+            item = vec_get(queue.data, i);
+            if item != none {
+                vec_push(new_data, (item as T?) ?? none as T);
+            }
+            i += 1;
+        }
+        queue.data = new_data;
+        queue.head = 0;
+    }
 }
 
 /// Simple fixed-size ring buffer.

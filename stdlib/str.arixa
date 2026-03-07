@@ -33,3 +33,92 @@ fn to_string_float(x Float) String{
 fn parse_int(s String) Int{
     return __from_json(s) as Int;
 }
+
+/// Get character at index in string.
+///
+/// Returns the character at the given byte index.
+/// Note: This operates on bytes, not Unicode code points.
+fn char_at(s String, index Int) Char {
+    if index < 0 || index >= len(s) {
+        return '\0';
+    }
+    return __str_char_at_impl(s, index);
+}
+
+/// Create string from a single character.
+fn from_char(c Char) String {
+    return __str_from_char_impl(c);
+}
+
+/// Get substring from start index with given length.
+///
+/// Returns substring starting at start index with specified length.
+/// Returns empty string if indices are invalid.
+fn substring(s String, start Int, length Int) String {
+    if start < 0 || length < 0 || start >= len(s) {
+        return "";
+    }
+    
+    end = start + length;
+    if end > len(s) {
+        end = len(s);
+    }
+    
+    return __str_substring_impl(s, start, end - start);
+}
+
+/// Check if string starts with prefix.
+fn starts_with(s String, prefix String) Bool {
+    if len(prefix) > len(s) {
+        return false;
+    }
+    
+    return substring(s, 0, len(prefix)) == prefix;
+}
+
+/// Check if string ends with suffix.
+fn ends_with(s String, suffix String) Bool {
+    if len(suffix) > len(s) {
+        return false;
+    }
+    
+    start = len(s) - len(suffix);
+    return substring(s, start, len(suffix)) == suffix;
+}
+
+/// Convert string to uppercase.
+fn to_upper(s String) String {
+    return __str_to_upper_impl(s);
+}
+
+/// Convert string to lowercase.
+fn to_lower(s String) String {
+    return __str_to_lower_impl(s);
+}
+
+/// Trim whitespace from both ends of string.
+fn trim(s String) String {
+    return __str_trim_impl(s);
+}
+
+/// Find first occurrence of substring.
+///
+/// Returns index of first occurrence, or -1 if not found.
+fn find(s String, pattern String) Int {
+    return __str_find_impl(s, pattern);
+}
+
+/// Replace all occurrences of pattern with replacement.
+fn replace(s String, pattern String, replacement String) String {
+    return __str_replace_impl(s, pattern, replacement);
+}
+
+// Runtime implementation functions
+extern fn __str_char_at_impl(s String, index Int) Char;
+extern fn __str_from_char_impl(c Char) String;
+extern fn __str_substring_impl(s String, start Int, length Int) String;
+extern fn __str_to_upper_impl(s String) String;
+extern fn __str_to_lower_impl(s String) String;
+extern fn __str_trim_impl(s String) String;
+extern fn __str_find_impl(s String, pattern String) Int;
+extern fn __str_replace_impl(s String, pattern String, replacement String) String;

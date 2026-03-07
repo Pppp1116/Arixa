@@ -1,0 +1,388 @@
+/// std.heap - heap and priority queue implementations.
+///
+/// This module provides various heap data structures for efficient priority queue operations.
+/// All operations are pure and work in both hosted and freestanding modes.
+
+import std.vec;
+import std.math;
+
+/// Heap types.
+type HeapType = Int;
+
+const HEAP_MIN = 0;
+const HEAP_MAX = 1;
+
+/// Generic heap structure.
+struct Heap<T> {
+    data Vec<T>,
+    heap_type HeapType,
+}
+
+/// Create a new min-heap.
+fn heap_new_min() Heap<T> {
+    return Heap {
+        data: vec_new() as Vec<T>,
+        heap_type: HEAP_MIN,
+    };
+}
+
+/// Create a new max-heap.
+fn heap_new_max() Heap<T> {
+    return Heap {
+        data: vec_new() as Vec<T>,
+        heap_type: HEAP_MAX,
+    };
+}
+
+/// Check if heap is empty.
+fn heap_is_empty(heap Heap<T>) Bool {
+    return vec_len(heap.data) == 0;
+}
+
+/// Get heap size.
+fn heap_size(heap Heap<T>) Int {
+    return vec_len(heap.data);
+}
+
+/// Get the root element without removing it.
+fn heap_peek(heap Heap<T>) T? {
+    if heap_is_empty(heap) {
+        return none;
+    }
+    else {}
+    
+    return vec_get(heap.data, 0);
+}
+
+/// Insert element into heap.
+fn heap_insert(heap Heap<T>, value T) {
+    vec_push(heap.data, value);
+    heapify_up(heap, vec_len(heap.data) - 1);
+}
+
+/// Remove and return the root element.
+fn heap_extract(heap Heap<T>) T? {
+    if heap_is_empty(heap) {
+        return none;
+    }
+    else {}
+    
+    root = vec_get(heap.data, 0);
+    last = vec_get(heap.data, vec_len(heap.data) - 1);
+    
+    if last != none {
+        vec_set(heap.data, 0, (last as T?));
+        vec_remove(heap.data, vec_len(heap.data) - 1);
+        
+        if !heap_is_empty(heap) {
+            heapify_down(heap, 0);
+        }
+        else {}
+    }
+    else {
+        vec_remove(heap.data, 0);
+    }
+    
+    return root;
+}
+
+/// Build heap from existing vector.
+fn heap_build_from_vec(heap Heap<T>, data Vec<T>) {
+    heap.data = data;
+    n = vec_len(heap.data);
+    
+    // Start from last non-leaf node and heapify down
+    mut i = (n / 2) - 1;
+    while i >= 0 {
+        heapify_down(heap, i);
+        i -= 1;
+    }
+}
+
+/// Convert heap to sorted vector.
+fn heap_to_sorted_vec(heap Heap<T>) Vec<T> {
+    n = vec_len(heap.data);
+    result = vec_new() as Vec<T>;
+    
+    // Create a copy to avoid modifying original
+    temp_heap = Heap {
+        data: heap.data,
+        heap_type: heap.heap_type,
+    };
+    
+    mut i = 0;
+    while i < n {
+        item = heap_extract(temp_heap);
+        if item != none {
+            vec_push(result, (item as T?));
+        }
+        else {}
+        i += 1;
+    }
+    
+    return result;
+}
+
+/// Merge two heaps.
+fn heap_merge(heap1 Heap<T>, heap2 Heap<T>) Heap<T> {
+    result = Heap {
+        data: vec_new() as Vec<T>,
+        heap_type: heap1.heap_type,
+    };
+    
+    // Add all elements from both heaps
+    mut i = 0;
+    while i < vec_len(heap1.data) {
+        item = vec_get(heap1.data, i);
+        if item != none {
+            vec_push(result.data, (item as T?));
+        }
+        else {}
+        i += 1;
+    }
+    
+    mut j = 0;
+    while j < vec_len(heap2.data) {
+        item = vec_get(heap2.data, j);
+        if item != none {
+            vec_push(result.data, (item as T?));
+        }
+        else {}
+        j += 1;
+    }
+    
+    // Build heap from combined data
+    heap_build_from_vec(result, result.data);
+    return result;
+}
+
+/// Heapify up operation.
+fn heapify_up(heap Heap<T>, index Int) {
+    if index == 0 {
+        return;
+    }
+    else {}
+    
+    parent = (index - 1) / 2;
+    
+    if compare(heap, index, parent) {
+        // Swap with parent
+        current = vec_get(heap.data, index);
+        parent_val = vec_get(heap.data, parent);
+        
+        if current != none && parent_val != none {
+            vec_set(heap.data, index, (parent_val as T?));
+            vec_set(heap.data, parent, (current as T?));
+            heapify_up(heap, parent);
+        }
+        else {}
+    }
+    else {}
+}
+
+/// Heapify down operation.
+fn heapify_down(heap Heap<T>, index Int) {
+    n = vec_len(heap.data);
+    left = 2 * index + 1;
+    right = 2 * index + 2;
+    mut extreme = index;
+    
+    // Compare with left child
+    if left < n && compare(heap, left, extreme) {
+        extreme = left;
+    }
+    else {}
+    
+    // Compare with right child
+    if right < n && compare(heap, right, extreme) {
+        extreme = right;
+    }
+    else {}
+    
+    if extreme != index {
+        // Swap with extreme child
+        current = vec_get(heap.data, index);
+        extreme_val = vec_get(heap.data, extreme);
+        
+        if current != none && extreme_val != none {
+            vec_set(heap.data, index, (extreme_val as T?));
+            vec_set(heap.data, extreme, (current as T?));
+            heapify_down(heap, extreme);
+        }
+        else {}
+    }
+    else {}
+}
+
+/// Compare two elements based on heap type.
+fn compare(heap Heap<T>, i Int, j Int) Bool {
+    val_i = vec_get(heap.data, i);
+    val_j = vec_get(heap.data, j);
+    
+    if val_i == none || val_j == none {
+        return false;
+    }
+    else {}
+    
+    // This is a simplified comparison - in a real implementation,
+    // we'd need to handle different types properly
+    return heap_compare_values(heap.heap_type, (val_i as T?), (val_j as T?));
+}
+
+/// Compare values based on heap type.
+fn heap_compare_values(heap_type HeapType, a T, b T) Bool {
+    // This is a placeholder - in a real implementation,
+    // we'd need proper type-aware comparison
+    match heap_type {
+        HEAP_MIN => return a < b,
+        HEAP_MAX => return a > b,
+        _ => return false,
+    }
+}
+
+/// Priority queue wrapper for integers.
+struct IntPriorityQueue {
+    heap Heap<Int>,
+}
+
+/// Create new integer priority queue.
+fn int_pq_new(is_min Bool) IntPriorityQueue {
+    if is_min {
+        return IntPriorityQueue { heap: heap_new_min() };
+    }
+    else {
+        return IntPriorityQueue { heap: heap_new_max() };
+    }
+}
+
+/// Insert integer into priority queue.
+fn int_pq_insert(pq IntPriorityQueue, value Int) {
+    heap_insert(pq.heap, value);
+}
+
+/// Extract highest priority integer.
+fn int_pq_extract(pq IntPriorityQueue) Int? {
+    return heap_extract(pq.heap);
+}
+
+/// Peek at highest priority integer.
+fn int_pq_peek(pq IntPriorityQueue) Int? {
+    return heap_peek(pq.heap);
+}
+
+/// Check if priority queue is empty.
+fn int_pq_is_empty(pq IntPriorityQueue) Bool {
+    return heap_is_empty(pq.heap);
+}
+
+/// Get priority queue size.
+fn int_pq_size(pq IntPriorityQueue) Int {
+    return heap_size(pq.heap);
+}
+
+/// Utility functions for heap operations.
+
+/// Find k-th smallest element using min-heap.
+fn find_kth_smallest(data Vec<Int>, k Int) Int? {
+    if k <= 0 || k > vec_len(data) {
+        return none;
+    }
+    else {}
+    
+    heap = heap_new_min();
+    heap_build_from_vec(heap, data);
+    
+    mut i = 0;
+    mut result = none;
+    while i < k {
+        result = heap_extract(heap);
+        i += 1;
+    }
+    
+    return result;
+}
+
+/// Find k-th largest element using max-heap.
+fn find_kth_largest(data Vec<Int>, k Int) Int? {
+    if k <= 0 || k > vec_len(data) {
+        return none;
+    }
+    else {}
+    
+    heap = heap_new_max();
+    heap_build_from_vec(heap, data);
+    
+    mut i = 0;
+    mut result = none;
+    while i < k {
+        result = heap_extract(heap);
+        i += 1;
+    }
+    
+    return result;
+}
+
+/// Get median of data stream using two heaps.
+struct MedianFinder {
+    max_heap Heap<Int>, // Lower half (max-heap)
+    min_heap Heap<Int>, // Upper half (min-heap)
+}
+
+/// Create new median finder.
+fn median_finder_new() MedianFinder {
+    return MedianFinder {
+        max_heap: heap_new_max(),
+        min_heap: heap_new_min(),
+    };
+}
+
+/// Add number to median finder.
+fn median_finder_add(mf MedianFinder, num Int) {
+    if heap_is_empty(mf.max_heap) || num <= ((heap_peek(mf.max_heap) as Int?)?) {
+        heap_insert(mf.max_heap, num);
+    }
+    else {
+        heap_insert(mf.min_heap, num);
+    }
+    
+    // Balance heaps
+    if heap_size(mf.max_heap) > heap_size(mf.min_heap) + 1 {
+        moved = heap_extract(mf.max_heap);
+        if moved != none {
+            heap_insert(mf.min_heap, (moved as Int?));
+        }
+        else {}
+    }
+    else if heap_size(mf.min_heap) > heap_size(mf.max_heap) {
+        moved = heap_extract(mf.min_heap);
+        if moved != none {
+            heap_insert(mf.max_heap, (moved as Int?));
+        }
+        else {}
+    }
+    else {}
+}
+
+/// Get current median.
+fn median_finder_get_median(mf MedianFinder) Float {
+    if heap_size(mf.max_heap) == heap_size(mf.min_heap) {
+        max_val = heap_peek(mf.max_heap);
+        min_val = heap_peek(mf.min_heap);
+        
+        if max_val != none && min_val != none {
+            return ((max_val as Int?)?) + (min_val as Int?)?)) / 2.0;
+        }
+        else {
+            return 0.0;
+        }
+    }
+    else {
+        max_val = heap_peek(mf.max_heap);
+        if max_val != none {
+            return (max_val as Int?)?) as Float;
+        }
+        else {
+            return 0.0;
+        }
+    }
+}

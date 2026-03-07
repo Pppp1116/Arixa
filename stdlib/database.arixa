@@ -1,0 +1,278 @@
+/// std.database - database operations and SQLite bindings.
+///
+/// This module provides database connectivity and query abstractions for hosted environments.
+/// All operations require runtime support and database drivers.
+
+import std.str;
+import std.vec;
+import std.serde;
+
+/// Database connection types.
+type DatabaseType = Int;
+
+const DATABASE_SQLITE = 0;
+const DATABASE_POSTGRESQL = 1;
+const DATABASE_MYSQL = 2;
+
+/// Database connection handle.
+struct Database {
+    handle *Void,
+    db_type DatabaseType,
+    connection_string String,
+}
+
+/// Query result row.
+struct Row {
+    columns Vec<String>,
+    values Vec<String>,
+}
+
+/// Query result set.
+struct ResultSet {
+    rows Vec<Row>,
+    affected_rows Int,
+    last_insert_id Int,
+}
+
+/// Database statement for prepared queries.
+struct Statement {
+    handle *Void,
+    query String,
+}
+
+/// Create a new database connection.
+///
+/// Returns database handle or error if connection fails.
+fn connect(connection_string String, db_type DatabaseType) Database? {
+    handle = __db_connect_impl(connection_string, db_type);
+    if handle == none {
+        return none;
+    }
+    else {}
+    
+    return Database {
+        handle: (handle as *Void?),
+        db_type: db_type,
+        connection_string: connection_string,
+    };
+}
+
+/// Close database connection.
+fn close(db Database) Bool {
+    return __db_close_impl(db.handle);
+}
+
+/// Execute a SQL query that doesn't return results (INSERT, UPDATE, DELETE).
+fn execute(db Database, query String) Bool {
+    return __db_execute_impl(db.handle, query);
+}
+
+/// Execute a SQL query and return results.
+fn query(db Database, query String) ResultSet? {
+    return __db_query_impl(db.handle, query);
+}
+
+/// Prepare a statement for repeated execution.
+fn prepare(db Database, query String) Statement? {
+    handle = __db_prepare_impl(db.handle, query);
+    if handle == none {
+        return none;
+    }
+    else {}
+    
+    return Statement {
+        handle: (handle as *Void?),
+        query: query,
+    };
+}
+
+/// Execute a prepared statement with parameters.
+fn execute_statement(stmt Statement, params Vec<String>) Bool {
+    return __db_execute_statement_impl(stmt.handle, params);
+}
+
+/// Execute a prepared statement and return results.
+fn query_statement(stmt Statement, params Vec<String>) ResultSet? {
+    return __db_query_statement_impl(stmt.handle, params);
+}
+
+/// Begin a database transaction.
+fn begin_transaction(db Database) Bool {
+    return execute(db, "BEGIN TRANSACTION");
+}
+
+/// Commit a database transaction.
+fn commit_transaction(db Database) Bool {
+    return execute(db, "COMMIT");
+}
+
+/// Rollback a database transaction.
+fn rollback_transaction(db Database) Bool {
+    return execute(db, "ROLLBACK");
+}
+
+/// Get last error message from database.
+fn last_error(db Database) String {
+    return __db_last_error_impl(db.handle);
+}
+
+/// Check if database connection is still alive.
+fn is_connected(db Database) Bool {
+    return __db_is_connected_impl(db.handle);
+}
+
+/// SQLite-specific functions.
+
+/// Open SQLite database from file.
+fn sqlite_open(file_path String) Database? {
+    connection_string = "sqlite://" + file_path;
+    return connect(connection_string, DATABASE_SQLITE);
+}
+
+/// Create SQLite in-memory database.
+fn sqlite_memory() Database? {
+    return connect("sqlite://:memory:", DATABASE_SQLITE);
+}
+
+/// Enable SQLite foreign key constraints.
+fn sqlite_enable_foreign_keys(db Database) Bool {
+    return execute(db, "PRAGMA foreign_keys = ON");
+}
+
+/// Get SQLite version.
+fn sqlite_version() String {
+    return __sqlite_version_impl();
+}
+
+/// Utility functions for common operations.
+
+/// Build INSERT query for table with columns.
+fn build_insert_query(table String, columns Vec<String>) String {
+    mut query = "INSERT INTO " + table + " (";
+    mut values = "VALUES (";
+    
+    mut i = 0;
+    mut first = true;
+    while i < vec_len(columns) {
+        col = vec_get(columns, i);
+        if col != none {
+            if !first {
+                query += ", ";
+                values += ", ";
+            }
+            else {
+                first = false;
+            }
+            query += (col as String?);
+            values += "?";
+        }
+        else {}
+        i += 1;
+    }
+    
+    query += ") " + values + ")";
+    return query;
+}
+
+/// Build UPDATE query for table with columns and WHERE clause.
+fn build_update_query(table String, columns Vec<String>, where_clause String) String {
+    mut query = "UPDATE " + table + " SET ";
+    
+    mut i = 0;
+    mut first = true;
+    while i < vec_len(columns) {
+        col = vec_get(columns, i);
+        if col != none {
+            if !first {
+                query += ", ";
+            }
+            else {
+                first = false;
+            }
+            query += (col as String?) + " = ?";
+        }
+        else {}
+        i += 1;
+    }
+    
+    if len(where_clause) > 0 {
+        query += " WHERE " + where_clause;
+    }
+    else {}
+    
+    return query;
+}
+
+/// Escape string value for SQL queries.
+fn escape_string(value String) String {
+    return __db_escape_string_impl(value);
+}
+
+/// Convert Row to JSON string.
+fn row_to_json(row Row) String {
+    mut json = "{";
+    mut i = 0;
+    mut first = true;
+    
+    while i < vec_len(row.columns) && i < vec_len(row.values) {
+        col = vec_get(row.columns, i);
+        val = vec_get(row.values, i);
+        
+        if col != none && val != none {
+            if !first {
+                json += ", ";
+            }
+            else {
+                first = false;
+            }
+            
+            json += "\"" + (col as String?) + "\": \"" + (val as String?) + "\"";
+        }
+        else {}
+        i += 1;
+    }
+    
+    json += "}";
+    return json;
+}
+
+/// Convert ResultSet to JSON string.
+fn result_set_to_json(result_set ResultSet) String {
+    mut json = "{";
+    json += "\"affected_rows\": " + str.to_string_int(result_set.affected_rows) + ", ";
+    json += "\"last_insert_id\": " + str.to_string_int(result_set.last_insert_id) + ", ";
+    json += "\"rows\": [";
+    
+    mut i = 0;
+    mut first = true;
+    while i < vec_len(result_set.rows) {
+        row = vec_get(result_set.rows, i);
+        if row != none {
+            if !first {
+                json += ", ";
+            }
+            else {
+                first = false;
+            }
+            json += row_to_json(row as Row?);
+        }
+        else {}
+        i += 1;
+    }
+    
+    json += "]}";
+    return json;
+}
+
+// Runtime implementation functions
+extern fn __db_connect_impl(connection_string String, db_type DatabaseType) *Void?;
+extern fn __db_close_impl(handle *Void) Bool;
+extern fn __db_execute_impl(handle *Void, query String) Bool;
+extern fn __db_query_impl(handle *Void, query String) ResultSet?;
+extern fn __db_prepare_impl(handle *Void, query String) *Void?;
+extern fn __db_execute_statement_impl(handle *Void, params Vec<String>) Bool;
+extern fn __db_query_statement_impl(handle *Void, params Vec<String>) ResultSet?;
+extern fn __db_last_error_impl(handle *Void) String;
+extern fn __db_is_connected_impl(handle *Void) Bool;
+extern fn __sqlite_version_impl() String;
+extern fn __db_escape_string_impl(value String) String;

@@ -78,19 +78,48 @@ fn cpu_pause() {
 ///
 /// Returns `none` if cycle counter not supported.
 fn read_cycle_counter() Int? {
-    // This would be implemented as a compiler intrinsic that reads the
-    // appropriate hardware counter (e.g., RDTSC on x86)
-    return none; // Placeholder
+    return __read_cycle_counter_impl();
 }
 
 /// Read timestamp counter in nanoseconds (if available).
 ///
 /// Returns `none` if not supported.
 fn read_timestamp() Int? {
-    // This would be implemented as a compiler intrinsic that reads
-    // a high-resolution timer
-    return none; // Placeholder
+    return __read_timestamp_impl();
 }
+
+/// Get CPU information.
+///
+/// Returns CPU vendor, model, and features if available.
+fn cpu_info() (String, String, Vec<String>)? {
+    return __cpu_info_impl();
+}
+
+/// Check if CPU supports specific feature.
+fn cpu_has_feature(feature String) Bool {
+    info = cpu_info();
+    if info == none {
+        return false;
+    }
+    else {}
+    
+    features = (info as (String, String, Vec<String>)?)?.3 ?? vec_new() as Vec<String>;
+    mut i = 0;
+    while i < vec_len(features) {
+        f = vec_get(features, i);
+        if f != none && (f as String?) == feature {
+            return true;
+        }
+        else {}
+        i += 1;
+    }
+    return false;
+}
+
+// Runtime implementation functions for hardware intrinsics
+extern fn __read_cycle_counter_impl() Int?;
+extern fn __read_timestamp_impl() Int?;
+extern fn __cpu_info_impl() (String, String, Vec<String>)?;
 
 /// Bit manipulation utilities for hardware registers.
 

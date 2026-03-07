@@ -1,0 +1,256 @@
+import std.str;
+import std.data;
+import std.algorithm;
+import std.math;
+import std.heap;
+
+fn main() Int {
+    print("Testing enhanced standard library...");
+    
+    // Test string utilities
+    test_string_utilities();
+    
+    // Test data structures
+    test_data_structures();
+    
+    // Test algorithms
+    test_algorithms();
+    
+    // Test math functions
+    test_math_functions();
+    
+    // Test heap operations
+    test_heap_operations();
+    
+    print("All tests completed!");
+    return 0;
+}
+
+fn test_string_utilities() {
+    print("Testing string utilities...");
+    
+    test_str = "Hello, World!";
+    
+    // Test length
+    length = str.length(test_str);
+    print("Length: " + str.to_string_int(length));
+    
+    // Test substring
+    sub = str.substring(test_str, 7, 5);
+    print("Substring: " + sub);
+    
+    // Test starts_with
+    starts = str.starts_with(test_str, "Hello");
+    print("Starts with 'Hello': " + str.to_string_bool(starts));
+    
+    // Test ends_with
+    ends = str.ends_with(test_str, "World!");
+    print("Ends with 'World!': " + str.to_string_bool(ends));
+    
+    // Test to_upper
+    upper = str.to_upper(test_str);
+    print("Uppercase: " + upper);
+    
+    // Test to_lower
+    lower = str.to_lower(test_str);
+    print("Lowercase: " + lower);
+}
+
+fn test_data_structures() {
+    print("Testing data structures...");
+    
+    // Test Stack
+    stack = stack_new();
+    stack_push(stack, 10);
+    stack_push(stack, 20);
+    stack_push(stack, 30);
+    
+    top = stack_peek(stack);
+    if top != none {
+        print("Stack top: " + str.to_string_int(top as Int?));
+    }
+    else {}
+    
+    popped = stack_pop(stack);
+    if popped != none {
+        print("Popped: " + str.to_string_int(popped as Int?));
+    }
+    else {}
+    
+    print("Stack size: " + str.to_string_int(stack_size(stack)));
+    
+    // Test Queue
+    queue = queue_new();
+    queue_enqueue(queue, 100);
+    queue_enqueue(queue, 200);
+    queue_enqueue(queue, 300);
+    
+    front = queue_peek(queue);
+    if front != none {
+        print("Queue front: " + str.to_string_int(front as Int?));
+    }
+    else {}
+    
+    dequeued = queue_dequeue(queue);
+    if dequeued != none {
+        print("Dequeued: " + str.to_string_int(dequeued as Int?));
+    }
+    else {}
+    
+    print("Queue size: " + str.to_string_int(queue_size(queue)));
+}
+
+fn test_algorithms() {
+    print("Testing algorithms...");
+    
+    // Create test data
+    data = vec_new() as Vec<Int>;
+    vec_push(data, 5);
+    vec_push(data, 2);
+    vec_push(data, 8);
+    vec_push(data, 1);
+    vec_push(data, 9);
+    vec_push(data, 3);
+    
+    print("Original data: " + vec_to_string(data));
+    
+    // Test sorting
+    sorted_data = vec_new() as Vec<Int>;
+    mut i = 0;
+    while i < vec_len(data) {
+        val = vec_get(data, i);
+        if val != none {
+            vec_push(sorted_data, (val as Int?));
+        }
+        else {}
+        i += 1;
+    }
+    
+    bubble_sort_int(sorted_data);
+    print("Sorted data: " + vec_to_string(sorted_data));
+    
+    // Test binary search
+    index = binary_search_int(sorted_data, 8);
+    if index != none {
+        print("Found 8 at index: " + str.to_string_int(index as Int?));
+    }
+    else {
+        print("8 not found");
+    }
+    
+    // Test min/max
+    min_val = find_min_int(sorted_data);
+    max_val = find_max_int(sorted_data);
+    
+    if min_val != none {
+        print("Min value: " + str.to_string_int(min_val as Int?));
+    }
+    else {}
+    
+    if max_val != none {
+        print("Max value: " + str.to_string_int(max_val as Int?));
+    }
+    else {}
+}
+
+fn test_math_functions() {
+    print("Testing math functions...");
+    
+    // Test basic operations
+    a = 10;
+    b = 3;
+    
+    print("min_int(10, 3): " + str.to_string_int(min_int(a, b)));
+    print("max_int(10, 3): " + str.to_string_int(max_int(a, b)));
+    print("abs_int(-5): " + str.to_string_int(abs_int(-5)));
+    print("clamp_int(15, 0, 10): " + str.to_string_int(clamp_int(15, 0, 10)));
+    
+    // Test float operations
+    x = 3.14159;
+    y = 2.71828;
+    
+    print("min_float(3.14159, 2.71828): " + str.to_string_float(min_float(x, y)));
+    print("max_float(3.14159, 2.71828): " + str.to_string_float(max_float(x, y)));
+    print("abs_float(-2.5): " + str.to_string_float(abs_float(-2.5)));
+    
+    // Test trigonometric functions
+    angle = PI / 4.0; // 45 degrees
+    sin_val = sin(angle);
+    cos_val = cos(angle);
+    
+    print("sin(π/4): " + str.to_string_float(sin_val));
+    print("cos(π/4): " + str.to_string_float(cos_val));
+    print("PI: " + str.to_string_float(PI));
+    print("E: " + str.to_string_float(E));
+}
+
+fn test_heap_operations() {
+    print("Testing heap operations...");
+    
+    // Test min-heap
+    min_heap = heap_new_min();
+    heap_insert(min_heap, 5);
+    heap_insert(min_heap, 2);
+    heap_insert(min_heap, 8);
+    heap_insert(min_heap, 1);
+    heap_insert(min_heap, 9);
+    
+    print("Min-heap size: " + str.to_string_int(heap_size(min_heap)));
+    
+    min_val = heap_peek(min_heap);
+    if min_val != none {
+        print("Min-heap peek: " + str.to_string_int(min_val as Int?));
+    }
+    else {}
+    
+    // Extract all elements
+    print("Extracting from min-heap:");
+    while !heap_is_empty(min_heap) {
+        val = heap_extract(min_heap);
+        if val != none {
+            print("  " + str.to_string_int(val as Int?));
+        }
+        else {}
+    }
+    
+    // Test max-heap
+    max_heap = heap_new_max();
+    heap_insert(max_heap, 5);
+    heap_insert(max_heap, 2);
+    heap_insert(max_heap, 8);
+    heap_insert(max_heap, 1);
+    heap_insert(max_heap, 9);
+    
+    print("Max-heap size: " + str.to_string_int(heap_size(max_heap)));
+    
+    max_val = heap_peek(max_heap);
+    if max_val != none {
+        print("Max-heap peek: " + str.to_string_int(max_val as Int?));
+    }
+    else {}
+}
+
+// Utility function to convert vector to string
+fn vec_to_string(vec Vec<Int>) String {
+    mut result = "[";
+    mut i = 0;
+    mut first = true;
+    
+    while i < vec_len(vec) {
+        val = vec_get(vec, i);
+        if val != none {
+            if !first {
+                result += ", ";
+            }
+            else {
+                first = false;
+            }
+            result += str.to_string_int(val as Int?);
+        }
+        else {}
+        i += 1;
+    }
+    
+    result += "]";
+    return result;
+}
