@@ -1014,19 +1014,70 @@ def build(
     ffi_libs.update(dep_libs)
     ffi_libs.update({lib for lib in (links or []) if lib})
     lower_for_loops(prog)
-    optimize_program(prog)
+    
+    # Use enhanced optimizer for release builds
+    if profile == "release":
+        try:
+            from astra.optimizer_enhanced import optimize_program_enhanced
+            from astra.optimizer_advanced import optimize_program_advanced
+            from astra.optimizer_memory import optimize_memory_program
+            from astra.optimizer_controlflow import optimize_controlflow_program
+            from astra.optimizer_ssa import optimize_ssa_program
+            from astra.optimizer_loops_advanced import optimize_loops_advanced_program
+            from astra.optimizer_interprocedural import optimize_interprocedural_program
+            from astra.optimizer_target_specific import optimize_target_specific_program
+            from astra.optimizer_pgo import optimize_pgo_program
+            
+            # Apply comprehensive optimization pipeline
+            optimize_program_enhanced(prog, overflow_mode=overflow_mode, profile=profile)
+            optimize_program_advanced(prog, overflow_mode=overflow_mode, profile=profile)
+            optimize_memory_program(prog, overflow_mode=overflow_mode, profile=profile)
+            optimize_controlflow_program(prog, overflow_mode=overflow_mode, profile=profile)
+            optimize_ssa_program(prog, overflow_mode=overflow_mode, profile=profile)
+            optimize_loops_advanced_program(prog, overflow_mode=overflow_mode, profile=profile)
+            optimize_interprocedural_program(prog, overflow_mode=overflow_mode, profile=profile)
+            optimize_target_specific_program(prog, overflow_mode=overflow_mode, profile=profile, triple=triple)
+            optimize_pgo_program(prog, overflow_mode=overflow_mode, profile=profile)
+        except ImportError:
+            # Fallback to original optimizer if enhanced not available
+            optimize_program(prog)
+    else:
+        optimize_program(prog)
     if strict:
         _strict_validate_program(prog, src_file)
     llvm_ir: str | None = None
     if target in {"llvm", "native"} or emit_ir:
-        llvm_ir = to_llvm_ir(
-            prog,
-            freestanding=freestanding,
-            overflow_mode=overflow_mode,
-            triple=triple,
-            profile=profile,
-            filename=str(src_file),
-        )
+        # Use enhanced LLVM codegen for release builds
+        if profile == "release":
+            try:
+                from astra.llvm_codegen_enhanced import to_llvm_ir_enhanced
+                llvm_ir = to_llvm_ir_enhanced(
+                    prog,
+                    freestanding=freestanding,
+                    overflow_mode=overflow_mode,
+                    triple=triple,
+                    profile=profile,
+                    filename=str(src_file),
+                )
+            except ImportError:
+                # Fallback to original codegen if enhanced not available
+                llvm_ir = to_llvm_ir(
+                    prog,
+                    freestanding=freestanding,
+                    overflow_mode=overflow_mode,
+                    triple=triple,
+                    profile=profile,
+                    filename=str(src_file),
+                )
+        else:
+            llvm_ir = to_llvm_ir(
+                prog,
+                freestanding=freestanding,
+                overflow_mode=overflow_mode,
+                triple=triple,
+                profile=profile,
+                filename=str(src_file),
+            )
     if freestanding and llvm_ir is not None:
         _require_runtime_free_freestanding(llvm_ir, src_file)
     if emit_ir:

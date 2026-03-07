@@ -57,6 +57,35 @@
 - [Roadmap](reference/roadmap.md)
 - [Release History](reference/releases.md)
 
+## Standard Library Modules
+- [Algorithm](stdlib/algorithm.md) - Pure algorithms for freestanding use
+- [Atomic](stdlib/atomic.md) - Atomic operations and compatibility API
+- [C Bindings](stdlib/c.md) - C language FFI utilities
+- [Channel](stdlib/channel.md) - FIFO channels for communication
+- [Collections](stdlib/collections.md) - List and map helpers
+- [Core](stdlib/core.md) - Core types and checked arithmetic
+- [Crypto](stdlib/crypto.md) - Cryptographic helpers
+- [Data](stdlib/data.md) - Data structure primitives
+- [Encoding](stdlib/encoding.md) - Text encoding utilities
+- [Environment](stdlib/env.md) - Environment variable utilities
+- [File System](stdlib/fs.md) - File system operations
+- [Geometry](stdlib/geometry.md) - 2D/3D vector and matrix operations
+- [Hardware](stdlib/hardware.md) - Low-level hardware interaction
+- [IO](stdlib/io.md) - File I/O and printing
+- [Logging](stdlib/logging.md) - Structured logging
+- [Math](stdlib/math.md) - Mathematical utilities
+- [Memory](stdlib/mem.md) - Memory manipulation helpers
+- [Network](stdlib/net.md) - TCP networking
+- [Path](stdlib/path.md) - Path manipulation
+- [Process](stdlib/process.md) - Process and system utilities
+- [Random](stdlib/random.md) - Random number generation
+- [Serialization](stdlib/serde.md) - JSON helpers
+- [String](stdlib/str.md) - String utilities
+- [Synchronization](stdlib/sync.md) - Mutex wrappers
+- [Thread](stdlib/thread.md) - Task and threading utilities
+- [Time](stdlib/time.md) - Time utilities
+- [Vector](stdlib/vec.md) - Typed vector wrappers
+
 ## Internal Documentation
 - [Architecture Inconsistencies](internal/architecture_inconsistencies.md)
 - [Development Summaries](internal/development_summaries/) - Historical notes and implementation details

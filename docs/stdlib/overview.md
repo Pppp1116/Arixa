@@ -4,11 +4,12 @@ Astra stdlib lives in `stdlib/` and is also bundled under `astra/stdlib/` for in
 
 Module groups:
 
-- Core types and checked arithmetic: `core`
-- Data containers: `vec`, `collections`, `mem`
-- Hosted utilities: `io`, `net`, `process`, `time`, `crypto`, `serde`, `str`
-- Concurrency/synchronization (experimental): `thread`, `sync`, `channel`, `atomic`
-- Math helpers: `math`
+- Core types and algorithms: `core`, `algorithm`, `math`
+- Data containers: `vec`, `collections`, `data`, `mem`
+- Text and encoding: `str`, `encoding`, `c`
+- Hosted utilities: `io`, `net`, `fs`, `process`, `env`, `time`, `crypto`, `serde`
+- Concurrency/synchronization: `thread`, `sync`, `channel`, `atomic`
+- System integration: `hardware`, `path`, `logging`, `random`, `geometry`
 
 Import with `import std.<module>;`.
 

@@ -1,0 +1,392 @@
+/// std.random - Random number generation utilities for hosted environments.
+///
+/// This module provides both fast random number generation and cryptographically
+/// secure random number generation. Requires runtime support and OS entropy.
+
+import std.time;
+
+/// Random number generator state
+struct Random {
+    state UInt64,
+}
+
+/// Create a new random number generator with current time as seed
+fn new() Random {
+    seed = time.now_ms() as UInt64;
+    return Random{seed};
+}
+
+/// Create a new random number generator with specific seed
+fn with_seed(seed UInt64) Random {
+    return Random{seed};
+}
+
+/// Generate a random 64-bit unsigned integer
+fn next_uint64(rng &mut Random) UInt64 {
+    // Xorshift64* algorithm
+    rng.state ^= rng.state << 13;
+    rng.state ^= rng.state >> 7;
+    rng.state ^= rng.state << 17;
+    return rng.state * 0x2545F4914F6CDD1D;
+}
+
+/// Generate a random 32-bit unsigned integer
+fn next_uint32(rng &mut Random) UInt32 {
+    return (next_uint64(rng) & 0xFFFFFFFF) as UInt32;
+}
+
+/// Generate a random signed integer in range [min, max]
+fn next_int_range(rng &mut Random, min Int, max Int) Int {
+    if min > max {
+        // Swap if range is reversed
+        temp = min;
+        min = max;
+        max = temp;
+    }
+    
+    if min == max {
+        return min;
+    }
+    
+    range = max - min + 1;
+    if range <= 0 {
+        // Handle overflow case
+        return min;
+    }
+    
+    // Use rejection sampling to avoid bias
+    mut result = min;
+    loop {
+        random_val = next_uint64(rng) as Int;
+        if random_val >= 0 {
+            result = min + (random_val % range);
+            break;
+        }
+    }
+    
+    return result;
+}
+
+/// Generate a random float in range [0.0, 1.0)
+fn next_float(rng &mut Random) Float {
+    // Generate 53 bits of precision
+    random_val = next_uint64(rng) >> 11;  // Keep 53 bits
+    return random_val as Float / 9007199254740992.0;  // 2^53
+}
+
+/// Generate a random float in range [min, max)
+fn next_float_range(rng &mut Random, min Float, max Float) Float {
+    if min > max {
+        // Swap if range is reversed
+        temp = min;
+        min = max;
+        max = temp;
+    }
+    
+    if min == max {
+        return min;
+    }
+    
+    range = max - min;
+    return min + (next_float(rng) * range);
+}
+
+/// Generate a random boolean
+fn next_bool(rng &mut Random) Bool {
+    return (next_uint64(rng) & 1) == 1;
+}
+
+/// Generate random bytes
+fn next_bytes(rng &mut Random, length Int) Vec<UInt8> {
+    mut result = vec_new() as Vec<UInt8>;
+    
+    mut i = 0;
+    while i < length {
+        random_val = next_uint64(rng);
+        
+        // Extract 8 bytes from 64-bit value
+        mut j = 0;
+        while j < 8 && i < length {
+            byte = (random_val >> (j * 8)) & 0xFF;
+            vec_push(result, byte as UInt8);
+            i += 1;
+            j += 1;
+        }
+    }
+    
+    return result;
+}
+
+/// Shuffle a vector in place
+fn shuffle_vec[T](rng &mut Random, vec &mut Vec<T>) {
+    n = vec_len(vec);
+    
+    // Fisher-Yates shuffle
+    mut i = n - 1;
+    while i > 0 {
+        j = next_int_range(rng, 0, i);
+        
+        // Swap elements i and j
+        temp_opt = vec_get(vec, i);
+        elem_i_opt = vec_get(vec, j);
+        
+        if temp_opt != none && elem_i_opt != none {
+            temp = (temp_opt as T?) ?? vec_get_default();
+            elem_j = (elem_i_opt as T?) ?? vec_get_default();
+            
+            vec_set(vec, i, elem_j);
+            vec_set(vec, j, temp);
+        }
+        
+        i -= 1;
+    }
+}
+
+/// Choose a random element from a vector
+fn choose_vec[T](rng &mut Random, vec Vec<T>) T? {
+    n = vec_len(vec);
+    if n == 0 {
+        return none;
+    }
+    
+    index = next_int_range(rng, 0, n - 1);
+    return vec_get(vec, index);
+}
+
+/// Generate a random string of given length
+fn next_string(rng &mut Random, length Int, charset String) String {
+    if length <= 0 {
+        return "";
+    }
+    
+    charset_len = str_length(charset);
+    if charset_len == 0 {
+        return "";
+    }
+    
+    mut result = "";
+    mut i = 0;
+    
+    while i < length {
+        char_index = next_int_range(rng, 0, charset_len - 1);
+        char = str_char_at(charset, char_index);
+        result += str_from_char(char);
+        i += 1;
+    }
+    
+    return result;
+}
+
+/// Generate a random alphanumeric string
+fn next_alphanumeric(rng &mut Random, length Int) String {
+    charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    return next_string(rng, length, charset);
+}
+
+/// Generate a random hex string
+fn next_hex_string(rng &mut Random, length Int) String {
+    charset = "0123456789abcdef";
+    return next_string(rng, length, charset);
+}
+
+/// Cryptographically secure random number generation
+
+/// Generate cryptographically secure random bytes
+fn secure_bytes(length Int) Vec<UInt8>? {
+    return secure_random_bytes_impl(length);
+}
+
+/// Generate cryptographically secure random 64-bit integer
+fn secure_uint64() UInt64? {
+    bytes = secure_bytes(8);
+    if bytes == none {
+        return none;
+    }
+    
+    byte_array = bytes as Vec<UInt8>;
+    mut result = 0 as UInt64;
+    
+    mut i = 0;
+    while i < 8 {
+        byte_opt = vec_get(byte_array, i);
+        if byte_opt != none {
+            byte = (byte_opt as UInt8?) ?? 0;
+            result = (result << 8) | (byte as UInt64);
+        }
+        i += 1;
+    }
+    
+    return result;
+}
+
+/// Generate cryptographically secure random integer in range [min, max]
+fn secure_int_range(min Int, max Int) Int? {
+    if min > max {
+        temp = min;
+        min = max;
+        max = temp;
+    }
+    
+    if min == max {
+        return min;
+    }
+    
+    range = max - min + 1;
+    if range <= 0 {
+        return none;
+    }
+    
+    // Use rejection sampling with secure random
+    loop {
+        secure_val = secure_uint64();
+        if secure_val != none {
+            val = (secure_val as UInt64?) as Int;
+            if val >= 0 {
+                return min + (val % range);
+            }
+        } else {
+            return none;
+        }
+    }
+}
+
+/// Generate cryptographically secure random float in range [0.0, 1.0)
+fn secure_float() Float? {
+    secure_val = secure_uint64();
+    if secure_val == none {
+        return none;
+    }
+    
+    val = (secure_val as UInt64?) >> 11;  // Keep 53 bits
+    return val as Float / 9007199254740992.0;  // 2^53
+}
+
+/// Generate cryptographically secure random string
+fn secure_string(length Int, charset String) String? {
+    if length <= 0 {
+        return "";
+    }
+    
+    charset_len = str_length(charset);
+    if charset_len == 0 {
+        return "";
+    }
+    
+    mut result = "";
+    mut i = 0;
+    
+    while i < length {
+        char_index = secure_int_range(0, charset_len - 1);
+        if char_index == none {
+            return none;
+        }
+        
+        char = str_char_at(charset, char_index as Int);
+        result += str_from_char(char);
+        i += 1;
+    }
+    
+    return result;
+}
+
+/// Generate cryptographically secure alphanumeric string
+fn secure_alphanumeric(length Int) String? {
+    charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    return secure_string(length, charset);
+}
+
+/// Generate UUID v4
+fn uuid_v4() String? {
+    bytes = secure_bytes(16);
+    if bytes == none {
+        return none;
+    }
+    
+    byte_array = bytes as Vec<UInt8>;
+    
+    // Set version bits (0100 for v4)
+    vec_set(byte_array, 6, ((vec_get(byte_array, 6) ?? 0) & 0x0F) | 0x40);
+    
+    // Set variant bits (10xx)
+    vec_set(byte_array, 8, ((vec_get(byte_array, 8) ?? 0) & 0x3F) | 0x80);
+    
+    // Convert to hex string
+    mut result = "";
+    mut i = 0;
+    
+    while i < 16 {
+        byte_opt = vec_get(byte_array, i);
+        if byte_opt != none {
+            byte = (byte_opt as UInt8?) ?? 0;
+            
+            // Convert byte to 2-digit hex
+            high = (byte >> 4) & 0x0F;
+            low = byte & 0x0F;
+            
+            hex_chars = "0123456789abcdef";
+            result += str_char_at(hex_chars, high as Int);
+            result += str_char_at(hex_chars, low as Int);
+            
+            // Add hyphens at appropriate positions
+            if i == 3 || i == 5 || i == 7 || i == 9 {
+                result += "-";
+            }
+        }
+        i += 1;
+    }
+    
+    return result;
+}
+
+// Convenience functions using global RNG
+
+/// Global random number generator
+mut global_rng = new();
+
+/// Generate random integer using global RNG
+fn rand_int(min Int, max Int) Int {
+    return next_int_range(global_rng, min, max);
+}
+
+/// Generate random float using global RNG
+fn rand_float(min Float, max Float) Float {
+    return next_float_range(global_rng, min, max);
+}
+
+/// Generate random boolean using global RNG
+fn rand_bool() Bool {
+    return next_bool(global_rng);
+}
+
+/// Generate random string using global RNG
+fn rand_string(length Int) String {
+    return next_alphanumeric(global_rng, length);
+}
+
+/// Secure random convenience functions
+fn rand_secure_int(min Int, max Int) Int? {
+    return secure_int_range(min, max);
+}
+
+fn rand_secure_float() Float? {
+    return secure_float();
+}
+
+fn rand_secure_string(length Int) String? {
+    return secure_alphanumeric(length);
+}
+
+// Host implementation functions (would be implemented in runtime)
+extern fn secure_random_bytes_impl(length Int) Vec<UInt8>?;
+
+// String utility functions (would be implemented in std.str)
+extern fn str_length(s String) Int;
+extern fn str_char_at(s String, index Int) Char;
+extern fn str_from_char(c Char) String;
+
+// Vector utility functions (would be implemented in std.vec)
+extern fn vec_len[T](vec Vec<T>) Int;
+extern fn vec_get[T](vec Vec<T>, index Int) T?;
+extern fn vec_set[T](vec &mut Vec<T>, index Int, value T) Void;
+extern fn vec_push[T](vec &mut Vec<T>, value T) Void;
+extern fn vec_get_default[T]() T;
