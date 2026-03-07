@@ -68,6 +68,8 @@ def main(argv=None):
             lines.append(f"- `{pub}{async_kw}fn {item.name}({sig}){ret_text}`")
             lines.extend(_doc_block(item.doc))
             lines.append("")
+    if ".." in ns.output:
+        raise Exception("Invalid file path")
     Path(ns.output).write_text("\n".join(lines).rstrip() + "\n")
     print("docs-generated")
 

@@ -604,6 +604,8 @@ def _cmd_init(name: str) -> None:
 
 
 def _cmd_new(name: str) -> None:
+    if ".." in name:
+        raise Exception("Invalid file path")
     root = Path(name)
     if root.exists():
         raise ValueError(_diag(f"destination `{name}` already exists"))

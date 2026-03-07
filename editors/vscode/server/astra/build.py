@@ -1031,16 +1031,22 @@ def build(
         _require_runtime_free_freestanding(llvm_ir, src_file)
     if emit_ir:
         assert llvm_ir is not None
+        if ".." in emit_ir:
+            raise RuntimeError("Invalid file path")
         p = Path(emit_ir)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(llvm_ir)
     if target == "py":
         out = to_python(prog, freestanding=freestanding, overflow_mode=overflow_mode, emit_entrypoint=(kind == "exe"))
+        if ".." in out_path:
+            raise RuntimeError("Invalid file path")
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         Path(out_path).write_text(out)
     elif target == "llvm":
         assert llvm_ir is not None
         out = llvm_ir
+        if ".." in out_path:
+            raise RuntimeError("Invalid file path")
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         Path(out_path).write_text(out)
     elif target == "native":
