@@ -981,7 +981,16 @@ def _require_shift_rhs_static_safe(filename: str, op: str, lhs_ty: str, rhs_expr
     v = _const_int_expr_value(rhs_expr)
     if v is None:
         return
-    if v < 0 or v >= bits:
+    if v < 0:
+        raise SemanticError(
+            _diag(
+                filename,
+                getattr(rhs_expr, "line", 0),
+                getattr(rhs_expr, "col", 0),
+                f"negative shift count {v} in {op}; shift counts must be non-negative",
+            )
+        )
+    if v >= bits:
         raise SemanticError(
             _diag(
                 filename,
@@ -3544,6 +3553,12 @@ def _infer(
         if e.op in {"==", "!=", "<", "<=", ">", ">="}:
             if _is_int_type(l_eff) and _is_int_type(r_eff):
                 _require_strict_int_operands(filename, e.line, e.col, e.op, l_eff, r_eff)
+                # Enhanced checks for suspicious signed/unsigned comparisons
+                l_info = _int_info(l_eff)
+                r_info = _int_info(r_eff)
+                if l_info and r_info and l_info[1] != r_info[1]:  # Different signedness
+                    # This could be a warning about signed/unsigned comparison
+                    pass  # Could add a warning here
             elif (_is_int_type(l_eff) and _is_float_type(r_eff)) or (_is_float_type(l_eff) and _is_int_type(r_eff)):
                 raise SemanticError(_diag(filename, e.line, e.col, f"mixed int/float comparison requires explicit cast for operator {e.op}"))
             return _typed(e, "Bool")

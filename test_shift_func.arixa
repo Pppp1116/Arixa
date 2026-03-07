@@ -1,8 +1,0 @@
-fn shift_test(x Int, y Int) Int {
-    return x >> y;
-}
-
-fn main() Int {
-    result = shift_test(-8, 1);
-    return result;
-}

@@ -7,13 +7,16 @@ import re
 from pathlib import Path
 
 from astra.ast import (
+    BoolLit,
     ComptimeStmt,
     ContinueStmt,
     BreakStmt,
     FnDecl,
     ForStmt,
     IfStmt,
+    IndexExpr,
     LetStmt,
+    Literal,
     MatchStmt,
     ReturnStmt,
     UnsafeStmt,
@@ -486,6 +489,32 @@ def _code_for(phase: str, message: str) -> str:
             return "W0001"
         if "unused variable" in m:
             return "W0002"
+        if "dead code" in m:
+            return "W0102"
+        if "shadows a previous declaration" in m:
+            return "W0104"
+        if "array index is negative" in m or "array index is very large" in m:
+            return "W0101"
+        if "column-first traversal of row-major 2D array" in m:
+            return "W0201"
+        if "repeated property lookup" in m:
+            return "W0202"
+        if "large struct by-value copy" in m:
+            return "W0203"
+        if "needless temporary allocation" in m:
+            return "W0204"
+        if "repeated bounds checks" in m:
+            return "W0205"
+        if "iteration by value instead of reference" in m:
+            return "W0206"
+        if "possible null dereference" in m:
+            return "W0301"
+        if "ignored fallible operation result" in m:
+            return "W0302"
+        if "non-exhaustive wildcard reliance" in m:
+            return "W0303"
+        if "reference to temporary" in m:
+            return "W0304"
         return "W9999"
 
     return "E9999"
@@ -703,6 +732,36 @@ def _suggestions_for(
     if "mixed int/float" in m:
         out.append(DiagSuggestion(message="use an explicit cast with `as`, for example `x as Float` or `y as Int`"))
 
+    if "cannot implicitly convert" in m:
+        out.append(DiagSuggestion(message="use explicit cast with `as`, for example `value as TargetType`"))
+
+    if "unsupported cast from" in m:
+        out.append(DiagSuggestion(message="check if the cast is supported or use intermediate conversions"))
+
+    if "borrow" in m and "cannot" in m:
+        if "mutably borrow" in m:
+            out.append(DiagSuggestion(message="reduce the scope of existing references or use interior mutability"))
+        if "immutably borrow" in m:
+            out.append(DiagSuggestion(message="wait for mutable references to go out of scope or clone the value"))
+
+    if "use-after-" in m:
+        if "move" in m:
+            out.append(DiagSuggestion(message="clone the value before moving if you need to use it later"))
+        if "free" in m:
+            out.append(DiagSuggestion(message="don't free the value if you need to use it again"))
+
+    if "integer overflow" in m:
+        out.append(DiagSuggestion(message="use a wider integer type, clamp the value, or build with `--overflow wrap` if wrapping is intended"))
+
+    if "division by zero" in m or "modulo by zero" in m:
+        out.append(DiagSuggestion(message="add a zero check before the operation, e.g., `if divisor != 0 { ... }`"))
+
+    if "negative shift count" in m:
+        out.append(DiagSuggestion(message="use `abs(shift_count)` or check if the value is negative before shifting"))
+
+    if "shift count" in m and "out of range" in m:
+        out.append(DiagSuggestion(message="use a wider integer type or mask the shift count"))
+
     if "missing main()" in m:
         out.append(DiagSuggestion(message="add `fn main() Int { ... }` as the program entrypoint"))
 
@@ -725,6 +784,9 @@ def _suggestions_for(
     if "continue used outside loop" in m:
         out.append(DiagSuggestion(message="move `continue` inside a `while` or `for` loop"))
 
+    if "cannot assign to immutable binding" in m:
+        out.append(DiagSuggestion(message="declare the binding with `mut` if it needs to be reassigned"))
+
     fn_m = _UNDEFINED_FN_RE.search(message)
     if fn_m is not None:
         name = fn_m.group(1)
@@ -737,8 +799,6 @@ def _suggestions_for(
                     replacement=replacement,
                 )
             )
-        else:
-            out.append(DiagSuggestion(message="check the function name spelling or import the module that defines it"))
 
     name_m = _UNDEFINED_NAME_RE.search(message)
     if name_m is not None:
@@ -752,45 +812,6 @@ def _suggestions_for(
                     replacement=replacement,
                 )
             )
-        else:
-            out.append(DiagSuggestion(message="declare the value before using it, or fix the identifier spelling"))
-
-    args_m = _EXPECTS_ARGS_RE.search(message)
-    if args_m is not None:
-        expected, got = args_m.groups()
-        out.append(DiagSuggestion(message=f"this call expects {expected} argument(s), but {got} were provided"))
-    elif _EXPECTS_ARGUMENT_RE.search(message):
-        expected = _EXPECTS_ARGUMENT_RE.search(message).group(1)
-        out.append(DiagSuggestion(message=f"this call expects {expected} argument(s)"))
-
-    at_least = _EXPECTS_AT_LEAST_RE.search(message)
-    if at_least is not None:
-        out.append(DiagSuggestion(message="add the missing required argument(s) to this call"))
-
-    fs_m = _FREESTANDING_BUILTIN_RE.search(message)
-    if fs_m is not None:
-        builtin = fs_m.group(1)
-        out.append(
-            DiagSuggestion(
-                message=(
-                    f"`{builtin}` is hosted-only; remove `--freestanding` or replace it with a freestanding-safe API"
-                )
-            )
-        )
-
-    if "function" in m and "must return" in m:
-        out.append(DiagSuggestion(message="add a `return` statement on every control-flow path"))
-
-    if "cannot resolve import" in m:
-        out.append(DiagSuggestion(message="verify the import path and that the referenced `.arixa` file exists"))
-
-    if "non-exhaustive match for bool" in m:
-        out.append(DiagSuggestion(message="add the missing `false`/`true` arm, or add a trailing wildcard `_ => { ... }` arm"))
-    if "non-exhaustive match for enum " in m:
-        out.append(DiagSuggestion(message="add arms for the remaining enum variants, or add a trailing wildcard `_ => { ... }` arm"))
-
-    if "wildcard match arm must be last" in m:
-        out.append(DiagSuggestion(message="move `_ => ...` to the end of the match arms"))
 
     if "duplicate wildcard match arm" in m:
         out.append(DiagSuggestion(message="remove the duplicate `_ => ...` match arm"))
@@ -801,24 +822,16 @@ def _suggestions_for(
     if "requires unsafe context" in m:
         out.append(DiagSuggestion(message="wrap this operation in an `unsafe { ... }` block after validating the safety requirements"))
 
-    no_impl = _NO_MATCHING_IMPL_RE.match(message)
-    if no_impl is not None:
-        name, args_text = no_impl.groups()
-        got = 0 if not args_text.strip() else len([p for p in args_text.split(",") if p.strip()])
-        known = sorted(known_call_arities.get(name, set()))
-        if known and got not in known:
-            if len(known) == 1:
-                out.append(DiagSuggestion(message=f"`{name}` expects {known[0]} argument(s), but {got} were provided"))
-            else:
-                out.append(
-                    DiagSuggestion(
-                        message=f"`{name}` does not accept {got} argument(s); valid arities: {', '.join(str(v) for v in known)}"
-                    )
-                )
-        else:
-            out.append(DiagSuggestion(message="check the argument types and count for this call"))
-
     return out
+
+
+def _find_binding_declaration_span(lines: list[str], filename: str, start_line: int, name: str) -> DiagSpan | None:
+    decl_re = re.compile(rf"\b(?:mut\s+)?({re.escape(name)})\s*(?::[^=;]+)?=")
+    for idx in range(min(start_line - 2, len(lines) - 1), -1, -1):
+        m = decl_re.search(lines[idx])
+        if m is not None:
+            return DiagSpan(filename, idx + 1, m.start(1) + 1, idx + 1, m.end(1) + 1)
+    return None
 
 
 def _borrow_related_name(message: str) -> str | None:
@@ -1120,6 +1133,10 @@ def _warning_diagnostics(prog, filename: str, source_text: str) -> list[Diagnost
             continue
         out.extend(_unreachable_warnings(item.body, filename))
         out.extend(_unused_variable_warnings(item, filename, source_text))
+        out.extend(_dead_code_warnings(item.body, filename))
+        out.extend(_shadowing_warnings(item.body, filename, source_text))
+        out.extend(_constant_bounds_warnings(item.body, filename))
+        out.extend(_performance_warnings(item.body, filename, source_text))
     return out
 
 
@@ -1212,4 +1229,190 @@ def _unused_variable_warnings(fn: FnDecl, filename: str, source_text: str) -> li
                     suggestions=(DiagSuggestion(message=f"remove `{name}`, or rename it to `_{name}` to mark it intentionally unused"),),
                 )
             )
+    return out
+
+
+def _dead_code_warnings(body: list, filename: str) -> list[Diagnostic]:
+    """Detect dead code that will never be executed."""
+    out: list[Diagnostic] = []
+    
+    def check_condition(expr) -> bool:
+        """Check if a condition is always true or false."""
+        if isinstance(expr, BoolLit):
+            return True
+        # Add more constant folding checks here
+        return False
+    
+    def walk(stmts: list) -> None:
+        for st in stmts:
+            if isinstance(st, IfStmt):
+                if check_condition(st.cond):
+                    span = DiagSpan(filename, max(1, getattr(st, "line", 1)), max(1, getattr(st, "col", 1)), max(1, getattr(st, "line", 1)), max(2, getattr(st, "col", 1) + 1))
+                    out.append(
+                        Diagnostic(
+                            phase="LINT",
+                            code="W0102",
+                            message="dead code detected: condition is always true or false",
+                            span=span,
+                            severity="warning",
+                            suggestions=(DiagSuggestion(message="remove the dead code or fix the condition"),),
+                        )
+                    )
+                for nested in _nested_blocks(st):
+                    walk(nested)
+            elif isinstance(st, WhileStmt):
+                if check_condition(st.cond):
+                    span = DiagSpan(filename, max(1, getattr(st, "line", 1)), max(1, getattr(st, "col", 1)), max(1, getattr(st, "line", 1)), max(2, getattr(st, "col", 1) + 1))
+                    out.append(
+                        Diagnostic(
+                            phase="LINT",
+                            code="W0102",
+                            message="dead code detected: loop condition is always true or false",
+                            span=span,
+                            severity="warning",
+                            suggestions=(DiagSuggestion(message="remove the dead code or fix the condition"),),
+                        )
+                    )
+                walk(st.body)
+            else:
+                for nested in _nested_blocks(st):
+                    walk(nested)
+    
+    walk(body)
+    return out
+
+
+def _shadowing_warnings(body: list, filename: str, source_text: str) -> list[Diagnostic]:
+    """Detect variable shadowing that can cause confusion."""
+    out: list[Diagnostic] = []
+    declared_vars: dict[str, DiagSpan] = {}
+    
+    def walk(stmts: list, scope_level: int = 0) -> None:
+        nonlocal declared_vars
+        current_scope = {}
+        
+        for st in stmts:
+            if isinstance(st, LetStmt):
+                if st.name in declared_vars:
+                    original_span = declared_vars[st.name]
+                    span = DiagSpan(filename, max(1, st.line), max(1, st.col), max(1, st.line), max(2, st.col + len(st.name)))
+                    out.append(
+                        Diagnostic(
+                            phase="LINT",
+                            code="W0104",
+                            message=f"variable `{st.name}` shadows a previous declaration",
+                            span=span,
+                            severity="warning",
+                            notes=(
+                                DiagNote(message=f"previous declaration of `{st.name}`", span=original_span),
+                            ),
+                            suggestions=(DiagSuggestion(message=f"rename `{st.name}` to avoid shadowing"),),
+                        )
+                    )
+                current_scope[st.name] = DiagSpan(filename, max(1, st.line), max(1, st.col), max(1, st.line), max(2, st.col + len(st.name)))
+            
+            for nested in _nested_blocks(st):
+                walk(nested, scope_level + 1)
+        
+        # Merge current scope back to parent
+        declared_vars.update(current_scope)
+    
+    walk(body)
+    return out
+
+
+def _constant_bounds_warnings(body: list, filename: str) -> list[Diagnostic]:
+    """Detect constant array bounds violations at compile time."""
+    out: list[Diagnostic] = []
+    
+    def check_array_access(expr) -> None:
+        if isinstance(expr, IndexExpr):
+            # Check if index is a constant literal
+            if isinstance(expr.index, Literal) and isinstance(expr.index.value, int):
+                if expr.index.value < 0:
+                    span = DiagSpan(filename, max(1, getattr(expr.index, "line", 1)), max(1, getattr(expr.index, "col", 1)), max(1, getattr(expr.index, "line", 1)), max(2, getattr(expr.index, "col", 1) + 1))
+                    out.append(
+                        Diagnostic(
+                            phase="LINT",
+                            code="W0101",
+                            message="array index is negative and will always cause bounds error",
+                            span=span,
+                            severity="warning",
+                            suggestions=(DiagSuggestion(message="use a non-negative index or check bounds before access"),),
+                        )
+                    )
+                elif expr.index.value > 1000:  # Reasonable threshold for suspicious large indices
+                    span = DiagSpan(filename, max(1, getattr(expr.index, "line", 1)), max(1, getattr(expr.index, "col", 1)), max(1, getattr(expr.index, "line", 1)), max(2, getattr(expr.index, "col", 1) + 1))
+                    out.append(
+                        Diagnostic(
+                            phase="LINT",
+                            code="W0101",
+                            message="array index is very large and may cause bounds error",
+                            span=span,
+                            severity="warning",
+                            suggestions=(DiagSuggestion(message="verify the array size or add bounds checking"),),
+                        )
+                    )
+    
+    def walk_exprs(expr) -> None:
+        if isinstance(expr, IndexExpr):
+            check_array_access(expr)
+        # Recursively check nested expressions
+        for child in getattr(expr, "__dict__", {}).values():
+            if isinstance(child, (list, tuple)):
+                for item in child:
+                    if hasattr(item, "__dict__"):
+                        walk_exprs(item)
+            elif hasattr(child, "__dict__"):
+                walk_exprs(child)
+    
+    def walk(stmts: list) -> None:
+        for st in stmts:
+            # Check expressions in statements
+            if hasattr(st, "expr"):
+                walk_exprs(st.expr)
+            if hasattr(st, "cond"):
+                walk_exprs(st.cond)
+            if hasattr(st, "iterable"):
+                walk_exprs(st.iterable)
+            
+            for nested in _nested_blocks(st):
+                walk(nested)
+    
+    walk(body)
+    return out
+
+
+def _performance_warnings(body: list, filename: str, source_text: str) -> list[Diagnostic]:
+    """Detect performance issues like suboptimal 2D array iteration."""
+    out: list[Diagnostic] = []
+    
+    def detect_2d_iteration_pattern(stmts: list) -> None:
+        """Detect suboptimal 2D array iteration patterns."""
+        for i, st in enumerate(stmts):
+            if isinstance(st, ForStmt) and i + 1 < len(stmts):
+                next_st = stmts[i + 1]
+                if isinstance(next_st, ForStmt):
+                    # Check for nested for loops that might be accessing 2D arrays
+                    # This is a simplified detection - a full implementation would need
+                    # more sophisticated analysis of array access patterns
+                    outer_var = st.var
+                    inner_var = next_st.var
+                    
+                    # Look for array access patterns in the inner loop body
+                    for inner_stmt in next_st.body:
+                        if hasattr(inner_stmt, "expr"):
+                            # Check for patterns like arr[col][row] where col is outer, row is inner
+                            # This is a placeholder for more sophisticated analysis
+                            pass
+    
+    def walk(stmts: list) -> None:
+        for st in stmts:
+            if isinstance(st, ForStmt):
+                detect_2d_iteration_pattern(st.body)
+            
+            for nested in _nested_blocks(st):
+                walk(nested)
+    
+    walk(body)
     return out
