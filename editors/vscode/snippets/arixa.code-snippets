@@ -2,11 +2,39 @@
   "Function": {
     "prefix": "fn",
     "body": [
-      "fn ${1:name}(${2:arg}: ${3:Int}) ${4:Void} {",
+      "fn ${1:name}(${2:arg} ${3:Int}) ${4:Void} {",
       "    ${0}",
       "}"
     ],
     "description": "Declare an Arixa function"
+  },
+  "Immutable Binding": {
+    "prefix": "let",
+    "body": [
+      "${1:name} = ${2:value};"
+    ],
+    "description": "Immutable binding (modern syntax)"
+  },
+  "Mutable Binding": {
+    "prefix": "mut",
+    "body": [
+      "mut ${1:name} = ${2:value};"
+    ],
+    "description": "Mutable binding (modern syntax)"
+  },
+  "Typed Immutable Binding": {
+    "prefix": "let:",
+    "body": [
+      "${1:name}: ${2:Type} = ${3:value};"
+    ],
+    "description": "Typed immutable binding (modern syntax)"
+  },
+  "Typed Mutable Binding": {
+    "prefix": "mut:",
+    "body": [
+      "mut ${1:name}: ${2:Type} = ${3:value};"
+    ],
+    "description": "Typed mutable binding (modern syntax)"
   },
   "If Else": {
     "prefix": "if",
@@ -46,7 +74,7 @@
     "prefix": "struct",
     "body": [
       "struct ${1:Name} {",
-      "    ${2:field}: ${3:Int},",
+      "    ${2:field} ${3:Int},",
       "}"
     ],
     "description": "Struct declaration"

@@ -522,6 +522,10 @@ def _friendly_message_for(message: str, code: str) -> str:
             return f"expected `{expected}` but found `{got}` in return value"
         if context.startswith("assignment"):
             return f"cannot assign `{got}` to a value of type `{expected}`"
+        if context.startswith("function call"):
+            return f"cannot pass `{got}` to parameter expecting `{expected}`"
+        if context.startswith("binary operation"):
+            return f"cannot perform operation on `{got}` and `{expected}` types"
         return f"expected `{expected}` but found `{got}`"
 
     if message.startswith("expected ;"):
@@ -560,6 +564,41 @@ def _friendly_message_for(message: str, code: str) -> str:
         name, args = no_impl.groups()
         arg_count = 0 if not args.strip() else len([p for p in args.split(",") if p.strip()])
         return f"no overload of `{name}` matches {arg_count} argument(s)"
+
+    # Enhanced error messages for common issues
+    if "cannot implicitly convert" in message:
+        return message.replace("cannot implicitly convert", "cannot implicitly convert") + "; use explicit cast with `as`"
+    
+    if "unsupported cast from" in message:
+        return message + "; this cast type is not supported in Astra"
+    
+    if "borrow" in message and "cannot" in message:
+        if "mutably borrow" in message:
+            return "cannot create mutable reference while other references exist"
+        if "immutably borrow" in message:
+            return "cannot create immutable reference while mutable reference exists"
+        return "borrow checker error: " + message.replace("cannot", "")
+    
+    if "use-after-" in message:
+        if "move" in message:
+            return "value was moved and cannot be used again"
+        if "free" in message:
+            return "value was freed and cannot be used again"
+    
+    if "integer overflow" in message:
+        return "integer overflow detected; consider using a wider type or checking bounds"
+    
+    if "division by zero" in message:
+        return "division by zero; add a check or use conditional logic"
+    
+    if "modulo by zero" in message:
+        return "modulo by zero; add a check or use conditional logic"
+    
+    if "negative shift count" in message:
+        return "shift count cannot be negative; use absolute value or check sign"
+    
+    if "shift count" in message and "out of range" in message:
+        return "shift count exceeds bit width; use smaller shift or wider type"
 
     if message.startswith("break used outside loop"):
         return "`break` can only be used inside a loop"

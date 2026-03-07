@@ -482,8 +482,8 @@ static _Bool astra_any_equal(uintptr_t a, uintptr_t b) {
   case ASTRA_ANY_BOOL:
     return ea->value.b == eb->value.b;
   case ASTRA_ANY_FLOAT:
-    if (isnan(ea->value.f64) && isnan(eb->value.f64)) {
-      return 1;
+    if (isnan(ea->value.f64) || isnan(eb->value.f64)) {
+      return 0;
     }
     return ea->value.f64 == eb->value.f64;
   case ASTRA_ANY_STR: {

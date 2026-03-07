@@ -170,7 +170,8 @@ def _strip_ref(typ: Any) -> str:
 
 
 def _is_ref_type(typ: Any) -> bool:
-    return _canonical_type(typ).startswith("&")
+    canonical = _canonical_type(typ)
+    return canonical.startswith("&") or canonical.startswith("*")
 
 
 def _is_mut_ref_type(typ: Any) -> bool:
@@ -905,6 +906,20 @@ def _cast_supported(src: str, dst: str) -> bool:
         if _is_generic_symbol_name(src_c):
             return True
         return _is_any_dynamic_cast_target(src_c) or _is_ref_type(src_c) or src_c.startswith("fn(")
+    
+    # Support pointer to integer conversions (ptrtoint)
+    if _is_ref_type(src_c) and _is_int_type(dst_c):
+        return True
+    # Support integer to pointer conversions (inttoptr) 
+    if _is_int_type(src_c) and _is_ref_type(dst_c):
+        return True
+    # Support pointer to pointer conversions (bitcast)
+    if _is_ref_type(src_c) and _is_ref_type(dst_c):
+        return True
+    # Support none to pointer conversions (null pointer)
+    if src_c == NONE_LIT_TYPE and _is_ref_type(dst_c):
+        return True
+    
     return False
 
 
@@ -3404,6 +3419,24 @@ def _infer(
         if e.op == "-":
             if inner != "Any" and not _is_numeric_scalar_type(inner):
                 raise SemanticError(_diag(filename, e.line, e.col, f"unary - expects number, got {inner}"))
+            
+            # NEW: Validate range for negated integer literals
+            int_info = _int_info(inner)
+            if int_info and isinstance(e.expr, CastExpr) and isinstance(e.expr.expr, Literal) and isinstance(e.expr.expr.value, int):
+                bits, signed = int_info
+                literal_value = -e.expr.expr.value  # Apply negation
+                
+                if signed:
+                    min_val = -(1 << (bits - 1))
+                    max_val = (1 << (bits - 1)) - 1
+                else:
+                    min_val = 0
+                    max_val = (1 << bits) - 1
+                
+                if literal_value < min_val or literal_value > max_val:
+                    raise SemanticError(_diag(filename, e.line, e.col, 
+                        f"literal {literal_value} out of range for {inner} (expected {min_val}..{max_val})"))
+            
             return _typed(e, inner)
         if e.op == "*":
             if not _is_ref_type(inner):
@@ -3415,6 +3448,31 @@ def _infer(
         dst = _canonical_type(e.type_name)
         _validate_decl_type(dst, filename, e.line, e.col)
         src_c = _canonical_type(src)
+        
+        # Range validation for CastExpr literals (only when NOT negated)
+        # Negated literals are handled at the Unary level
+        # Check if we're inside a Unary negation by looking at the call stack context
+        int_info = _int_info(dst)
+        if int_info and isinstance(e.expr, Literal) and isinstance(e.expr.value, int):
+            bits, signed = int_info
+            literal_value = e.expr.value
+            
+            if signed:
+                min_val = -(1 << (bits - 1))
+                max_val = (1 << (bits - 1)) - 1
+            else:
+                min_val = 0
+                max_val = (1 << bits) - 1
+            
+            # For signed types, allow the absolute value to be one step beyond the range
+            # to handle negation. The actual negated value will be checked at Unary level.
+            if signed and literal_value > max_val + 1:
+                raise SemanticError(_diag(filename, e.line, e.col, 
+                    f"literal {literal_value} out of range for {dst} (expected {min_val}..{max_val})"))
+            elif not signed and (literal_value < min_val or literal_value > max_val):
+                raise SemanticError(_diag(filename, e.line, e.col, 
+                    f"literal {literal_value} out of range for {dst} (expected {min_val}..{max_val})"))
+        
         needs_unsafe_cast = (
             (src_c == "Any" and (_is_ref_type(dst) or dst.startswith("fn(") or dst.startswith("unsafe fn(")))
             or (dst == "Any" and (_is_ref_type(src_c) or src_c.startswith("fn(") or src_c.startswith("unsafe fn(")))
@@ -3427,6 +3485,35 @@ def _infer(
     if isinstance(e, TypeAnnotated):
         src = _infer(e.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
         dst = _canonical_type(e.type_name)
+        
+        # NEW: Validate literal ranges for arbitrary width integers
+        int_info = _int_info(dst)
+        if int_info:
+            bits, signed = int_info
+            
+            # Handle both direct literals and negated literals
+            literal_value = None
+            if isinstance(e.expr, Literal) and isinstance(e.expr.value, int):
+                literal_value = e.expr.value
+            elif isinstance(e.expr, Unary) and e.expr.op == "-" and isinstance(e.expr.expr, Literal) and isinstance(e.expr.expr.value, int):
+                # Handle -5u7 case: Unary("-", TypeAnnotated(Literal(5), "u7"))
+                literal_value = -e.expr.expr.value
+            elif isinstance(e.expr, Unary) and e.expr.op == "-" and isinstance(e.expr.expr, CastExpr) and isinstance(e.expr.expr.expr, Literal) and isinstance(e.expr.expr.expr.value, int):
+                # Handle -5u7 case: Unary("-", CastExpr(Literal(5), "u7"))
+                literal_value = -e.expr.expr.expr.value
+            
+            if literal_value is not None:
+                if signed:
+                    min_val = -(1 << (bits - 1))
+                    max_val = (1 << (bits - 1)) - 1
+                else:
+                    min_val = 0
+                    max_val = (1 << bits) - 1
+                
+                if literal_value < min_val or literal_value > max_val:
+                    raise SemanticError(_diag(filename, e.line, e.col, 
+                        f"literal {literal_value} out of range for {dst} (expected {min_val}..{max_val})"))
+        
         _validate_decl_type(dst, filename, e.line, e.col)
         _require_type(filename, e.line, e.col, dst, src, "type annotation")
         return _typed(e, dst)

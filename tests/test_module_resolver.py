@@ -52,7 +52,7 @@ def test_package_submodule_import_resolves_from_cache(monkeypatch, tmp_path: Pat
     project = tmp_path / "app"
     project.mkdir(parents=True)
     cache = tmp_path / "cache"
-    monkeypatch.setenv("ASTRA_PKG_HOME", str(cache))
+    monkeypatch.setenv("ARIXA_PKG_HOME", str(cache))
     (project / "Astra.toml").write_text('[project]\nname = "app"\nversion = "0.1.0"\n[dependencies]\nsdl2 = "0.1.0"\n')
     importer = project / "src" / "main.astra"
     importer.parent.mkdir(parents=True)

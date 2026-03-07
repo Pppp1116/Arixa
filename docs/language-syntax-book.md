@@ -48,7 +48,7 @@ Notes:
 fn add(a Int, b Int) Int{
     return a + b;
 }
-fn wrap(f fn(Int) -> Int, v Int) Int{
+fn wrap(f fn(Int) Int, v Int) Int{
     return f(v);
 }
 fn takes_ref(x &Int, y &mut Int) Int{
@@ -68,7 +68,7 @@ fn text_len(s &str) Int{
 Type forms:
 - Primitive scalars/control: `Int`, `Float`, `Bool`, `Any`, `Void`, `Never`
 - Integer families: `iN`/`uN` where `N` is `1..128`, plus `isize`/`usize` aliases
-- Function types: `fn(T1, T2) -> R`
+- Function types: `fn(T1, T2) R`
 - Generic/union types: `Vec<u8>`, `User | NotFoundError`, `String?`
 - Borrow types: `&T`, `&mut T`
 - Slice type: `[T]` (unsized; legal as `&[T]`, `&mut [T]`, or behind pointers/DST positions)
@@ -225,7 +225,7 @@ Current x86-64 backend contract (System V ABI oriented):
 - Scalar lowering:
   - `Bool` -> logical `i1`, materialized as `0/1` in integer registers (`al`/`rax` path).
   - `Int`, `iN`/`uN`, `isize`, `usize` -> integer register class.
-  - `&T`, `&mut T`, and `fn(...) -> ...` values -> pointer-sized integers (`u64` on x86-64).
+  - `&T`, `&mut T`, and `fn(...) ...` values -> pointer-sized integers (`u64` on x86-64).
   - `Float`/`f32`/`f64` -> SSE class (`xmm*` registers).
 - Calls/returns:
   - Integer/pointer args use `rdi, rsi, rdx, rcx, r8, r9`, overflow args spill to stack.
@@ -242,7 +242,7 @@ Current x86-64 backend contract (System V ABI oriented):
   - `defer <expr>;` is lowered to function-exit execution in reverse order (LIFO).
   - Defer sites are counted, so loop-contained defer expressions execute once per hit.
 - Function values:
-  - First-class function pointers are supported (`fn(T...) -> R` values).
+  - First-class function pointers are supported (`fn(T...) R` values).
   - Calls through function pointers lower to indirect machine calls.
 - Additional native-lowered constructs:
   - `async`/`await` lower through direct native control flow/runtime helper paths; no full scheduler contract is guaranteed yet.
@@ -263,7 +263,7 @@ postfix_type = primary_type ["?"] ;
 primary_type = ident ["<" type {"," type} ">"]
              | "&" ["mut"] type
              | "[" type "]"
-             | "fn" "(" [type {"," type}] ")" "->" type
+             | "fn" "(" [type {"," type}] ")" type
              | "(" type ")" ;
 stmt         = bind_stmt | set_stmt | comptime_stmt | defer_stmt | drop_stmt | return_stmt | if_stmt | while_stmt | for_stmt | match_stmt | assign_stmt | expr ";" ;
 bind_stmt    = ["mut"] ident [":" type] "=" expr ";" ;

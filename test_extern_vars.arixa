@@ -1,0 +1,7 @@
+extern fn func_with_var_arg(x i8) i8;
+
+fn main() Int {
+    local_var: i8 = 42 as i8;
+    result = func_with_var_arg(local_var);
+    return result as Int;
+}

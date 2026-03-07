@@ -1,0 +1,6 @@
+extern fn get_char(x i8) i8;
+
+fn main() Int {
+    result = get_char(65 as i8);
+    return result;
+}

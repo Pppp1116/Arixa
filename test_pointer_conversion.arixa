@@ -1,0 +1,8 @@
+fn ptr_test(ptr *i8) Int {
+    return ptr as Int;
+}
+
+fn main() Int {
+    result = ptr_test(none as *i8);
+    return result;
+}

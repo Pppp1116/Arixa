@@ -1,0 +1,6 @@
+extern fn func_with_params(x i8, y u8) i16;
+
+fn main() Int {
+    result = func_with_params(65 as i8, 100 as u8);
+    return result;
+}

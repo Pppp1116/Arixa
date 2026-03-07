@@ -1,0 +1,6 @@
+extern fn foo(x i8) i8;
+
+fn main() Int {
+    result = foo(42 as i8);
+    return result;
+}

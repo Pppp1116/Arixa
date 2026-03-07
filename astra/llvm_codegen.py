@@ -225,8 +225,12 @@ def _split_top_level(text: str, sep: str) -> list[str]:
     return out
 
 
-def _parse_fn_type(typ: str) -> tuple[list[str], str] | None:
+def _parse_fn_type(typ: str) -> tuple[list[str], str, bool] | None:
     text = _canonical_type(typ)
+    unsafe = False
+    if text.startswith("unsafe "):
+        unsafe = True
+        text = text[7:].lstrip()
     if not text.startswith("fn("):
         return None
     depth = 0
@@ -241,12 +245,15 @@ def _parse_fn_type(typ: str) -> tuple[list[str], str] | None:
                 break
     if close < 0 or depth != 0:
         return None
-    if close + 4 > len(text) or text[close + 1 : close + 5] != " -> ":
+    if close + 1 > len(text) or text[close + 1] != " ":
         return None
     params_text = text[3:close].strip()
-    ret = text[close + 5 :].strip()
-    params = [] if not params_text else _split_top_level(params_text, ",")
-    return params, ret
+    ret = text[close + 1:].strip()
+    if not ret:
+        return None
+    if not params_text:
+        return [], ret, unsafe
+    return _split_top_level(params_text, ","), ret, unsafe
 
 
 def _is_vec_type(typ: str) -> bool:
@@ -474,6 +481,13 @@ def _llvm_type(ctx: _ModuleCtx, typ: str) -> ir.Type:
     if c.startswith("&"):
         return _llvm_type(ctx, c[1:]).as_pointer()
     if c.startswith("fn("):
+        # Parse function type and create proper function pointer type
+        parsed = _parse_fn_type(c)
+        if parsed:
+            param_tys, ret_ty, unsafe = parsed
+            param_ll_tys = [_llvm_type(ctx, pt) for pt in param_tys]
+            ret_ll_ty = _llvm_type(ctx, ret_ty)
+            return ir.FunctionType(ret_ll_ty, param_ll_tys).as_pointer()
         return ir.IntType(8).as_pointer()
     if c in {"String", "str"} or _is_vec_type(c) or _is_slice_type(c):
         return ir.IntType(8).as_pointer()
@@ -540,6 +554,209 @@ def _is_terminated(state: _FnState) -> bool:
 def _is_signed_int(typ: str) -> bool:
     info = _int_info(typ)
     return bool(info[1]) if info is not None else True
+
+
+def _get_abi_extension_attr(param_ty: str) -> str:
+    """Get the appropriate LLVM ABI extension attribute for small integer types."""
+    info = _int_info(param_ty)
+    if info and info[0] < 64:  # Small integer (< 64 bits)
+        return "signext" if info[1] else "zeroext"
+    return None
+
+
+def _apply_abi_attributes_to_call(ctx: _ModuleCtx, call_inst, fn_sig: _FnSig) -> None:
+    """Apply proper LLVM ABI attributes to extern function call sites.
+    
+    Note: In LLVM, ABI attributes are primarily applied to function declarations.
+    Call instruction arguments only need attributes when they are values that can
+    have attributes (not constants). The LLVM verifier ensures ABI consistency.
+    """
+    # Apply attributes to arguments that support them (non-constants)
+    for i, param_ty in enumerate(fn_sig.params):
+        attr = _get_abi_extension_attr(param_ty)
+        if attr and i < len(call_inst.args):
+            arg = call_inst.args[i]
+            # Only add attributes to arguments that support them (not constants)
+            if hasattr(arg, 'add_attribute'):
+                arg.add_attribute(attr)
+    
+    # Return value attributes are handled by the function declaration in LLVM
+    # Call instructions don't need explicit return attributes
+
+
+def _apply_abi_attributes_to_extern_fn(ctx: _ModuleCtx, fn_decl: ExternFnDecl, fn_sig: _FnSig, ir_fn: ir.Function) -> None:
+    """Apply proper LLVM ABI attributes to extern function parameters and return value."""
+    # Apply attributes to parameters
+    for i, param_ty in enumerate(fn_sig.params):
+        attr = _get_abi_extension_attr(param_ty)
+        if attr:
+            ir_fn.args[i].add_attribute(attr)
+    
+    # Apply attribute to return value
+    ret_attr = _get_abi_extension_attr(fn_sig.ret)
+    if ret_attr:
+        ir_fn.return_value.add_attribute(ret_attr)
+
+
+def _implicit_coerce_value(ctx: _ModuleCtx, state: _FnState, v: ir.Value, from_ty: str, to_ty: str, node: Any) -> ir.Value:
+    """Implicit coercion - only allows widening, no precision loss."""
+    from_c = _canonical_type(from_ty)
+    to_c = _canonical_type(to_ty)
+    if from_c == to_c:
+        return v
+    
+    # Check for implicit truncation - should never happen
+    lf = _llvm_type(ctx, from_c)
+    lt = _llvm_type(ctx, to_c)
+    if isinstance(lf, ir.IntType) and isinstance(lt, ir.IntType):
+        if lf.width > lt.width:
+            raise CodegenError(_diag(node, 
+                f"implicit truncation from {from_c} to {to_c} not allowed"))
+    
+    # For implicit coercion, use the same logic as explicit cast but with stricter checks
+    return _explicit_cast_value(ctx, state, v, from_ty, to_ty, node)
+
+
+def _explicit_cast_value(ctx: _ModuleCtx, state: _FnState, v: ir.Value, from_ty: str, to_ty: str, node: Any) -> ir.Value:
+    """Explicit cast - allows narrowing with explicit truncation."""
+    from_c = _canonical_type(from_ty)
+    to_c = _canonical_type(to_ty)
+    if from_c == to_c:
+        return v
+    b = state.builder
+    i64 = ir.IntType(64)
+    lf = _llvm_type(ctx, from_c)
+    lt = _llvm_type(ctx, to_c)
+
+    if _is_option_type(to_c):
+        lt_opt = _llvm_type(ctx, to_c)
+        if _is_option_type(from_c):
+            if isinstance(v.type, ir.PointerType) and v.type != lt_opt:
+                return b.bitcast(v, lt_opt)
+            return v
+        inner = _option_inner_type(to_c)
+        inner_v = _explicit_cast_value(ctx, state, v, from_c, inner, node)
+        sz, al = _storage_size_align(ctx, inner, node)
+        mem = _alloc_bytes(ctx, state, ir.Constant(i64, sz), ir.Constant(i64, al), node)
+        inner_ptr = b.bitcast(mem, _llvm_type(ctx, inner).as_pointer())
+        b.store(inner_v, inner_ptr)
+        if mem.type != lt_opt:
+            return b.bitcast(mem, lt_opt)
+        return mem
+
+    if from_c == "Any":
+        any_v = v
+        if not (isinstance(any_v.type, ir.IntType) and any_v.type.width == 64):
+            any_v = b.bitcast(any_v, i64)
+        if to_c == "Bool":
+            fn = _declare_runtime(ctx, "astra_any_to_bool")
+            return b.call(fn, [any_v])
+        if to_c in {"String", "str"}:
+            fn = _declare_runtime(ctx, "astra_any_to_str")
+            out = b.call(fn, [any_v])
+            lt = _llvm_type(ctx, to_c)
+            if isinstance(lt, ir.PointerType) and lt != out.type:
+                return b.bitcast(out, lt)
+            return out
+        if _is_float_type(to_c):
+            fn = _declare_runtime(ctx, "astra_any_to_f64")
+            out = b.call(fn, [any_v])
+            lt = _llvm_type(ctx, to_c)
+            if isinstance(lt, ir.FloatType):
+                return b.fptrunc(out, lt)
+            return out
+        lt = _llvm_type(ctx, to_c)
+        if isinstance(lt, ir.IntType):
+            fn = _declare_runtime(ctx, "astra_any_to_i64")
+            raw = b.call(fn, [any_v])
+            if lt.width < 64:
+                return b.trunc(raw, lt)
+            if lt.width > 64:
+                if _is_signed_int(to_c):
+                    return b.sext(raw, lt)
+                return b.zext(raw, lt)
+            return raw
+        if isinstance(lt, ir.PointerType):
+            fn = _declare_runtime(ctx, "astra_any_to_ptr")
+            return b.call(fn, [any_v])
+        raise CodegenError(_diag(node, f"internal: cannot cast Any to {to_c}"))
+
+    if to_c == "Any":
+        if from_c == "Bool":
+            in_v = v
+            if not (isinstance(in_v.type, ir.IntType) and in_v.type.width == 1):
+                in_v = b.trunc(in_v, ir.IntType(1))
+            fn = _declare_runtime(ctx, "astra_any_box_bool")
+            return b.call(fn, [in_v])
+        if from_c in {"String", "str"}:
+            in_v = v
+            if isinstance(in_v.type, ir.PointerType):
+                in_v = b.ptrtoint(in_v, i64)
+            fn = _declare_runtime(ctx, "astra_any_box_i64")
+            return b.call(fn, [in_v])
+        if _is_float_type(from_c):
+            in_v = v
+            if isinstance(in_v.type, ir.FloatType):
+                in_v = b.fpext(in_v, ir.DoubleType())
+            elif not isinstance(in_v.type, ir.DoubleType):
+                raise CodegenError(_diag(node, f"cannot box non-float value {from_c}"))
+            fn = _declare_runtime(ctx, "astra_any_box_f64")
+            return b.call(fn, [in_v])
+        lf = _llvm_type(ctx, from_c)
+        if isinstance(lf, ir.IntType):
+            in_v = v
+            if lf.width < 64:
+                if _is_signed_int(from_c):
+                    in_v = b.sext(in_v, i64)
+                else:
+                    in_v = b.zext(in_v, i64)
+            elif lf.width > 64:
+                in_v = b.trunc(in_v, i64)
+            fn = _declare_runtime(ctx, "astra_any_box_i64")
+            return b.call(fn, [in_v])
+        if isinstance(lf, ir.PointerType):
+            fn = _declare_runtime(ctx, "astra_any_box_i64")
+            return b.call(fn, [b.ptrtoint(v, i64)])
+        raise CodegenError(_diag(node, f"internal: cannot cast {from_c} to Any"))
+
+    if from_c == "Bool" and isinstance(lt, ir.IntType):
+        if lt.width == 1:
+            return v
+        return b.zext(v, lt)
+    if to_c == "Bool" and isinstance(lf, ir.IntType):
+        if lf.width == 1:
+            return v
+        return b.icmp_unsigned("!=", v, ir.Constant(lf, 0))
+    if from_c == "Bool" and isinstance(lt, (ir.FloatType, ir.DoubleType)):
+        return b.uitofp(v, lt)
+    if to_c == "Bool" and isinstance(lf, (ir.FloatType, ir.DoubleType)):
+        return b.fcmp_ordered("!=", v, ir.Constant(lf, 0.0))
+    if isinstance(lf, ir.IntType) and isinstance(lt, ir.IntType):
+        if lf.width > lt.width:
+            return b.trunc(v, lt)
+        if lf.width < lt.width:
+            if _is_signed_int(from_c):
+                return b.sext(v, lt)
+            return b.zext(v, lt)
+        return v
+    if isinstance(lf, ir.IntType) and isinstance(lt, (ir.FloatType, ir.DoubleType)):
+        if _is_signed_int(from_c):
+            return b.sitofp(v, lt)
+        return b.uitofp(v, lt)
+    if isinstance(lf, (ir.FloatType, ir.DoubleType)) and isinstance(lt, ir.IntType):
+        sat = _declare_fptoi_sat_intrinsic(ctx, bits=lt.width, signed=_is_signed_int(to_c), from_ty=lf)
+        return b.call(sat, [v])
+    if isinstance(lf, ir.FloatType) and isinstance(lt, ir.DoubleType):
+        return b.fpext(v, lt)
+    if isinstance(lf, ir.DoubleType) and isinstance(lt, ir.FloatType):
+        return b.fptrunc(v, lt)
+    if isinstance(lf, ir.PointerType) and isinstance(lt, ir.IntType):
+        return b.ptrtoint(v, lt)
+    if isinstance(lf, ir.IntType) and isinstance(lt, ir.PointerType):
+        return b.inttoptr(v, lt)
+    if isinstance(lf, ir.PointerType) and isinstance(lt, ir.PointerType):
+        return b.bitcast(v, lt)
+    raise CodegenError(_diag(node, f"internal: cannot cast {from_c} to {to_c}"))
 
 
 def _coerce_value(ctx: _ModuleCtx, state: _FnState, v: ir.Value, from_ty: str, to_ty: str, node: Any) -> ir.Value:
@@ -706,6 +923,11 @@ def _expr_type(state: _FnState, e: Any) -> str:
     if isinstance(e, NilLit):
         return "Option<Any>"
     if isinstance(e, Name):
+        # First check if the name has an inferred type (from semantic analyzer)
+        inferred = getattr(e, "inferred_type", None)
+        if inferred:
+            return _canonical_type(inferred)
+        # Then check local variables
         if e.value in state.var_types:
             return state.var_types[e.value]
     if isinstance(e, CastExpr):
@@ -1546,8 +1768,8 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
         worker = _compile_expr(ctx, state, call.args[0], overflow_mode=overflow_mode)
         parsed = _parse_fn_type(worker.ty)
         if parsed is None:
-            raise CodegenError(_diag(call, "spawn expects function value as arg 0"))
-        worker_param_tys, worker_ret_ty = parsed
+            raise CodegenError(_diag(call, f"spawn expects function reference, got {worker.ty}"))
+        worker_param_tys, worker_ret_ty, worker_unsafe = parsed
         if len(worker_param_tys) != len(call.args) - 1:
             raise CodegenError(
                 _diag(call, f"spawn worker expects {len(worker_param_tys)} args, got {len(call.args) - 1}")
@@ -2283,10 +2505,15 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
                         args.append(state.vars[arg_node.value])
                         continue
                 a = _compile_expr(ctx, state, arg_node)
-                args.append(_coerce_value(ctx, state, a.value, a.ty, pty, arg_node))
+                args.append(_implicit_coerce_value(ctx, state, a.value, a.ty, pty, arg_node))
             if len(call.args) != len(sig.params):
                 raise CodegenError(_diag(call, f"{resolved} expects {len(sig.params)} args, got {len(call.args)}"))
             out = state.builder.call(callee, args)
+            
+            # Apply ABI attributes to call site for extern functions
+            if sig.extern:
+                _apply_abi_attributes_to_call(ctx, out, sig)
+            
             ret = _canonical_type(sig.ret)
             if ret in {"Void", "Never"}:
                 return _Value(ir.Constant(ir.IntType(64), 0), ret)
@@ -2296,8 +2523,8 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
     fn_val = _compile_expr(ctx, state, call.fn)
     parsed = _parse_fn_type(fn_val.ty)
     if parsed is None:
-        raise CodegenError(_diag(call, f"cannot resolve call target for {type(call.fn).__name__}"))
-    param_tys, ret_ty = parsed
+        raise CodegenError(_diag(call, f"cannot resolve call target for {type(call.fn).__name__}: function '{call.fn.value if hasattr(call.fn, 'value') else 'unknown'}' not found in current scope"))
+    param_tys, ret_ty, _ = parsed
     if len(param_tys) != len(call.args):
         raise CodegenError(_diag(call, f"callee expects {len(param_tys)} args, got {len(call.args)}"))
     fnty = ir.FunctionType(_llvm_type(ctx, ret_ty), [_llvm_type(ctx, t) for t in param_tys])
@@ -2307,7 +2534,7 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
     args: list[ir.Value] = []
     for arg_node, pty in zip(call.args, param_tys):
         a = _compile_expr(ctx, state, arg_node)
-        args.append(_coerce_value(ctx, state, a.value, a.ty, pty, arg_node))
+        args.append(_implicit_coerce_value(ctx, state, a.value, a.ty, pty, arg_node))
     out = state.builder.call(callee_ptr, args)
     if _canonical_type(ret_ty) in {"Void", "Never"}:
         return _Value(ir.Constant(ir.IntType(64), 0), _canonical_type(ret_ty))
@@ -2348,16 +2575,41 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
             return _Value(ptr, "String", str_len=len(e.value.encode("utf-8")))
         raise CodegenError(_diag(e, f"internal: unexpected literal type {type(e.value).__name__}"))
     if isinstance(e, Name):
+        # Check all scopes for function references first
+        fn = None
+        sig = None
+        
+        # Check current module functions
+        if e.value in ctx.fn_map:
+            fn = ctx.fn_map[e.value]
+            sig = ctx.fn_sigs.get(e.value)
+        
+        # Check function groups and global functions
+        elif hasattr(ctx, 'fn_groups') and e.value in ctx.fn_groups:
+            fn_group = ctx.fn_groups[e.value]
+            if fn_group:
+                fn = fn_group[0]  # Take first function from group
+                sig = ctx.fn_sigs.get(e.value)
+        
+        if fn and sig and isinstance(fn, ir.Function):
+            # Return function pointer with proper type
+            fn_ty = f"fn({', '.join(sig.params)}) {sig.ret}"
+            if getattr(sig, 'unsafe', False):
+                fn_ty = f"unsafe {fn_ty}"
+            # LLVM functions are already pointers, so use fn directly
+            return _Value(fn, fn_ty)
+        
+        # Check local variables (existing logic)
         if e.value in state.vars:
             ptr = state.vars[e.value]
             ty = state.var_types.get(e.value, "Int")
             return _Value(b.load(ptr), ty)
-        sig = ctx.fn_sigs.get(e.value)
-        fn = ctx.fn_map.get(e.value)
-        if sig is not None and isinstance(fn, ir.Function):
-            parsed = f"fn({', '.join(sig.params)}) -> {sig.ret}"
-            return _Value(b.bitcast(fn, ir.IntType(8).as_pointer()), parsed)
-        raise CodegenError(_diag(e, f"undefined local or function value {e.value}"))
+        
+        # Function exists but not in current scope (better error message)
+        if e.value in ctx.fn_sigs:
+            raise CodegenError(_diag(e, f"function '{e.value}' exists but is not accessible in current scope"))
+        
+        raise CodegenError(_diag(e, f"undefined local or function value '{e.value}'"))
     if isinstance(e, TryExpr):
         src = _compile_expr(ctx, state, e.expr, overflow_mode=overflow_mode)
         src_ty = _canonical_type(src.ty)
@@ -2452,10 +2704,10 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
                         delattr(e.expr, "inferred_type")
                     else:
                         setattr(e.expr, "inferred_type", prev)
-                cv = _coerce_value(ctx, state, src.value, src.ty, dst_ty, e)
+                cv = _explicit_cast_value(ctx, state, src.value, src.ty, dst_ty, e)
                 return _Value(cv, dst_ty)
         src = _compile_expr(ctx, state, e.expr, overflow_mode=overflow_mode)
-        cv = _coerce_value(ctx, state, src.value, src.ty, dst_ty, e)
+        cv = _explicit_cast_value(ctx, state, src.value, src.ty, dst_ty, e)
         return _Value(cv, dst_ty)
     if isinstance(e, Unary):
         if e.op in {"&", "&mut"}:
@@ -2611,11 +2863,131 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
             return _Value(out, lty)
 
         if e.op == "+":
-            return _Value(b.add(lv, rv), lty)
+            if overflow_mode == "trap":
+                # Use overflow intrinsic with conditional branch (standard LLVM pattern)
+                intrinsic = f"llvm.{'u' if not signed else 's'}add.with.overflow.i{bits}"
+                
+                # Create or get the overflow intrinsic function
+                if intrinsic not in ctx.fn_map:
+                    # Create the struct type for overflow result: {iN, i1}
+                    result_type = ir.LiteralStructType([ir.IntType(bits), ir.IntType(1)])
+                    # Overflow intrinsics take both operands as parameters
+                    fn_type = ir.FunctionType(result_type, [ir.IntType(bits), ir.IntType(bits)])
+                    fn = ir.Function(ctx.module, fn_type, name=intrinsic)
+                    ctx.fn_map[intrinsic] = fn
+                else:
+                    fn = ctx.fn_map[intrinsic]
+                
+                result = b.call(fn, [lv, rv])
+                
+                # Extract result and overflow flag
+                actual_result = b.extract_value(result, 0)
+                overflow_flag = b.extract_value(result, 1)
+                
+                # Create basic blocks for conditional branch
+                current_fn = state.builder.basic_block.function
+                trap_block = current_fn.append_basic_block("overflow_trap")
+                ok_block = current_fn.append_basic_block("overflow_ok")
+                
+                # Conditional branch on overflow flag
+                b.cbranch(overflow_flag, trap_block, ok_block)
+                
+                # Trap block: call llvm.trap and mark unreachable
+                b.position_at_end(trap_block)
+                trap_fn = _declare_trap(ctx)
+                b.call(trap_fn, [])
+                b.unreachable()
+                
+                # OK block: continue with actual result
+                b.position_at_end(ok_block)
+                return _Value(actual_result, lty)
+            else:
+                # Release mode - plain arithmetic (LLVM wraps automatically)
+                return _Value(b.add(lv, rv), lty)
         if e.op == "-":
-            return _Value(b.sub(lv, rv), lty)
+            if overflow_mode == "trap":
+                # Use overflow intrinsic with conditional branch
+                intrinsic = f"llvm.{'u' if not signed else 's'}sub.with.overflow.i{bits}"
+                
+                # Create or get the overflow intrinsic function
+                if intrinsic not in ctx.fn_map:
+                    # Create the struct type for overflow result: {iN, i1}
+                    result_type = ir.LiteralStructType([ir.IntType(bits), ir.IntType(1)])
+                    # Overflow intrinsics take both operands as parameters
+                    fn_type = ir.FunctionType(result_type, [ir.IntType(bits), ir.IntType(bits)])
+                    fn = ir.Function(ctx.module, fn_type, name=intrinsic)
+                    ctx.fn_map[intrinsic] = fn
+                else:
+                    fn = ctx.fn_map[intrinsic]
+                
+                result = b.call(fn, [lv, rv])
+                
+                # Extract result and overflow flag
+                actual_result = b.extract_value(result, 0)
+                overflow_flag = b.extract_value(result, 1)
+                
+                # Create basic blocks for conditional branch
+                current_fn = state.builder.basic_block.function
+                trap_block = current_fn.append_basic_block("overflow_trap")
+                ok_block = current_fn.append_basic_block("overflow_ok")
+                
+                # Conditional branch on overflow flag
+                b.cbranch(overflow_flag, trap_block, ok_block)
+                
+                # Trap block: call llvm.trap and mark unreachable
+                b.position_at_end(trap_block)
+                trap_fn = _declare_trap(ctx)
+                b.call(trap_fn, [])
+                b.unreachable()
+                
+                # OK block: continue with actual result
+                b.position_at_end(ok_block)
+                return _Value(actual_result, lty)
+            else:
+                # Release mode - plain arithmetic (LLVM wraps automatically)
+                return _Value(b.sub(lv, rv), lty)
         if e.op == "*":
-            return _Value(b.mul(lv, rv), lty)
+            if overflow_mode == "trap":
+                # Use overflow intrinsic with conditional branch
+                intrinsic = f"llvm.{'u' if not signed else 's'}mul.with.overflow.i{bits}"
+                
+                # Create or get the overflow intrinsic function
+                if intrinsic not in ctx.fn_map:
+                    # Create the struct type for overflow result: {iN, i1}
+                    result_type = ir.LiteralStructType([ir.IntType(bits), ir.IntType(1)])
+                    # Overflow intrinsics take both operands as parameters
+                    fn_type = ir.FunctionType(result_type, [ir.IntType(bits), ir.IntType(bits)])
+                    fn = ir.Function(ctx.module, fn_type, name=intrinsic)
+                    ctx.fn_map[intrinsic] = fn
+                else:
+                    fn = ctx.fn_map[intrinsic]
+                
+                result = b.call(fn, [lv, rv])
+                
+                # Extract result and overflow flag
+                actual_result = b.extract_value(result, 0)
+                overflow_flag = b.extract_value(result, 1)
+                
+                # Create basic blocks for conditional branch
+                current_fn = state.builder.basic_block.function
+                trap_block = current_fn.append_basic_block("overflow_trap")
+                ok_block = current_fn.append_basic_block("overflow_ok")
+                
+                # Conditional branch on overflow flag
+                b.cbranch(overflow_flag, trap_block, ok_block)
+                
+                # Trap block: call llvm.trap and mark unreachable
+                b.position_at_end(trap_block)
+                trap_fn = _declare_trap(ctx)
+                b.call(trap_fn, [])
+                b.unreachable()
+                
+                # OK block: continue with actual result
+                b.position_at_end(ok_block)
+                return _Value(actual_result, lty)
+            else:
+                # Release mode - plain arithmetic (LLVM wraps automatically)
+                return _Value(b.mul(lv, rv), lty)
         if e.op == "/":
             return _Value(_lower_checked_divrem(ctx, state, lv, rv, signed=signed, is_div=True), lty)
         if e.op == "%":
@@ -3431,7 +3803,9 @@ def _declare_functions(ctx: _ModuleCtx, prog: Program, freestanding: bool) -> tu
             key = item.name
             sig = ctx.fn_sigs[key]
             fnty = ir.FunctionType(_llvm_type(ctx, sig.ret), [_llvm_type(ctx, t) for t in sig.params], var_arg=sig.variadic)
-            ctx.fn_map[key] = ir.Function(ctx.module, fnty, name=key)
+            ir_fn = ir.Function(ctx.module, fnty, name=key)
+            _apply_abi_attributes_to_extern_fn(ctx, item, sig, ir_fn)
+            ctx.fn_map[key] = ir_fn
             for lib in sig.link_libs:
                 if lib:
                     ctx.ffi_libs.add(lib)

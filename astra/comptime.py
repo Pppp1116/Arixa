@@ -503,6 +503,14 @@ class _Evaluator:
             iv = math.trunc(value)
         else:
             raise ComptimeError(_diag(self.filename, node.line, node.col, f"cannot cast to {ty}"))
+        
+        # Add range validation for comptime evaluation
+        min_val = _int_min(bits) if signed else 0
+        max_val = _int_max(bits, signed)
+        if iv < min_val or iv > max_val:
+            raise ComptimeError(_diag(self.filename, node.line, node.col,
+                f"comptime result {iv} out of range for {ty} (expected {min_val}..{max_val})"))
+        
         return _truncate_int(iv, bits, signed)
 
     def _match_pattern(self, pat: Any, subj: object, env: dict[str, object], env_types: dict[str, str]) -> bool:

@@ -2,50 +2,50 @@
 // Native-mode microbench suite.
 // Prints a single JSON object: { "arith_ms": ..., "hash_ms": ..., ... , "checksum": ... }
 
-fn ms() -> Int { return __monotonic_ms(); }
+fn ms() Int { return __monotonic_ms(); }
 
-fn bench_arith(n: Int) -> Int {
-    let t0 = ms();
-    let mut x = 0;
-    let mut i = 0;
+fn bench_arith(n Int) Int {
+    t0 = ms();
+    mut x = 0;
+    mut i = 0;
     while i < n {
         // LCG + bit-mixing (keeps optimizer honest)
         x = (x * 1664525 + 1013904223) & 0xffff_ffff;
         x = x ^ (x >> 16);
         i += 1;
     }
-    let t1 = ms();
+    t1 = ms();
     // return (dt_ms << 32) | checksum_low
     return ((t1 - t0) << 32) | (x & 0xffff_ffff);
 }
 
-fn bench_hash(n: Int) -> Int {
-    let t0 = ms();
-    let mut acc = 0;
-    let mut i = 0;
+fn bench_hash(n Int) Int {
+    t0 = ms();
+    mut acc = 0;
+    mut i = 0;
     while i < n {
         // Avoid huge allocations; keep strings short-ish.
-        let s = "astra:bench:x";
-        let h = __sha256(s);
+        s = "astra:bench:x";
+        h = __sha256(s);
         acc = (acc + len(h)) & 2147483647;
         i += 1;
     }
-    let t1 = ms();
+    t1 = ms();
     return ((t1 - t0) << 32) | (acc & 0xffff_ffff);
 }
 
-fn bench_list_map(n: Int) -> Int {
-    let t0 = ms();
+fn bench_list_map(n Int) Int {
+    t0 = ms();
 
     // list
-    let xs = __list_new();
-    let mut i = 0;
+    xs = __list_new();
+    mut i = 0;
     while i < n {
         __list_push(xs, i);
         i += 1;
     }
 
-    let mut sum = 0;
+    mut sum = 0;
     i = 0;
     while i < n {
         sum = (sum + (__list_get(xs, i) as Int)) & 2147483647;
@@ -53,54 +53,54 @@ fn bench_list_map(n: Int) -> Int {
     }
 
     // map
-    let m = __map_new();
+    m = __map_new();
     __map_set(m, "sum", sum);
     __map_set(m, "n", n);
 
-    let got = __map_get(m, "sum") as Int;
+    got = __map_get(m, "sum") as Int;
 
-    let t1 = ms();
+    t1 = ms();
     return ((t1 - t0) << 32) | (got & 0xffff_ffff);
 }
 
-fn bench_json(n: Int) -> Int {
-    let t0 = ms();
+fn bench_json(n Int) Int {
+    t0 = ms();
 
     // Roundtrip scalar JSON values
-    let mut i = 0;
-    let mut acc = 0;
+    mut i = 0;
+    mut acc = 0;
     while i < n {
-        let js = __to_json(i);
-        let back = __from_json(js);
+        js = __to_json(i);
+        back = __from_json(js);
         acc = (acc + (back as Int)) & 2147483647;
         i += 1;
     }
 
-    let t1 = ms();
+    t1 = ms();
     return ((t1 - t0) << 32) | (acc & 0xffff_ffff);
 }
 
-fn main() -> Int {
+fn main() Int {
     // Keep these moderate; the Python harness (below) will repeat runs.
-    let n_arith = 20000000;
-    let n_hash  = 200000;
-    let n_coll  = 100000;   // 100k
-    let n_json  = 50000;
+    n_arith = 20000000;
+    n_hash  = 200000;
+    n_coll  = 100000;   // 100k
+    n_json  = 50000;
 
-    let a = bench_arith(n_arith);
-    let h = bench_hash(n_hash);
-    let c = bench_list_map(n_coll);
-    let j = bench_json(n_json);
+    a = bench_arith(n_arith);
+    h = bench_hash(n_hash);
+    c = bench_list_map(n_coll);
+    j = bench_json(n_json);
 
-    let res = __map_new();
+    res = __map_new();
 
     __map_set(res, "arith_ms", (a >> 32));
     __map_set(res, "hash_ms",  (h >> 32));
     __map_set(res, "coll_ms",  (c >> 32));
     __map_set(res, "json_ms",  (j >> 32));
 
-    // Combine checksums so optimizer can’t delete work.
-    let checksum = (a & 0xffff_ffff) ^ (h & 0xffff_ffff) ^ (c & 0xffff_ffff) ^ (j & 0xffff_ffff);
+    // Combine checksums so optimizer can't delete work.
+    checksum = (a & 0xffff_ffff) ^ (h & 0xffff_ffff) ^ (c & 0xffff_ffff) ^ (j & 0xffff_ffff);
     __map_set(res, "checksum", checksum);
 
     print(__to_json(res));

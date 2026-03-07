@@ -107,6 +107,10 @@
   - float args: `xmm0..xmm7`, then stack
   - return in `rax` (integer/pointer) or `xmm0` (float)
   - call sites align stack to 16 bytes before `call`
+- Extern function ABI attributes:
+  - Small signed integers (< 64 bits) use `signext` attribute for proper sign extension
+  - Small unsigned integers (< 64 bits) use `zeroext` attribute for proper zero extension
+  - No manual widening to 64 bits - uses native LLVM ABI attributes
 - Runtime ABI boundary for lowered builtins:
   - `astra_print_i64`, `astra_print_str`, `astra_alloc`, `astra_free`, `astra_panic`
 - 128-bit hard-op helper ABI (returns in `rax`/`rdx`):

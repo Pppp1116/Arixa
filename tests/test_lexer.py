@@ -27,7 +27,7 @@ def test_new_keywords_and_bool():
 
 
 def test_float_doc_comment_and_symbols():
-    toks = lex('/// docs\nlet x = 1.5 && true; x += 1; a[0].b:c; y: Int? = none; z = y ?? 1;')
+    toks = lex('/// docs\nx = 1.5 && true; x += 1; a[0].b:c; y: Int? = none; z = y ?? 1;')
     assert toks[0].kind == "DOC_COMMENT"
     assert any(t.kind == "FLOAT" for t in toks)
     seen = {t.kind for t in toks}

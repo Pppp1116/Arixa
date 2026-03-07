@@ -1,0 +1,6 @@
+extern fn simple_func() i8;
+
+fn main() Int {
+    result = simple_func();
+    return result;
+}

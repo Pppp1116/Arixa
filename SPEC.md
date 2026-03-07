@@ -209,12 +209,14 @@ Numeric semantics:
 - Integer arithmetic/bitwise/shift operators require matching integer types.
 - Mixed int/float arithmetic and comparison are rejected unless explicit cast (`expr as Type`) is used.
 - Implicit conversion between different integer widths/signedness is rejected; explicit cast is required (for example `u4` -> `u8`).
+- Cast extension behavior follows source signedness: signed sources use sign extension, unsigned sources use zero extension.
 - Right shift is arithmetic for signed integer types and logical for unsigned integer types.
 - Width-aware integer builtins are available: `countOnes`, `leadingZeros`, `trailingZeros`.
 - Aliases are available: `popcnt`, `clz`, `ctz`.
 - Rotate helpers are available: `rotl`, `rotr` (rotation count is modulo bit width).
 - Type-level integer queries are available: `bitSizeOf(T)`, `maxVal(T)`, `minVal(T)`.
 - JSON conversion for `Any` is shape-stable for arrays/lists and objects/maps.
+- Extern function ABIs use proper LLVM attributes: `signext` for signed small integers, `zeroext` for unsigned small integers.
 - Overflow mode is controlled by build/check configuration:
   - `check`: default effective overflow `trap` (`--overflow debug` also resolves to `trap`)
   - `build --profile debug` => effective default `trap`

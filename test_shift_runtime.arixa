@@ -1,0 +1,6 @@
+fn main() Int {
+    x: i32 = -8;
+    y: i32 = 1;
+    result = x >> y;
+    return result as Int;
+}

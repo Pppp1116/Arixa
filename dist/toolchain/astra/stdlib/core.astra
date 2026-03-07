@@ -23,7 +23,7 @@ type Bytes = Vec<u8>;
 ///
 /// Returns `none` when signed overflow is detected.
 fn add_checked(a Int, b Int) -> Option<Int> {
-    let r = a + b;
+     r = a + b;
     if b > 0 && r < a {
         return none;
     }
@@ -39,7 +39,7 @@ fn add_checked(a Int, b Int) -> Option<Int> {
 ///
 /// Returns `none` when signed overflow is detected.
 fn sub_checked(a Int, b Int) -> Option<Int> {
-    let r = a - b;
+     r = a - b;
     if b > 0 && r > a {
         return none;
     }
@@ -63,7 +63,7 @@ fn mul_checked(a Int, b Int) -> Option<Int> {
         return none;
     }
     else {}
-    let r = a * b;
+     r = a * b;
     if r / b != a {
         return none;
     }

@@ -29,7 +29,7 @@ fn remove(path String) -> Int {
 
 /// Read a file or return a fallback value if the file is empty or missing.
 fn read_or(path String, fallback String) -> String {
-    let text = read(path);
+     text = read(path);
     if len(text) == 0 {
         return fallback;
     }

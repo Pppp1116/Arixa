@@ -15,4 +15,4 @@ Notes:
 
 - Task IDs are runtime handles.
 - Native backend executes `spawn` work on OS threads and blocks in `join`.
-- Worker signatures are currently `fn() -> Int` and `fn(Int) -> Int` function types via `spawn0`/`spawn1`.
+- Worker signatures are currently `fn() Int` and `fn(Int) Int` function types via `spawn0`/`spawn1`.

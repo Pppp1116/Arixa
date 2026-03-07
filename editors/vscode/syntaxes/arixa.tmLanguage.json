@@ -50,7 +50,7 @@
       "patterns": [
         {
           "name": "keyword.control.astra",
-          "match": "\\b(fn|let|fixed|return|if|else|while|for|in|break|continue|match|drop|defer|comptime|import|type|struct|enum|extern|pub|unsafe|async|await)\\b"
+          "match": "\\b(fn|return|if|else|while|for|in|break|continue|match|drop|defer|comptime|import|type|struct|enum|extern|pub|unsafe|async|await)\\b"
         },
         {
           "name": "keyword.operator.coalesce.astra",
@@ -82,7 +82,7 @@
       "patterns": [
         {
           "name": "keyword.operator.astra",
-          "match": "->|=>|==|!=|<=|>=|&&|\\|\\||[+\\-*/%<>=!&|^~]"
+          "match": "=>|==|!=|<=|>=|&&|\\|\\||[+\\-*/%<>=!&|^~]"
         }
       ]
     }

@@ -14,7 +14,7 @@ fn env(name String) -> String {
 
 /// Read environment variable `name` or return `fallback` when missing.
 fn env_or(name String, fallback String) -> String {
-    let value = env(name);
+     value = env(name);
     if len(value) == 0 {
         return fallback;
     }
