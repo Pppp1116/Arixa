@@ -15,7 +15,7 @@ Stable diagnostics are emitted by `astra check` and `astra check --json`.
 | `E0101` | Invalid numeric/operator type usage |
 | `E0102` | Wrong number of function arguments |
 | `E0103` | Missing required return |
-| `E0104` | Illegal assignment to immutable/fixed binding |
+| `E0104` | Illegal assignment to immutable binding |
 | `E0105` | Attempted call on non-function value |
 | `E0110` | Invalid pattern match arm |
 | `E0111` | Non-exhaustive pattern match |

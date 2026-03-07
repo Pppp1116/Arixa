@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 try:
     import tomllib
 except Exception:  # pragma: no cover - fallback for older runtimes
@@ -37,6 +38,7 @@ from astra.ast import (
     FieldExpr,
     FnDecl,
     ForStmt,
+    GuardedPattern,
     IfStmt,
     ImportDecl,
     IndexExpr,
@@ -50,10 +52,13 @@ from astra.ast import (
     Program,
     RangeExpr,
     ReturnStmt,
+    OrPattern,
     SizeOfTypeExpr,
     SizeOfValueExpr,
     StructDecl,
     StructLit,
+    TraitDecl,
+    TryExpr,
     TypeAliasDecl,
     TypeAnnotated,
     Unary,
@@ -198,6 +203,227 @@ def _collect_imported_externs(src_file: Path) -> list[ExternFnDecl]:
     return out
 
 
+def _collect_imported_items(src_file: Path) -> list[tuple[Any, Path]]:
+    visited: set[Path] = set()
+    out: list[tuple[Any, Path]] = []
+    stack: list[Path] = []
+    try:
+        root_prog = parse(src_file.read_text(), filename=str(src_file))
+    except Exception:
+        return out
+    for item in root_prog.items:
+        if not isinstance(item, ImportDecl):
+            continue
+        try:
+            dep = resolve_import_path(item, str(src_file))
+        except ModuleResolutionError:
+            continue
+        stack.append(dep.resolve())
+
+    while stack:
+        cur = stack.pop()
+        if cur in visited:
+            continue
+        visited.add(cur)
+        try:
+            text = cur.read_text()
+            prog = parse(text, filename=str(cur))
+        except Exception:
+            continue
+        for item in prog.items:
+            if isinstance(item, ImportDecl):
+                try:
+                    dep = resolve_import_path(item, str(cur))
+                except ModuleResolutionError:
+                    continue
+                if dep.exists() and dep.resolve() not in visited:
+                    stack.append(dep.resolve())
+                continue
+            out.append((item, cur))
+    return out
+
+
+def _expand_serde_derives(prog: Program) -> None:
+    """Synthesize serde helper functions for @derive(Serialize, Deserialize)."""
+    existing_fn_keys = {
+        (item.name, tuple(str(t) for _, t in item.params))
+        for item in prog.items
+        if isinstance(item, FnDecl)
+    }
+    known_type_names = {
+        item.name
+        for item in prog.items
+        if isinstance(item, (StructDecl, EnumDecl, TypeAliasDecl))
+    }
+    parse_error_available = "ParseError" in known_type_names
+    generated: list[FnDecl] = []
+
+    for item in list(prog.items):
+        if not isinstance(item, (StructDecl, EnumDecl)):
+            continue
+        derives = list(getattr(item, "derives", []))
+        if not derives:
+            continue
+        if isinstance(item, StructDecl) and item.generics:
+            # Keep v1 derive synthesis concrete-only to avoid generic monomorphization in build pass.
+            continue
+        type_name = item.name
+        if "Serialize" in derives:
+            fn_name = f"serialize_{type_name}"
+            key = (fn_name, (type_name,))
+            if key not in existing_fn_keys:
+                if isinstance(item, StructDecl):
+                    body: list[Any] = [
+                        LetStmt(
+                            "m",
+                            Call(Name("map_new", 0, 0, 0), [], 0, 0, 0),
+                            False,
+                            None,
+                            0,
+                            0,
+                            0,
+                        )
+                    ]
+                    for fname, _ in item.fields:
+                        body.append(
+                            ExprStmt(
+                                Call(
+                                    Name("map_set", 0, 0, 0),
+                                    [
+                                        Name("m", 0, 0, 0),
+                                        Literal(fname, 0, 0, 0),
+                                        FieldExpr(Name("v", 0, 0, 0), fname, 0, 0, 0),
+                                    ],
+                                    0,
+                                    0,
+                                    0,
+                                ),
+                                0,
+                                0,
+                                0,
+                            )
+                        )
+                    body.append(
+                        ReturnStmt(
+                            Call(
+                                Name("to_json", 0, 0, 0),
+                                [Name("m", 0, 0, 0)],
+                                0,
+                                0,
+                                0,
+                            ),
+                            0,
+                            0,
+                            0,
+                        )
+                    )
+                else:
+                    body = [
+                        ReturnStmt(
+                            Call(
+                                Name("to_json", 0, 0, 0),
+                                [Name("v", 0, 0, 0)],
+                                0,
+                                0,
+                                0,
+                            ),
+                            0,
+                            0,
+                            0,
+                        )
+                    ]
+                serialize_fn = FnDecl(
+                    name=fn_name,
+                    generics=[],
+                    params=[("v", type_name)],
+                    ret="String",
+                    body=body,
+                    symbol=fn_name,
+                )
+                setattr(serialize_fn, "_generated_derive", True)
+                generated.append(serialize_fn)
+                existing_fn_keys.add(key)
+        if "Deserialize" in derives:
+            fn_name = f"deserialize_{type_name}"
+            key = (fn_name, ("String",))
+            if key not in existing_fn_keys:
+                err_ty = "ParseError" if parse_error_available else "Any"
+                if isinstance(item, StructDecl):
+                    ctor_args: list[Any] = []
+                    for fname, fty in item.fields:
+                        ctor_args.append(
+                            CastExpr(
+                                Call(
+                                    Name("map_get", 0, 0, 0),
+                                    [Name("raw", 0, 0, 0), Literal(fname, 0, 0, 0)],
+                                    0,
+                                    0,
+                                    0,
+                                ),
+                                fty,
+                                0,
+                                0,
+                                0,
+                            )
+                        )
+                    deserialize_body = [
+                        LetStmt(
+                            "raw",
+                            Call(
+                                Name("from_json", 0, 0, 0),
+                                [Name("s", 0, 0, 0)],
+                                0,
+                                0,
+                                0,
+                            ),
+                            False,
+                            None,
+                            0,
+                            0,
+                            0,
+                        ),
+                        ReturnStmt(
+                            Call(Name(type_name, 0, 0, 0), ctor_args, 0, 0, 0),
+                            0,
+                            0,
+                            0,
+                        ),
+                    ]
+                else:
+                    deserialize_body = [
+                        ReturnStmt(
+                            CastExpr(
+                                Call(
+                                    Name("from_json", 0, 0, 0),
+                                    [Name("s", 0, 0, 0)],
+                                    0,
+                                    0,
+                                    0,
+                                ),
+                                type_name,
+                                0,
+                                0,
+                                0,
+                            ),
+                            0,
+                            0,
+                            0,
+                        )
+                    ]
+                deserialize_fn = FnDecl(
+                    name=fn_name,
+                    generics=[],
+                    params=[("s", "String")],
+                    ret=f"{type_name} | {err_ty}",
+                    body=deserialize_body,
+                    symbol=fn_name,
+                )
+                setattr(deserialize_fn, "_generated_derive", True)
+                generated.append(deserialize_fn)
+                existing_fn_keys.add(key)
+    prog.items.extend(generated)
+
+
 def _build_fingerprint(
     src_file: Path,
     target: str,
@@ -207,6 +433,7 @@ def _build_fingerprint(
     freestanding: bool,
     profile: str,
     overflow_mode: str,
+    sanitize: str | None,
     triple: str | None,
     links: list[str] | None,
 ) -> str:
@@ -224,6 +451,7 @@ def _build_fingerprint(
         "freestanding": bool(freestanding),
         "profile": profile,
         "overflow_mode": overflow_mode,
+        "sanitize": sanitize or "",
         "triple": triple or "",
         "links": sorted(set(links or [])),
         "dep_libs": sorted(dep_libs),
@@ -360,7 +588,7 @@ def _dependency_native_link_data(src_file: Path) -> tuple[set[str], list[str]]:
     return libs, link_args
 
 
-_STRICT_TOP_LEVEL = {FnDecl, StructDecl, EnumDecl, TypeAliasDecl, ImportDecl, ExternFnDecl, LetStmt}
+_STRICT_TOP_LEVEL = {FnDecl, StructDecl, EnumDecl, TraitDecl, TypeAliasDecl, ImportDecl, ExternFnDecl, LetStmt}
 _STRICT_STMTS = {LetStmt, AssignStmt, ReturnStmt, ExprStmt, DropStmt, IfStmt, MatchStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, ComptimeStmt, DeferStmt, UnsafeStmt}
 _STRICT_EXPRS = {
     Literal,
@@ -375,6 +603,7 @@ _STRICT_EXPRS = {
     ArrayLit,
     StructLit,
     AwaitExpr,
+    TryExpr,
     TypeAnnotated,
     CastExpr,
     SizeOfTypeExpr,
@@ -385,6 +614,8 @@ _STRICT_EXPRS = {
     SizeOfValueExpr,
     AlignOfValueExpr,
     WildcardPattern,
+    OrPattern,
+    GuardedPattern,
     RangeExpr,
 }
 _STRICT_UNARY_OPS = {"-", "!", "~", "&", "&mut", "*"}
@@ -450,11 +681,22 @@ def _strict_walk_expr(e: object, errs: list[str]) -> None:
     if isinstance(e, AwaitExpr):
         _strict_walk_expr(e.expr, errs)
         return
+    if isinstance(e, TryExpr):
+        _strict_walk_expr(e.expr, errs)
+        return
     if isinstance(e, TypeAnnotated):
         _strict_walk_expr(e.expr, errs)
         return
     if isinstance(e, CastExpr):
         _strict_walk_expr(e.expr, errs)
+        return
+    if isinstance(e, OrPattern):
+        for p in e.patterns:
+            _strict_walk_expr(p, errs)
+        return
+    if isinstance(e, GuardedPattern):
+        _strict_walk_expr(e.pattern, errs)
+        _strict_walk_expr(e.guard, errs)
         return
     if isinstance(e, RangeExpr):
         _strict_walk_expr(e.start, errs)
@@ -547,6 +789,7 @@ def _build_native_llvm(
     src_file: Path,
     *,
     profile: str,
+    sanitize: str | None,
     triple: str | None,
     freestanding: bool,
     kind: str,
@@ -559,9 +802,11 @@ def _build_native_llvm(
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     opt_flag = "-O3" if profile == "release" else "-O0"
+    sanitize_flag = f"-fsanitize={sanitize}" if sanitize else None
     with tempfile.TemporaryDirectory(prefix="astra-native-") as td:
         ll_path = Path(td) / "module.ll"
         ll_path.write_text(ir_text)
+        is_windows = sys.platform.startswith("win")
         if kind == "lib":
             cmd = [clang, opt_flag, "-shared", "-fPIC", str(ll_path), "-o", str(out)]
             if not freestanding:
@@ -571,7 +816,11 @@ def _build_native_llvm(
                         f"CODEGEN {src_file}:1:1: missing runtime source; set ASTRA_RUNTIME_C_PATH or install bundled runtime"
                     )
                 cmd.insert(-2, str(runtime_c))
-                cmd.insert(-2, "-lm")
+                if is_windows:
+                    cmd.insert(-2, "-lbcrypt")
+                    cmd.insert(-2, "-lws2_32")
+                else:
+                    cmd.insert(-2, "-lm")
         elif freestanding:
             cmd = [
                 clang,
@@ -589,11 +838,17 @@ def _build_native_llvm(
                 raise RuntimeError(
                     f"CODEGEN {src_file}:1:1: missing runtime source; set ASTRA_RUNTIME_C_PATH or install bundled runtime"
                 )
-            cmd = [clang, opt_flag, str(ll_path), str(runtime_c), "-lm", "-o", str(out)]
+            cmd = [clang, opt_flag, str(ll_path), str(runtime_c), "-o", str(out)]
+            if is_windows:
+                cmd.extend(["-lbcrypt", "-lws2_32"])
+            else:
+                cmd.extend(["-lm", "-pthread"])
         if link_libs:
             for lib in sorted(set(link_libs)):
                 if lib:
                     cmd.append(f"-l{lib}")
+        if sanitize_flag is not None:
+            cmd.append(sanitize_flag)
         if link_args:
             cmd.extend([arg for arg in link_args if arg])
         if triple:
@@ -640,6 +895,7 @@ def build(
     freestanding: bool = False,
     profile: str = "debug",
     overflow: str = "debug",
+    sanitize: str | None = None,
     triple: str | None = None,
     links: list[str] | None = None,
 ):
@@ -655,6 +911,7 @@ def build(
         freestanding: Whether hosted-runtime features are disallowed.
         profile: Build profile selector, typically `debug` or `release`.
         overflow: Integer overflow behavior mode requested by the caller.
+        sanitize: Optional native sanitizer (`address`, `undefined`, `thread`).
         triple: Input value used by this routine.
     
     Returns:
@@ -665,30 +922,85 @@ def build(
         raise RuntimeError(f"BUILD {src_file}:1:1: unsupported build kind {kind}")
     if profile not in {"debug", "release"}:
         raise RuntimeError(f"BUILD {src_file}:1:1: unsupported profile {profile}")
+    if sanitize not in {None, "address", "undefined", "thread"}:
+        raise RuntimeError(f"BUILD {src_file}:1:1: unsupported sanitizer {sanitize}")
+    if sanitize is not None and target != "native":
+        raise RuntimeError(f"BUILD {src_file}:1:1: sanitizer requires --target native")
+    if sanitize is not None and freestanding:
+        raise RuntimeError(f"BUILD {src_file}:1:1: sanitizer is unsupported with --freestanding")
     overflow_mode = _resolve_overflow_mode(profile, overflow, check=False)
-    digest = _build_fingerprint(src_file, target, kind, emit_ir, strict, freestanding, profile, overflow_mode, triple, links)
+    digest = _build_fingerprint(
+        src_file,
+        target,
+        kind,
+        emit_ir,
+        strict,
+        freestanding,
+        profile,
+        overflow_mode,
+        sanitize,
+        triple,
+        links,
+    )
     cache_key = (
         f"{src_file.resolve().as_posix()}::{target}::{kind}::{int(bool(strict))}::{int(bool(freestanding))}::"
-        f"{int(bool(emit_ir))}::{profile}::{overflow_mode}::{triple or ''}::{','.join(sorted(set(links or [])))}"
+        f"{int(bool(emit_ir))}::{profile}::{overflow_mode}::{sanitize or ''}::{triple or ''}::{','.join(sorted(set(links or [])))}"
     )
     cache = json.loads(CACHE.read_text()) if CACHE.exists() else {}
     if cache.get(cache_key) == digest and Path(out_path).exists():
         return 'cached'
     src = src_file.read_text()
     prog = parse(src, filename=str(src_file))
-    imported_externs = _collect_imported_externs(src_file)
-    if imported_externs:
-        existing = {
-            (item.name, tuple(item.params), item.ret, bool(item.is_variadic))
+    imported_items = _collect_imported_items(src_file)
+    if imported_items:
+        fn_keys = {
+            (
+                item.name,
+                tuple(item.params),
+                item.ret,
+                bool(getattr(item, "is_variadic", False)),
+                bool(getattr(item, "unsafe", False)),
+                isinstance(item, ExternFnDecl),
+            )
             for item in prog.items
-            if isinstance(item, ExternFnDecl)
+            if isinstance(item, (FnDecl, ExternFnDecl))
         }
-        for ext in imported_externs:
-            key = (ext.name, tuple(ext.params), ext.ret, bool(ext.is_variadic))
-            if key in existing:
+        named_types = {
+            item.name
+            for item in prog.items
+            if isinstance(item, (StructDecl, EnumDecl, TypeAliasDecl))
+        }
+        for item, owner in imported_items:
+            try:
+                setattr(item, "_source_filename", str(owner))
+            except Exception:
+                pass
+            if isinstance(item, (FnDecl, ExternFnDecl)):
+                key = (
+                    item.name,
+                    tuple(item.params),
+                    item.ret,
+                    bool(getattr(item, "is_variadic", False)),
+                    bool(getattr(item, "unsafe", False)),
+                    isinstance(item, ExternFnDecl),
+                )
+                if key in fn_keys:
+                    continue
+                fn_keys.add(key)
+                prog.items.append(item)
                 continue
-            prog.items.append(ext)
-            existing.add(key)
+            if isinstance(item, (StructDecl, EnumDecl, TypeAliasDecl)):
+                if item.name in named_types:
+                    continue
+                named_types.add(item.name)
+                prog.items.append(item)
+                continue
+            if isinstance(item, LetStmt):
+                # Imported top-level constants are carried when uniquely named.
+                if any(isinstance(existing, LetStmt) and existing.name == item.name for existing in prog.items):
+                    continue
+                prog.items.append(item)
+    _expand_serde_derives(prog)
     required_entrypoint = None if kind == "lib" else ("_start" if freestanding else "main")
     run_comptime(prog, filename=str(src_file), overflow_mode=overflow_mode)
     analyze(
@@ -738,6 +1050,7 @@ def build(
             out_path,
             src_file,
             profile=profile,
+            sanitize=sanitize,
             triple=triple,
             freestanding=freestanding,
             kind=kind,

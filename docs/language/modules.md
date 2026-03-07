@@ -18,5 +18,5 @@ Resolver implementation: `astra/module_resolver.py`.
 
 - Import declarations are resolved and validated.
 - Optional aliases are tracked for diagnostics/type context.
-- Full symbol loading from imported modules is limited in the current compiler.
+- Full symbol loading from imported modules is implemented with recursive loading of imported declarations/items.
 - Most stdlib-facing callable APIs are currently available through builtin function names.

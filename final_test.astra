@@ -1,0 +1,13 @@
+fn add(a Int, b Int) Int { return a + b; }
+fn multiply(x Float, y Float) Float { return x * y; }
+fn void_func() Void { return; }
+fn implicit_void() { }
+fn apply_func(f fn(Int) Int, value Int) Int { return f(value); }
+fn main() Int {
+    let result1 = add(5, 3);
+    let result2 = multiply(2.5, 4.0);
+    void_func();
+    implicit_void();
+    let doubled = apply_func(fn(x Int) Int { return x * 2; }, 10);
+    return result1 + doubled;
+}

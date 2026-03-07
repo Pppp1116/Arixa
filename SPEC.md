@@ -25,10 +25,10 @@ str_multi_lit   = "\"\"\"" { any_char } "\"\"\"" ;
 char_lit        = "'" { char | escape } "'" ;
 bool_lit        = "true" | "false" ;
 
-keyword         = "fn" | "let" | "fixed" | "return" | "if" | "else" | "while"
+keyword         = "fn" | "return" | "if" | "else" | "while"
                 | "for" | "break" | "continue" | "struct" | "enum" | "type"
                 | "import" | "mut" | "pub" | "extern" | "async" | "await"
-                | "unsafe" | "impl" | "match" | "defer" | "drop"
+                | "unsafe" | "trait" | "match" | "defer" | "drop"
                 | "comptime" | "none" | "in" | "as" | "sizeof" | "alignof" ;
 
 multi_op        = "::" | "=>" | "->" | "==" | "!="
@@ -97,14 +97,13 @@ Associativity:
 
 ```ebnf
 block           = "{" { stmt } "}" ;
-stmt            = let_stmt | fixed_stmt
+stmt            = binding_stmt
                 | return_stmt | break_stmt | continue_stmt
                 | defer_stmt | drop_stmt | comptime_stmt
                 | if_stmt | while_stmt | for_stmt | match_stmt
                 | assign_stmt | expr_stmt ;
 
-let_stmt        = "let" [ "mut" ] ident [ ":" type ] "=" expr ";" ;
-fixed_stmt      = "fixed" ident [ ":" type ] "=" expr ";" ;
+binding_stmt     = [ "mut" ] ident [ ":" type ] "=" expr ";" ;
 return_stmt     = "return" [ expr ] ";" ;
 break_stmt      = "break" ";" ;
 continue_stmt   = "continue" ";" ;
@@ -125,7 +124,8 @@ expr_stmt       = expr ";" ;
 ```
 
 Constraints:
-- `fixed` bindings are immutable and cannot be `mut`.
+- Mutable bindings use `mut` keyword: `mut name[: Type] = expr;`.
+- Immutable bindings omit `mut`: `name[: Type] = expr;`.
 - Expression statements may discard values of any type.
 - `return;` is only valid in `-> Void` functions.
 - `for` uses only `for <ident> in <iterable-expr> { ... }` syntax; C-style `for init; cond; step { ... }` is invalid.
@@ -169,7 +169,7 @@ References:
 - Returning a reference must be tied to at least one input reference origin.
 
 Function types:
-- First-class function type syntax: `fn(T1, T2, ...) -> R`.
+- First-class function type syntax: `fn(T1, T2, ...) R`.
 - Calls require exact arity; parameter/return types are checked by semantic analysis.
 - Function values may be direct names or indirect (fn-typed expressions).
 
@@ -189,7 +189,7 @@ Borrowing:
 - `&mut name` creates exclusive mutable borrow.
 - While mutably borrowed, owner cannot be read/written directly.
 - While shared-borrowed, owner cannot be mutated.
-- `&mut` requires mutable source binding (`let mut ...`), not `fixed`.
+- `&mut` requires mutable source binding (`mut name = ...`), not immutable binding.
 
 Owned-state checks:
 - Tracked owned allocations must not be used after `free`/move.

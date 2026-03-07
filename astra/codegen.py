@@ -285,7 +285,7 @@ def to_python(
         "            return vals[0] if vals else None",
         "        if tag == 'Err':",
         "            raise _AstraTryResultErr(vals[0] if vals else None)",
-        "    raise TypeError('`?` on Result expected Result.Ok/Result.Err value')",
+        "    raise TypeError('`!` on Result expected Result.Ok/Result.Err value')",
         "def len_(x): return len(x)",
         "def read_file(p): return pathlib.Path(p).read_text()",
         "def write_file(p,s): pathlib.Path(p).write_text(str(s)); return 0",
@@ -497,6 +497,7 @@ def to_python(
         "        return None",
         "    return list(os.urandom(n))",
         "def proc_exit(code): raise SystemExit(int(code))",
+        "def panic(msg): import sys; print(f'panic: {msg}', file=sys.stderr); sys.exit(101)",
         "def env_get(k): return os.environ.get(str(k), '')",
         "def cwd(): return os.getcwd()",
         "def proc_run(cmd): return subprocess.call(str(cmd), shell=True)",
@@ -974,6 +975,8 @@ def _expr(e: Any) -> str:
         ufcs_receiver = getattr(e, "ufcs_receiver", None)
         if ufcs_receiver is not None:
             args = [ufcs_receiver] + args
+        if name == "panic" and len(args) == 1:
+            return f"panic({_expr(args[0])})"
         if name in {
             "countOnes",
             "__countOnes",

@@ -33,8 +33,6 @@ from astra.parser import ParseError, parse
 from astra.semantic import BUILTIN_SIGS, SemanticError, analyze
 KEYWORDS = [
     "fn",
-    "let",
-    "fixed",
     "return",
     "if",
     "else",
@@ -57,7 +55,7 @@ KEYWORDS = [
     "none",
 ]
 SNIPPETS = {
-    "fn": "fn ${1:name}(${2}) -> ${3:Int} {\n    ${0}\n}",
+    "fn": "fn ${1:name}(${2}) ${3:Int} {\n    ${0}\n}",
     "struct": "struct ${1:Name} {\n    ${2:field} ${3:Int},\n}",
     "enum": "enum ${1:Name} {\n    ${2:Variant},\n}",
     "match": "match ${1:value} {\n    ${2:pattern} => {\n        ${0}\n    },\n}",
@@ -65,8 +63,7 @@ SNIPPETS = {
     "while": "while ${1:cond} {\n    ${0}\n}",
     "if": "if ${1:cond} {\n    ${0}\n}",
     "return": "return ${0};",
-    "let": "let ${1:name} = ${0};",
-    "fixed": "fixed ${1:name} = ${0};",
+    "mut": "mut ${1:name} = ${0};",
 }
 _NO_MSG = object()
 _SEVERITY_MAP = {
@@ -269,7 +266,7 @@ def _decl_symbols(prog: Any, uri: str) -> list[SymbolInfo]:
                     kind=12,
                     line=item.line,
                     col=item.col,
-                    detail=f"fn {item.name}({sig}) -> {item.ret}",
+                    detail=f"fn {item.name}({sig}) {item.ret}",
                     uri=uri,
                     doc=item.doc,
                 )
@@ -600,7 +597,7 @@ class LSPServer:
         if symbol in BUILTIN_SIGS:
             sig = BUILTIN_SIGS[symbol]
             args = ", ".join(sig.args or ["..."])
-            return {"contents": {"kind": "markdown", "value": f"`builtin {symbol}({args}) -> {sig.ret}`"}}
+            return {"contents": {"kind": "markdown", "value": f"`builtin {symbol}({args}) {sig.ret}`"}}
         return {"contents": {"kind": "markdown", "value": f"Astra symbol `{symbol}`"}}
     def _completion(self, uri: str, line0: int, col0: int) -> list[dict[str, Any]]:
         doc = self.docs.get(uri)
@@ -685,7 +682,7 @@ class LSPServer:
         if sig_label is None and fn_name in BUILTIN_SIGS:
             bs = BUILTIN_SIGS[fn_name]
             params = bs.args or []
-            sig_label = f"{fn_name}({', '.join(params)}) -> {bs.ret}"
+            sig_label = f"{fn_name}({', '.join(params)}) {bs.ret}"
         if sig_label is None:
             return None
         return {

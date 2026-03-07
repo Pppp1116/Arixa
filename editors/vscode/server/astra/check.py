@@ -97,11 +97,14 @@ _EXPECTS_ARGS_RE = re.compile(r"\bexpects (\d+) args, got (\d+)\b")
 _EXPECTS_ARGUMENT_RE = re.compile(r"\bexpects (\d+) arguments?\b")
 _EXPECTS_AT_LEAST_RE = re.compile(r"\bexpects at least (.+)$")
 _FREESTANDING_BUILTIN_RE = re.compile(r"\bfreestanding mode forbids builtin ([A-Za-z_][A-Za-z0-9_]*)\b")
-_NO_MATCHING_IMPL_RE = re.compile(r"^no matching impl for ([A-Za-z_][A-Za-z0-9_]*)\((.*)\)$")
-_ENTRY_SIG_RE = re.compile(r"^(main|_start)\(\) (must not take parameters|must return Int|cannot be declared with impl)$")
+_NO_MATCHING_IMPL_RE = re.compile(r"^no matching overload for ([A-Za-z_][A-Za-z0-9_]*)\((.*)\)$")
+_ENTRY_SIG_RE = re.compile(r"^(main|_start)\(\) (must not take parameters|must return Int)$")
 _UNKNOWN_FIELD_RE = re.compile(r"\bunknown field ([A-Za-z_][A-Za-z0-9_]*)\b")
 _MISSING_FIELD_RE = re.compile(r"\bmissing field ([A-Za-z_][A-Za-z0-9_]*)\b")
 _EXPECTED_GOT_RE = re.compile(r"^expected (.+), got (.+)$")
+_NON_EXHAUSTIVE_ENUM_RE = re.compile(
+    r"^non-exhaustive match for enum ([A-Za-z_][A-Za-z0-9_]*)(?:;\s*missing variants:\s*(.+))?$"
+)
 
 # Cached source text used for richer snippet rendering in format_diagnostic().
 _SOURCE_CACHE: dict[str, str] = {}
@@ -448,7 +451,7 @@ def _code_for(phase: str, message: str) -> str:
             return "E0203"
         if "missing field" in m:
             return "E0204"
-        if "cannot assign to fixed binding" in m:
+        if "cannot assign to immutable binding" in m:
             return "E0104"
         if "assignment to undefined name" in m:
             return "E0200"
@@ -545,6 +548,12 @@ def _friendly_message_for(message: str, code: str) -> str:
 
     if message.startswith("non-exhaustive match for Bool"):
         return "non-exhaustive `match` for `Bool`"
+    non_exhaustive_enum = _NON_EXHAUSTIVE_ENUM_RE.match(message)
+    if non_exhaustive_enum is not None:
+        enum_name, missing_variants = non_exhaustive_enum.groups()
+        if missing_variants:
+            return f"non-exhaustive `match` for enum `{enum_name}` (missing: {missing_variants})"
+        return f"non-exhaustive `match` for enum `{enum_name}`"
 
     no_impl = _NO_MATCHING_IMPL_RE.match(message)
     if no_impl is not None:
@@ -557,8 +566,8 @@ def _friendly_message_for(message: str, code: str) -> str:
     if message.startswith("continue used outside loop"):
         return "`continue` can only be used inside a loop"
 
-    if message.startswith("cannot assign to fixed binding "):
-        name = message.removeprefix("cannot assign to fixed binding ").strip()
+    if message.startswith("cannot assign to immutable binding "):
+        name = message.removeprefix("cannot assign to immutable binding ").strip()
         return f"cannot assign to immutable binding `{name}`"
 
     entry_sig = _ENTRY_SIG_RE.match(message)
@@ -568,7 +577,7 @@ def _friendly_message_for(message: str, code: str) -> str:
             return f"`{name}` must not take parameters"
         if requirement == "must return Int":
             return "`main` must return `Int`"
-        return f"`{name}` cannot be declared with `impl`"
+        return f"`{name}` has an invalid entrypoint declaration"
 
     field_m = _UNKNOWN_FIELD_RE.search(message)
     if field_m is not None:
@@ -591,8 +600,8 @@ def _notes_for(message: str) -> list[DiagNote]:
         out.append(DiagNote(message=f"context: {context}"))
         out.append(DiagNote(message=f"expected: {expected}"))
         out.append(DiagNote(message=f"found: {got}"))
-    if "cannot assign to fixed binding" in message:
-        out.append(DiagNote(message="in Astra, `fixed` bindings are immutable after initialization"))
+    if "cannot assign to immutable binding" in message:
+        out.append(DiagNote(message="in Astra, bindings are immutable unless declared with `mut`"))
     if "mixed int/float" in message:
         out.append(DiagNote(message="Astra does not perform implicit numeric widening between Int and Float"))
     if "cannot resolve import" in message:
@@ -656,7 +665,7 @@ def _suggestions_for(
         out.append(DiagSuggestion(message="use an explicit cast with `as`, for example `x as Float` or `y as Int`"))
 
     if "missing main()" in m:
-        out.append(DiagSuggestion(message="add `fn main() -> Int { ... }` as the program entrypoint"))
+        out.append(DiagSuggestion(message="add `fn main() Int { ... }` as the program entrypoint"))
 
     if "missing _start()" in m:
         out.append(DiagSuggestion(message="add `fn _start() { ... }` for freestanding executable builds"))
@@ -669,7 +678,7 @@ def _suggestions_for(
         elif requirement == "must not take parameters":
             out.append(DiagSuggestion(message=f"remove all parameters from `{name}`"))
         else:
-            out.append(DiagSuggestion(message=f"remove `impl` from `{name}`; entrypoints must be plain functions"))
+            out.append(DiagSuggestion(message=f"entrypoints must be plain functions"))
 
     if "break used outside loop" in m:
         out.append(DiagSuggestion(message="move `break` inside a `while` or `for` loop"))
@@ -738,6 +747,8 @@ def _suggestions_for(
 
     if "non-exhaustive match for bool" in m:
         out.append(DiagSuggestion(message="add the missing `false`/`true` arm, or add a trailing wildcard `_ => { ... }` arm"))
+    if "non-exhaustive match for enum " in m:
+        out.append(DiagSuggestion(message="add arms for the remaining enum variants, or add a trailing wildcard `_ => { ... }` arm"))
 
     if "wildcard match arm must be last" in m:
         out.append(DiagSuggestion(message="move `_ => ...` to the end of the match arms"))
@@ -785,7 +796,7 @@ def _borrow_related_name(message: str) -> str | None:
 
 
 def _find_binding_declaration_span(lines: list[str], filename: str, start_line: int, name: str) -> DiagSpan | None:
-    decl_re = re.compile(rf"\b(?:let|fixed)\s+(?:mut\s+)?({re.escape(name)})\b")
+    decl_re = re.compile(rf"\b(?:mut\s+)?({re.escape(name)})\s*(?::[^=;]+)?=")
     for idx in range(min(start_line - 2, len(lines) - 1), -1, -1):
         m = decl_re.search(lines[idx])
         if m is None:
@@ -798,13 +809,16 @@ def _find_binding_declaration_span(lines: list[str], filename: str, start_line: 
 def _find_enclosing_fn_return_span(lines: list[str], filename: str, start_line: int) -> DiagSpan | None:
     for idx in range(min(start_line - 1, len(lines) - 1), -1, -1):
         line = lines[idx]
-        if "fn " not in line or "->" not in line:
+        if "fn " not in line:
             continue
-        ret_match = re.search(r"->\s*([A-Za-z_][A-Za-z0-9_<>&\[\], ]*)", line)
-        if ret_match is None:
+        # Look for return type after ) in current syntax: fn name(params) ReturnType {
+        fn_match = re.search(r"fn\s+\w+\s*\([^)]*\)\s+([A-Za-z_][A-Za-z0-9_<>&\[\], ]*)\s*{", line)
+        if fn_match is None:
             continue
-        typ = ret_match.group(1).strip()
-        c1 = ret_match.start(1) + 1
+        typ = fn_match.group(1).strip()
+        if not typ:
+            continue
+        c1 = fn_match.start(1) + 1
         c2 = c1 + max(1, len(typ))
         return DiagSpan(filename, idx + 1, c1, idx + 1, c2)
     return None
@@ -835,7 +849,7 @@ def _refine_primary_span(message: str, span: DiagSpan, source_text: str | None) 
         if name_span is not None:
             return name_span
 
-    assign_m = re.search(r"cannot assign to fixed binding ([A-Za-z_][A-Za-z0-9_]*)", message)
+    assign_m = re.search(r"cannot assign to immutable binding ([A-Za-z_][A-Za-z0-9_]*)", message)
     if assign_m is not None:
         name_span = _name_span(span, assign_m.group(1), source_text)
         if name_span is not None:
@@ -966,7 +980,7 @@ def _known_call_arities_from_source(source: str) -> dict[str, set[int]]:
         base = name.removeprefix("__")
         if sig.args is not None:
             out.setdefault(base, set()).add(len(sig.args))
-    for m in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*->", source):
+    for m in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s+([A-Za-z_][A-Za-z0-9_<>&\[\], ]*)\s*{", source):
         name = m.group(1)
         params = m.group(2).strip()
         count = 0 if not params else len([p for p in params.split(",") if p.strip()])

@@ -37,15 +37,6 @@ _TRAITS_STACK: list[dict[str, TraitDecl]] = [{}]
 _FN_GROUPS_STACK: list[dict[str, list[FnDecl | ExternFnDecl]]] = [{}]
 
 
-def _is_option_type(typ: Any) -> bool:
-    t = type_text(typ)
-    return t.startswith("Option<") and t.endswith(">")
-
-
-def _option_inner(typ: Any) -> str:
-    t = type_text(typ)
-    return t[7:-1]
-
 
 def _parse_parametric_type(typ: Any) -> tuple[str, list[str]] | None:
     t = type_text(typ).strip()
@@ -61,24 +52,6 @@ def _parse_parametric_type(typ: Any) -> tuple[str, list[str]] | None:
         return None
     return base, args
 
-
-def _is_result_type(typ: Any) -> bool:
-    parsed = _parse_parametric_type(typ)
-    return parsed is not None and parsed[0] == "Result" and len(parsed[1]) == 2
-
-
-def _result_ok_inner(typ: Any) -> str:
-    parsed = _parse_parametric_type(typ)
-    if parsed is None or parsed[0] != "Result" or len(parsed[1]) != 2:
-        return "Any"
-    return parsed[1][0]
-
-
-def _result_err_inner(typ: Any) -> str:
-    parsed = _parse_parametric_type(typ)
-    if parsed is None or parsed[0] != "Result" or len(parsed[1]) != 2:
-        return "Any"
-    return parsed[1][1]
 
 
 def _union_members(typ: Any) -> list[str]:
@@ -210,10 +183,6 @@ def _canonical_type(typ: Any) -> str:
         return _normalize_union(_split_top_level(t, "|"))
     if t == "Bytes":
         return "Vec<u8>"
-    if _is_option_type(t):
-        return f"Option<{_canonical_type(_option_inner(t))}>"
-    if _is_result_type(t):
-        return f"Result<{_canonical_type(_result_ok_inner(t))}, {_canonical_type(_result_err_inner(t))}>"
     if t.startswith("&mut "):
         return f"&mut {_canonical_type(t[5:])}"
     if t.startswith("&"):
@@ -305,7 +274,7 @@ def _is_gpu_safe_type(typ: str, structs: dict[str, StructDecl], *, seen: set[str
         return inner is not None and _is_gpu_safe_type(inner, structs, seen=seen)
     if c in {"String", "str", "Any"}:
         return False
-    if _is_option_type(c) or _is_result_type(c) or _is_vec_type(c) or _is_slice_type(c):
+    if _is_vec_type(c) or _is_slice_type(c):
         return False
     if c.startswith("fn(") or c.startswith("unsafe fn("):
         return False
@@ -838,10 +807,6 @@ def _same_type(expected: str, actual: str) -> bool:
         return True
     if expected.startswith("&") and not expected.startswith("&mut ") and actual.startswith("&mut "):
         return _same_type(expected[1:], actual[5:])
-    if _is_option_type(expected) and _is_option_type(actual):
-        return _same_type(_option_inner(expected), _option_inner(actual))
-    if _is_option_type(expected) and not _is_option_type(actual):
-        return _same_type(_option_inner(expected), actual)
     exp_param = _parse_parametric_type(expected)
     act_param = _parse_parametric_type(actual)
     if exp_param is not None and act_param is not None:
@@ -872,7 +837,7 @@ def _same_type(expected: str, actual: str) -> bool:
 
 def _require_type(filename: str, line: int, col: int, expected: str, actual: str, what: str):
     if actual == NONE_LIT_TYPE:
-        if _is_option_type(expected) or _is_nullable_union(expected):
+        if _is_nullable_union(expected):
             return
         raise SemanticError(_diag(filename, line, col, f"`none` requires nullable context for {what}, got {expected}"))
     if not _same_type(expected, actual):
@@ -934,7 +899,6 @@ def _is_any_dynamic_cast_target(typ: str) -> bool:
         or _is_numeric_scalar_type(c)
         or _is_gpu_memory_type(c)
         or _is_ref_type(c)
-        or _is_option_type(c)
         or _is_vec_type(c)
         or _is_slice_type(c)
         or c.startswith("fn(")
@@ -1182,10 +1146,10 @@ def _parse_fn_type(typ: str) -> tuple[list[str], str, bool] | None:
                 break
     if close < 0 or depth != 0:
         return None
-    if close + 4 > len(t) or t[close + 1 : close + 5] != " -> ":
+    if close + 1 > len(t) or t[close + 1] != " ":
         return None
     params_text = t[3:close].strip()
-    ret = t[close + 5 :].strip()
+    ret = t[close + 1:].strip()
     if not ret:
         return None
     if not params_text:
@@ -1195,7 +1159,7 @@ def _parse_fn_type(typ: str) -> tuple[list[str], str, bool] | None:
 
 def _fn_type(params: list[tuple[str, str]], ret: str, *, unsafe: bool = False) -> str:
     head = "unsafe fn" if unsafe else "fn"
-    return f"{head}({', '.join(ty for _, ty in params)}) -> {ret}"
+    return f"{head}({', '.join(ty for _, ty in params)}) {ret}"
 
 
 def _is_send_type(
@@ -1218,8 +1182,6 @@ def _is_send_type(
     if _is_gpu_memory_type(c):
         inner = _gpu_element_type(c)
         return inner is not None and _is_send_type(inner, structs, seen=seen)
-    if _is_option_type(c):
-        return _is_send_type(_option_inner(c), structs, seen=seen)
     if _is_vec_type(c):
         return _is_send_type(_vec_inner(c), structs, seen=seen)
     if _is_slice_type(c):
@@ -1259,8 +1221,6 @@ def _is_sync_type(
     if _is_gpu_memory_type(c):
         inner = _gpu_element_type(c)
         return inner is not None and _is_sync_type(inner, structs, seen=seen)
-    if _is_option_type(c):
-        return _is_sync_type(_option_inner(c), structs, seen=seen)
     if _is_vec_type(c):
         # Vec<T> is mutable by design and not Sync without synchronization.
         return False
@@ -3326,7 +3286,7 @@ def _infer(
             _require_freestanding_builtin_allowed(e.value, filename, e.line, e.col)
             if sig.args is None:
                 return _typed(e, "Any")
-            return _typed(e, f"fn({', '.join(sig.args)}) -> {sig.ret}")
+            return _typed(e, f"fn({', '.join(sig.args)}) {sig.ret}")
         raise SemanticError(_diag(filename, e.line, e.col, f"undefined name {e.value}"))
     if isinstance(e, SizeOfTypeExpr):
         try:
@@ -3403,19 +3363,6 @@ def _infer(
             setattr(e, "try_kind", "union")
             setattr(e, "try_error_types", err_tys)
             return _typed(e, ok_ty)
-        if _is_option_type(src_c):
-            if not _is_option_type(fn_ret):
-                raise SemanticError(_diag(filename, e.line, e.col, f"`!` on Option<T> requires function return Option<U>, got {fn_ret or '<unknown>'}"))
-            _require_type(filename, e.line, e.col, fn_ret, src_c, "! operand")
-            setattr(e, "try_kind", "option")
-            return _typed(e, _option_inner(src_c))
-        if _is_result_type(src_c):
-            if not _is_result_type(fn_ret):
-                raise SemanticError(_diag(filename, e.line, e.col, f"`!` on Result<T, E> requires function return Result<U, E>, got {fn_ret or '<unknown>'}"))
-            _require_type(filename, e.line, e.col, _result_err_inner(fn_ret), _result_err_inner(src_c), "result error type")
-            setattr(e, "try_kind", "result")
-            setattr(e, "try_error_type", _result_err_inner(src_c))
-            return _typed(e, _result_ok_inner(src_c))
         raise SemanticError(_diag(filename, e.line, e.col, f"`!` expects a fallible union operand, got {src_ty}"))
     if isinstance(e, Unary):
         if e.op in {"&", "&mut"}:
@@ -3467,6 +3414,9 @@ def _infer(
         return _typed(e, dst)
     if isinstance(e, Binary):
         l = _infer(e.left, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
+        # For 'is' operator, right side is a type name, not an expression to infer
+        if e.op == "is":
+            return _typed(e, "Bool")
         r = _infer(e.right, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
         l_eff = _strip_ref(l)
         r_eff = _strip_ref(r)
@@ -3492,8 +3442,6 @@ def _infer(
             elif (_is_int_type(l_eff) and _is_float_type(r_eff)) or (_is_float_type(l_eff) and _is_int_type(r_eff)):
                 raise SemanticError(_diag(filename, e.line, e.col, f"mixed int/float comparison requires explicit cast for operator {e.op}"))
             return _typed(e, "Bool")
-        if e.op == "is":
-            return _typed(e, "Bool")
         if e.op in {"&&", "||"}:
             _require_type(filename, e.line, e.col, "Bool", l, f"{e.op} left operand")
             _require_type(filename, e.line, e.col, "Bool", r, f"{e.op} right operand")
@@ -3501,10 +3449,6 @@ def _infer(
         if e.op == "??":
             if l == NONE_LIT_TYPE:
                 return _typed(e, r)
-            if _is_option_type(l):
-                inner = _option_inner(l)
-                _require_type(filename, e.line, e.col, inner, r, "?? right operand")
-                return _typed(e, inner)
             if not _is_nullable_union(l):
                 raise SemanticError(_diag(filename, e.line, e.col, "left operand of ?? must be nullable"))
             inner = _remove_none_from_union(l)
@@ -3547,7 +3491,7 @@ def _infer(
                 ret = enum_decl.name
                 if enum_decl.generics:
                     ret = f"{enum_decl.name}<{', '.join('Any' for _ in enum_decl.generics)}>"
-                return _typed(e, f"fn({', '.join(payload)}) -> {ret}")
+                return _typed(e, f"fn({', '.join(payload)}) {ret}")
             ret = enum_decl.name
             if enum_decl.generics:
                 ret = f"{enum_decl.name}<{', '.join('Any' for _ in enum_decl.generics)}>"
@@ -3560,7 +3504,7 @@ def _infer(
                 if fname == e.field:
                     return _typed(e, fty)
         if _is_gpu_memory_type(base_ty) and e.field == "len":
-            return _typed(e, "fn() -> Int")
+            return _typed(e, "fn() Int")
         return _typed(e, "Any")
     if isinstance(e, ArrayLit):
         if not e.elements:
@@ -3867,7 +3811,7 @@ def _infer_call(
             if not _is_vec_type(src_ty):
                 raise SemanticError(_diag(filename, e.args[0].line, e.args[0].col, f"{name} expects Vec<T>, got {src_ty}"))
             _require_type(filename, e.args[1].line, e.args[1].col, "Int", arg_types[1], f"arg 1 for {name}")
-            return f"Option<{_vec_inner(src_ty)}>"
+            return f"{_vec_inner(src_ty)}?"
         if builtin_base == "vec_set":
             if len(e.args) != 3:
                 raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects 3 args, got {len(e.args)}"))
@@ -4067,9 +4011,9 @@ def _infer_call(
             _require_type(filename, e.args[0].line, e.args[0].col, "Int", arg_types[0], "arg 0 for get")
             base_ty = _strip_ref(_canonical_type(obj_ty))
             if _is_slice_type(base_ty):
-                return f"Option<{_slice_inner(base_ty)}>"
+                return f"{_slice_inner(base_ty)}?"
             if _is_vec_type(base_ty):
-                return f"Option<{_vec_inner(base_ty)}>"
+                return f"{_vec_inner(base_ty)}?"
         if e.fn.field == "len":
             if len(e.args) != 0:
                 raise SemanticError(_diag(filename, e.line, e.col, "len expects 0 args"))

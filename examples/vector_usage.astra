@@ -7,7 +7,7 @@ fn main() Int{
     drop vec_push(v, 5);
 
     n = vec_len(v);
-    first: Option<Int> = vec_get(v, 0);
+    first: Int? = vec_get(v, 0);
     total = (first ?? 0) + n;
     print(total);
     return 0;

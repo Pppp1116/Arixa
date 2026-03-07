@@ -62,7 +62,7 @@ KEYWORDS = [
 ]
 
 SNIPPETS = {
-    "fn": "fn ${1:name}(${2}) -> ${3:Int} {\n    ${0}\n}",
+    "fn": "fn ${1:name}(${2}) ${3:Int} {\n    ${0}\n}",
     "struct": "struct ${1:Name} {\n    ${2:field} ${3:Int},\n}",
     "enum": "enum ${1:Name} {\n    ${2:Variant},\n}",
     "match": "match ${1:value} {\n    ${2:pattern} => {\n        ${0}\n    },\n}",
@@ -312,7 +312,7 @@ def _decl_symbols(prog: Any, uri: str) -> list[SymbolInfo]:
                     kind=12,
                     line=item.line,
                     col=item.col,
-                    detail=f"fn {item.name}({sig}) -> {item.ret}",
+                    detail=f"fn {item.name}({sig}) {item.ret}",
                     uri=uri,
                     doc=item.doc,
                 )
@@ -760,7 +760,7 @@ class LSPServer:
         if sig_label is None and fn_name in BUILTIN_SIGS:
             bs = BUILTIN_SIGS[fn_name]
             params = bs.args or []
-            sig_label = f"{fn_name}({', '.join(params)}) -> {bs.ret}"
+            sig_label = f"{fn_name}({', '.join(params)}) {bs.ret}"
         if sig_label is None:
             return None
 

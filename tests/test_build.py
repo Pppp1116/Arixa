@@ -223,7 +223,7 @@ def test_build_strict_mode_accepts_try_operator(tmp_path: Path):
     out = tmp_path / "strict_try.py"
     src.write_text(
         """
-fn helper(v Option<Int>) Option<Int>{
+fn helper(v Int?) Int?{
   x = v!;
   return x;
 }
@@ -236,22 +236,18 @@ fn main() Int{
     assert st in {"built", "cached"}
 
 
-def test_build_strict_mode_accepts_result_try_operator(tmp_path: Path):
-    src = tmp_path / "strict_try_result.astra"
-    out = tmp_path / "strict_try_result.py"
+def test_build_strict_mode_accepts_union_try_operator(tmp_path: Path):
+    src = tmp_path / "strict_try_union.astra"
+    out = tmp_path / "strict_try_union.py"
     src.write_text(
         """
-enum Result<T, E> {
-  Ok(T),
-  Err(E),
+fn helper(v Int) Int | Int{
+  if v > 0 { return v; } else {}
+  return 1;
 }
-fn helper(v Int) Result<Int, Int>{
-  if v > 0 { return Result.Ok(v); } else {}
-  return Result.Err(1);
-}
-fn wrap(v Int) Result<Int, Int>{
+fn wrap(v Int) Int | Int{
   x = helper(v)!;
-  return Result.Ok(x);
+  return x;
 }
 fn main() Int{
   _ = wrap(1);
@@ -453,7 +449,7 @@ fn _start() Int{
   mut v: Vec<Int> = vec_new() as Vec<Int>;
   drop vec_push(v, 40);
   drop vec_push(v, 2);
-  got: Option<Int> = vec_get(v, 1);
+  got: Int? = vec_get(v, 1);
   drop vec_set(v, 0, 1);
   return vec_len(v) + (got ?? 0);
 }
@@ -575,8 +571,8 @@ def test_build_native_supports_array_index_get_and_coalesce(tmp_path: Path):
         """
 fn main() Int{
   a = [10, 20, 30][1];
-  b: Option<Int> = [1, 2, 3].get(2);
-  c: Option<Int> = [1, 2].get(9);
+  b: Int? = [1, 2, 3].get(2);
+  c: Int? = [1, 2].get(9);
   return a + (b ?? 0) + (c ?? 7);
 }
 """

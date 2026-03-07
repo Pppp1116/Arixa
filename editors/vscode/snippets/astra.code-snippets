@@ -2,7 +2,7 @@
   "Function": {
     "prefix": "fn",
     "body": [
-      "fn ${1:name}(${2:arg}: ${3:Int}) -> ${4:Void} {",
+      "fn ${1:name}(${2:arg}: ${3:Int}) ${4:Void} {",
       "    ${0}",
       "}"
     ],

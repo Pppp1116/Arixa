@@ -1,5 +1,4 @@
 """Compile-time evaluator for `comptime` blocks and constant execution."""
-
 from __future__ import annotations
 
 import copy
@@ -13,14 +12,22 @@ from astra.layout import LayoutError, canonical_type, layout_of_type
 
 class ComptimeError(Exception):
     """Error type raised by the comptime subsystem.
-    
+
     This type is part of Astra's public compiler/tooling surface.
     """
-    pass
+
+    def __init__(self, message: str, *, span: tuple[str, int, int] | None = None):
+        super().__init__(message)
+        self.span = span
 
 
 def _diag(filename: str, line: int, col: int, msg: str) -> str:
     return f"SEM {filename}:{line}:{col}: comptime: {msg}"
+
+
+def _diag_with_span(filename: str, line: int, col: int, msg: str) -> tuple[str, tuple[str, int, int]]:
+    """Return (message, span) for richer error construction."""
+    return f"SEM {filename}:{line}:{col}: comptime: {msg}", (filename, line, col)
 
 
 def _ast_of(v, node) -> Any:
@@ -68,10 +75,42 @@ class _Evaluator:
             "tcp_send",
             "tcp_recv",
             "tcp_close",
+            "tcp_connect_timeout",
+            "tcp_set_nonblocking",
+            "tcp_recv_timeout",
+            "tcp_listen",
+            "tcp_accept",
             "proc_run",
             "proc_exit",
             "env_get",
             "cwd",
+            "now_unix",
+            "monotonic_ms",
+            "sleep_ms",
+            "sleep_until",
+            "join_timeout",
+            "chan_send_timeout",
+            "chan_recv_timeout",
+            "mutex_try_lock",
+            "hkdf_sha256",
+            "aead_encrypt",
+            "aead_decrypt",
+            "__now_unix",
+            "__monotonic_ms",
+            "__sleep_ms",
+            "__sleep_until",
+            "__join_timeout",
+            "__tcp_connect_timeout",
+            "__tcp_set_nonblocking",
+            "__tcp_recv_timeout",
+            "__tcp_listen",
+            "__tcp_accept",
+            "__chan_send_timeout",
+            "__chan_recv_timeout",
+            "__mutex_try_lock",
+            "__hkdf_sha256",
+            "__aead_encrypt",
+            "__aead_decrypt",
         }
 
     def _tick(self, node):
@@ -256,6 +295,8 @@ class _Evaluator:
             raise ComptimeError(_diag(self.filename, e.line, e.col, "field access only supported for map-like values"))
         if isinstance(e, AwaitExpr):
             return self.eval_expr(e.expr, env, env_types)
+        if isinstance(e, TryExpr):
+            raise ComptimeError(_diag(self.filename, e.line, e.col, "`!` is not supported in comptime expressions"))
         if isinstance(e, Call):
             args = [self.eval_expr(a, env, env_types) for a in e.args]
             name = self._call_target_name(e.fn, env, env_types, e)
@@ -356,7 +397,6 @@ class _Evaluator:
             return bool(l) or bool(r)
         if op in {"==", "!="}:
             return (l == r) if op == "==" else (l != r)
-
         if _is_plain_int(l) and _is_plain_int(r):
             ty = int_ty or "Int"
             bits, signed = _int_props(ty)
@@ -413,7 +453,6 @@ class _Evaluator:
                 if op == ">":
                     return lv_cmp > rv_cmp
                 return lv_cmp >= rv_cmp
-
         if op == "+":
             return l + r
         if op == "-":
@@ -465,6 +504,15 @@ class _Evaluator:
         else:
             raise ComptimeError(_diag(self.filename, node.line, node.col, f"cannot cast to {ty}"))
         return _truncate_int(iv, bits, signed)
+
+    def _match_pattern(self, pat: Any, subj: object, env: dict[str, object], env_types: dict[str, str]) -> bool:
+        if isinstance(pat, WildcardPattern):
+            return True
+        if isinstance(pat, OrPattern):
+            return any(self._match_pattern(p, subj, env, env_types) for p in pat.patterns)
+        if isinstance(pat, GuardedPattern):
+            return self._match_pattern(pat.pattern, subj, env, env_types) and bool(self.eval_expr(pat.guard, env, env_types))
+        return subj == self.eval_expr(pat, env, env_types)
 
     def exec_stmt(self, st, env, env_types: dict[str, str]):
         self._tick(st)
@@ -520,8 +568,7 @@ class _Evaluator:
         if isinstance(st, MatchStmt):
             subj = self.eval_expr(st.expr, env, env_types)
             for pat, body in st.arms:
-                pv = self.eval_expr(pat, env, env_types)
-                if subj != pv:
+                if not self._match_pattern(pat, subj, env, env_types):
                     continue
                 for s in body:
                     sig = self.exec_stmt(s, env, env_types)
@@ -687,6 +734,9 @@ def _collect_runtime_name_uses_expr(expr: Any, out: set[str]) -> None:
     if isinstance(expr, AwaitExpr):
         _collect_runtime_name_uses_expr(expr.expr, out)
         return
+    if isinstance(expr, TryExpr):
+        _collect_runtime_name_uses_expr(expr.expr, out)
+        return
     if isinstance(expr, Call):
         _collect_runtime_name_uses_expr(expr.fn, out)
         for a in expr.args:
@@ -698,6 +748,14 @@ def _collect_runtime_name_uses_expr(expr: Any, out: set[str]) -> None:
         return
     if isinstance(expr, FieldExpr):
         _collect_runtime_name_uses_expr(expr.obj, out)
+        return
+    if isinstance(expr, OrPattern):
+        for p in expr.patterns:
+            _collect_runtime_name_uses_expr(p, out)
+        return
+    if isinstance(expr, GuardedPattern):
+        _collect_runtime_name_uses_expr(expr.pattern, out)
+        _collect_runtime_name_uses_expr(expr.guard, out)
         return
     if isinstance(expr, ArrayLit):
         for e in expr.elements:
@@ -771,12 +829,12 @@ def _collect_runtime_name_uses(stmts: list[Any]) -> set[str]:
 
 def run_comptime(prog: Program, filename: str = "<input>", overflow_mode: str = "trap") -> dict[str, object]:
     """Evaluate compile-time blocks and rewrite AST values with results.
-    
+
     Parameters:
         prog: Program AST to read or mutate.
         filename: Filename context used for diagnostics or path resolution.
         overflow_mode: Integer overflow behavior mode requested by the caller.
-    
+
     Returns:
         Value described by the function return annotation.
     """
@@ -784,6 +842,7 @@ def run_comptime(prog: Program, filename: str = "<input>", overflow_mode: str = 
     structs = {item.name: item for item in prog.items if isinstance(item, StructDecl)}
     evaluator = _Evaluator(fn_map, structs, filename=filename, overflow_mode=overflow_mode)
     const_pool: dict[str, object] = {}
+
     for item in prog.items:
         if not isinstance(item, FnDecl):
             continue

@@ -656,7 +656,7 @@ def _suggestions_for(
         out.append(DiagSuggestion(message="use an explicit cast with `as`, for example `x as Float` or `y as Int`"))
 
     if "missing main()" in m:
-        out.append(DiagSuggestion(message="add `fn main() -> Int { ... }` as the program entrypoint"))
+        out.append(DiagSuggestion(message="add `fn main() Int { ... }` as the program entrypoint"))
 
     if "missing _start()" in m:
         out.append(DiagSuggestion(message="add `fn _start() { ... }` for freestanding executable builds"))

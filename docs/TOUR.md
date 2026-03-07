@@ -6,7 +6,7 @@ This is a short, runnable tour of core Astra features.
 
 ```astra
 fn add(a Int, b Int) Int{
-  let sum = a + b;
+  sum = a + b;
   return sum;
 }
 
@@ -19,7 +19,7 @@ fn main() Int{
 
 ```astra
 fn main() Int{
-  let mut total = 0;
+  mut total = 0;
   for i in 1..=5 {
     total += i;
   }
@@ -31,10 +31,10 @@ fn main() Int{
 
 ```astra
 fn main() Int{
-  let mut v: Vec<Int> = vec_new() as Vec<Int>;
+  mut v: Vec<Int> = vec_new() as Vec<Int>;
   drop vec_push(v, 4);
   drop vec_push(v, 5);
-  let mut sum = 0;
+  mut sum = 0;
   for x in v {
     sum += x;
   }
@@ -46,8 +46,8 @@ fn main() Int{
 
 ```astra
 fn main() Int{
-  let maybe: Option<Int> = none;
-  let value = maybe ?? 7;
+  maybe: Option<Int> = none;
+  value = maybe ?? 7;
   return value;
 }
 ```
@@ -56,7 +56,7 @@ fn main() Int{
 
 ```astra
 fn main() Int{
-  let ok = true;
+  ok = true;
   match ok {
     true => { return 1; }
     _ => { return 0; }
@@ -70,7 +70,7 @@ fn main() Int{
 struct Point { x Int, y Int }
 
 fn main() Int{
-  let p = Point(3, 4);
+  p = Point(3, 4);
   return p.x + p.y;
 }
 ```

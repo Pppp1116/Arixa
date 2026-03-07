@@ -33,8 +33,8 @@ Requirements:
 
 ```astra
 fn main() Int{
-    print("hello, astra")
-    return 0
+    print("hello, astra");
+    return 0;
 }
 ```
 

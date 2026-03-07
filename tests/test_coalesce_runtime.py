@@ -9,7 +9,7 @@ fn side() Int{
 }
 
 fn main() Int{
-  x: Option<Int> = 1;
+  x: Int? = 1;
   y = x ?? side();
   return y;
 }
@@ -33,7 +33,7 @@ fn side() Int{
 }
 
 fn main() Int{
-  x: Option<Int> = none;
+  x: Int? = none;
   y = x ?? side();
   return y;
 }

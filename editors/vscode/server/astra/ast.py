@@ -52,12 +52,13 @@ class FnDecl:
     params: list[tuple[str, str]]
     ret: str
     body: list[Any]
-    is_impl: bool = False
     pub: bool = False
     async_fn: bool = False
     unsafe: bool = False
     symbol: str = ""
     doc: str = ""
+    where_bounds: list[tuple[str, str]] = field(default_factory=list)
+    gpu_kernel: bool = False
     pos: int = 0
     line: int = 0
     col: int = 0
@@ -101,7 +102,7 @@ class ExternFnDecl:
 
 @dataclass
 class LetStmt:
-    """AST node representing let stmt.
+    """AST node representing binding declaration stmt.
     
     This type is part of Astra's public compiler/tooling surface.
     """
@@ -112,7 +113,9 @@ class LetStmt:
     pos: int = 0
     line: int = 0
     col: int = 0
-    fixed: bool = False
+    # For `x = ...` (without `mut`/`set`), semantic analysis decides whether this
+    # is a declaration or reassignment (dual mode) based on prior bindings.
+    reassign_if_exists: bool = False
 
 
 @dataclass
@@ -187,6 +190,7 @@ class AssignStmt:
     pos: int = 0
     line: int = 0
     col: int = 0
+    explicit_set: bool = False
 
 
 @dataclass
@@ -213,6 +217,7 @@ class StructDecl:
     generics: list[str]
     fields: list[tuple[str, str]]
     methods: list[Any]
+    derives: list[str] = field(default_factory=list)
     pub: bool = False
     packed: bool = False
     doc: str = ""
@@ -230,6 +235,7 @@ class EnumDecl:
     name: str
     generics: list[str]
     variants: list[tuple[str, list[str]]]
+    derives: list[str] = field(default_factory=list)
     pub: bool = False
     doc: str = ""
     pos: int = 0
@@ -246,6 +252,18 @@ class TypeAliasDecl:
     name: str
     generics: list[str]
     target: str
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class TraitDecl:
+    """AST node representing trait declaration."""
+    name: str
+    methods: list[tuple[str, list[tuple[str, str]], str]]
+    pub: bool = False
+    doc: str = ""
     pos: int = 0
     line: int = 0
     col: int = 0
@@ -439,8 +457,45 @@ class WildcardPattern:
 
 
 @dataclass
+class OrPattern:
+    """AST node representing `p1 | p2 | ...` match pattern alternatives.
+
+    This type is part of Astra's public compiler/tooling surface.
+    """
+    patterns: list[Any]
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class GuardedPattern:
+    """AST node representing `pattern if <expr>` in match arms.
+
+    This type is part of Astra's public compiler/tooling surface.
+    """
+    pattern: Any
+    guard: Any
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
 class AwaitExpr:
     """AST node representing await expr.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
+    expr: Any
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class TryExpr:
+    """AST node representing try expr.
     
     This type is part of Astra's public compiler/tooling surface.
     """

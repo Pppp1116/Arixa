@@ -777,8 +777,7 @@ class Parser:
                     while self.opt(","):
                         args.append(type_text(self.parse_type()))
                 self.eat(")")
-                self.eat("->")
-                typ = f"fn({', '.join(args)}) -> {type_text(self.parse_type())}"
+                typ = f"fn({', '.join(args)}) {type_text(self.parse_type())}"
             else:
                 if self.cur().kind in {"IDENT", "INT_TYPE", "none"}:
                     tok_kind = self.cur().kind

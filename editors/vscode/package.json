@@ -2,7 +2,7 @@
   "name": "astra-language",
   "displayName": "Astra Language",
   "description": "VS Code support for Astra via the astlsp language server.",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "icon": "images/astra.png",
   "publisher": "astra-lang",
   "engines": {
@@ -16,14 +16,7 @@
     "language",
     "lsp"
   ],
-  "activationEvents": [
-    "onLanguage:astra",
-    "onCommand:astra.restartLanguageServer",
-    "onCommand:astra.showLanguageServerStatus",
-    "onCommand:astra.openExtensionLog",
-    "onCommand:astra.buildCurrentFile",
-    "onCommand:astra.checkForToolchainUpdates"
-  ],
+  "activationEvents": [],
   "files": [
     "extension.js",
     "language-configuration.json",

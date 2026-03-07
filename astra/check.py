@@ -665,7 +665,7 @@ def _suggestions_for(
         out.append(DiagSuggestion(message="use an explicit cast with `as`, for example `x as Float` or `y as Int`"))
 
     if "missing main()" in m:
-        out.append(DiagSuggestion(message="add `fn main() -> Int { ... }` as the program entrypoint"))
+        out.append(DiagSuggestion(message="add `fn main() Int { ... }` as the program entrypoint"))
 
     if "missing _start()" in m:
         out.append(DiagSuggestion(message="add `fn _start() { ... }` for freestanding executable builds"))
@@ -809,13 +809,16 @@ def _find_binding_declaration_span(lines: list[str], filename: str, start_line: 
 def _find_enclosing_fn_return_span(lines: list[str], filename: str, start_line: int) -> DiagSpan | None:
     for idx in range(min(start_line - 1, len(lines) - 1), -1, -1):
         line = lines[idx]
-        if "fn " not in line or "->" not in line:
+        if "fn " not in line:
             continue
-        ret_match = re.search(r"->\s*([A-Za-z_][A-Za-z0-9_<>&\[\], ]*)", line)
-        if ret_match is None:
+        # Look for return type after ) in current syntax: fn name(params) ReturnType {
+        fn_match = re.search(r"fn\s+\w+\s*\([^)]*\)\s+([A-Za-z_][A-Za-z0-9_<>&\[\], ]*)\s*{", line)
+        if fn_match is None:
             continue
-        typ = ret_match.group(1).strip()
-        c1 = ret_match.start(1) + 1
+        typ = fn_match.group(1).strip()
+        if not typ:
+            continue
+        c1 = fn_match.start(1) + 1
         c2 = c1 + max(1, len(typ))
         return DiagSpan(filename, idx + 1, c1, idx + 1, c2)
     return None
@@ -977,7 +980,7 @@ def _known_call_arities_from_source(source: str) -> dict[str, set[int]]:
         base = name.removeprefix("__")
         if sig.args is not None:
             out.setdefault(base, set()).add(len(sig.args))
-    for m in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*->", source):
+    for m in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s+([A-Za-z_][A-Za-z0-9_<>&\[\], ]*)\s*{", source):
         name = m.group(1)
         params = m.group(2).strip()
         count = 0 if not params else len([p for p in params.split(",") if p.strip()])

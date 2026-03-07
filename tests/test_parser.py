@@ -296,6 +296,14 @@ def test_parse_option_type_sugar():
     assert fn.ret == "Int | none"
 
 
+def test_parse_nullable_type_sugar():
+    src = "fn maybe(x Int?) Int?{ y: Int? = none; return y; } fn main() Int{ return 0; }"
+    prog = parse(src)
+    fn = prog.items[0]
+    assert fn.params == [("x", "Int | none")]
+    assert fn.ret == "Int | none"
+
+
 def test_parse_owned_and_borrowed_text_buffer_types():
     src = """
 type Bytes = Vec<u8>;
@@ -313,7 +321,7 @@ def test_parse_defer_and_coalesce():
     src = """
 fn main() Int{
   defer print("done");
-  x: Option<Int> = none;
+  x: Int? = none;
   y = x ?? 7;
   return y;
 }
@@ -329,7 +337,7 @@ fn main() Int{
 
 def test_parse_try_postfix_operator():
     src = """
-fn helper(v Option<Int>) Option<Int>{
+fn helper(v Int?) Int?{
   x = v!;
   return x;
 }

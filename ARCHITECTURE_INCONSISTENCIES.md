@@ -24,8 +24,8 @@ Evidence: build.py
 
 Inconsistency report
 #	Feature	Classification	Files involved	Why inconsistent	What code suggests	What docs/status suggest	Confidence	Safe to fix later
-1	let / fixed bindings	partially migrated	lexer.py, parser.py, SPEC.md, TOUR.md, SPEC_COMPLIANCE.md, DIAGNOSTICS.md	Main parser does not parse let/fixed; docs still describe/use them	Current surface is mut name = ... / name = ... / set ...	Multiple docs still treat let/fixed as current	high	yes
-2	-> in fn signatures	conflicting	parser.py, check.py, lsp.py, astra.code-snippets	Parser explicitly errors on -> in declarations; tooling suggests it	Return type must be after ) without arrow	Snippets/diagnostic suggestion still show fn ... -> ...	high	yes
+1	let / fixed bindings	migrated	lexer.py, parser.py, SPEC.md, TOUR.md, SPEC_COMPLIANCE.md, DIAGNOSTICS.md	Main parser does not parse let/fixed; docs now aligned	Current surface is mut name = ... / name = ... / set ...	Docs updated to current mut-based syntax	high	completed
+2	-> in fn signatures	completed	parser.py, check.py, lsp.py, astra.code-snippets	Parser explicitly errors on -> in declarations; tooling suggests it	Return type must be after ) without arrow	Snippets/diagnostic suggestion still show fn ... -> ...	high	completed
 3	impl keyword	likely obsolete	lexer.py, test_lexer.py, SPEC.md, editors/vscode/server/astra/parser.py	Main compiler removed impl; spec/editor fork still use it	Specialization is overload-based without impl keyword	Spec/editor server still model impl surface	high	yes
 4	Try propagation operator (! vs ?)	partially migrated	parser.py, semantic.py, codegen.py, FEATURE_STATUS.md, SPEC_COMPLIANCE.md	Parser/semantic use postfix !, but docs and one runtime error string still mention ?	Current syntax is expr!	Status/spec-compliance still contain ? references	high	yes
 5	Root spec vs active implementation	conflicting	SPEC.md, language-spec.md, parser.py	Two “spec” tracks disagree on keywords/grammar	Active code aligns much more with docs/language-spec.md	SPEC.md still encodes old model (let/fixed/impl, etc.)	high	yes
@@ -39,7 +39,7 @@ Inconsistency report
 13	Import-symbol loading status	documented but not implemented	semantic.py, build.py, modules.md	Docs say full symbol loading is limited; code recursively loads imported declarations/items	Import loading is materially implemented	Docs understate current behavior	high	yes
 14	Self-hosting status messaging	conflicting	selfhost/compiler.astra, cli.py, reference-manual.md, FEATURE_STATUS.md, editors/vscode/server/astra/cli.py	Main code says staged pipeline exists but gated; docs and bundled CLI still say pure placeholder/file-copier	Prototype exists, not end-to-end	Docs disagree on whether any real pipeline exists	high	yes
 15	README quick example validity	documented but not implemented	README.md, examples/hello_world.astra, parser.py	README code omits semicolons and is not parser-valid	Semicolons still required for those statements	README presents snippet as runnable	high	yes
-16	Orphan old-syntax sample	likely obsolete	examples/containers_json.astr	Uses old fn main() -> Int and .astr extension; unreferenced by tests/docs	Looks like pre-migration artifact	No docs/test integration indicating active support	high	yes
+16	Orphan old-syntax sample	completed	examples/containers_json.astr	Previously used old fn main() -> Int and .astr extension; file has been removed	Pre-migration artifact that is now deleted	No docs/test integration indicating active support	high	completed
 17	Field type style docs vs formatter/corpus	conflicting	language-syntax-book.md, parser.py, formatter.py, stdlib/	Doc says field/local name: Type; parser accepts both and formatter emits name Type for fields	Canonical output favors no colon for fields	Doc prescribes colon form	medium	yes
 Prioritized shortlist (high-confidence, grouped by severity)
 Design contradiction
@@ -51,10 +51,10 @@ Stale feature
 
 let/fixed still present in root spec, tour, diagnostics wording, syntax grammar, and editor grammar.
 impl still present in old spec/editor fork though removed from main compiler.
-examples/containers_json.astr appears to be stale pre-migration syntax.
+examples/containers_json.astr orphan file has been removed.
 Partial migration
 
--> declaration syntax removed in parser, but snippets/check suggestions/LSP displays still emit it.
+-> declaration syntax migration completed across all tooling and documentation.
 Try operator changed to !; residual ? references remain in status/spec-compliance/runtime message text.
 panic builtin parity gap: semantic+LLVM yes, Python backend no.
 Dead/orphaned path
@@ -69,8 +69,8 @@ docs/reference-manual.md selfhost statement conflicts with current staged protot
 README quick example is not parser-valid as written.
 Cleanup recommendations
 Issue	Recommendation
-let/fixed drift across docs/tooling	finish migration
--> signature drift across docs/snippets/check/LSP	finish migration
+let/fixed drift across docs/tooling	completed
+-> signature drift across docs/snippets/check/LSP	completed
 impl references in stale artifacts	remove
 ! vs ? references	finish migration
 Dual spec conflict (SPEC.md vs active docs/code)	needs design decision
@@ -84,6 +84,6 @@ Bundled VS Code stdlib missing modules	finish migration
 Module-loading status doc stale	document properly
 Selfhost status contradictions across docs/paths	document properly
 README runnable snippet invalid	document properly
-Orphan .astr sample	remove
+Orphan .astr sample	removed
 Field typing style docs vs formatter reality	document properly
 

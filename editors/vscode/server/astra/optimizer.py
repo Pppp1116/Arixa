@@ -154,11 +154,18 @@ def _optimize_stmt(st: Any, env: dict[str, Any], mutable_names: set[str]) -> tup
         st.expr = _fold_ast_expr(st.expr, env, mutable_names)
         target = _literal_value(st.expr)
         if target is not _NO_LITERAL:
+            all_known = True
             for pat, body in st.arms:
                 folded_pat = _fold_ast_expr(pat, env, mutable_names)
-                if _literal_value(folded_pat) == target:
+                decision = _match_pattern_const_decision(target, folded_pat)
+                if decision is True:
                     arm_out, arm_env = _optimize_stmts(body, dict(env), mutable_names)
                     return arm_out, arm_env, _stmts_terminate(arm_out)
+                if decision is None:
+                    all_known = False
+                    break
+            if all_known:
+                return [], dict(env), False
         new_arms: list[tuple[Any, list[Any]]] = []
         merged_env: dict[str, Any] | None = None
         for pat, body in st.arms:
@@ -320,6 +327,9 @@ def _fold_ast_expr(expr: Any, env: dict[str, Any], mutable_names: set[str]) -> A
     if isinstance(expr, AwaitExpr):
         expr.expr = _fold_ast_expr(expr.expr, env, mutable_names)
         return expr
+    if isinstance(expr, TryExpr):
+        expr.expr = _fold_ast_expr(expr.expr, env, mutable_names)
+        return expr
     if isinstance(expr, IndexExpr):
         expr.obj = _fold_ast_expr(expr.obj, env, mutable_names)
         expr.index = _fold_ast_expr(expr.index, env, mutable_names)
@@ -338,6 +348,13 @@ def _fold_ast_expr(expr: Any, env: dict[str, Any], mutable_names: set[str]) -> A
         return expr
     if isinstance(expr, CastExpr):
         expr.expr = _fold_ast_expr(expr.expr, env, mutable_names)
+        return expr
+    if isinstance(expr, OrPattern):
+        expr.patterns = [_fold_ast_expr(p, env, mutable_names) for p in expr.patterns]
+        return expr
+    if isinstance(expr, GuardedPattern):
+        expr.pattern = _fold_ast_expr(expr.pattern, env, mutable_names)
+        expr.guard = _fold_ast_expr(expr.guard, env, mutable_names)
         return expr
     if isinstance(expr, (SizeOfTypeExpr, AlignOfTypeExpr, BitSizeOfTypeExpr, MaxValTypeExpr, MinValTypeExpr)):
         return expr
@@ -360,6 +377,33 @@ def _literal_value(expr: Any) -> Any:
     return _NO_LITERAL
 
 
+def _match_pattern_const_decision(target: Any, pat: Any) -> bool | None:
+    if isinstance(pat, WildcardPattern):
+        return True
+    if isinstance(pat, OrPattern):
+        saw_unknown = False
+        for p in pat.patterns:
+            d = _match_pattern_const_decision(target, p)
+            if d is True:
+                return True
+            if d is None:
+                saw_unknown = True
+        if saw_unknown:
+            return None
+        return False
+    if isinstance(pat, GuardedPattern):
+        gd = _literal_value(pat.guard)
+        if not isinstance(gd, bool):
+            return None
+        if not gd:
+            return False
+        return _match_pattern_const_decision(target, pat.pattern)
+    pv = _literal_value(pat)
+    if pv is _NO_LITERAL:
+        return None
+    return pv == target
+
+
 def _literal_node(value: Any, src: Any) -> Any:
     pos = getattr(src, "pos", 0)
     line = getattr(src, "line", 0)
@@ -378,6 +422,8 @@ def _is_pure_expr(expr: Any) -> bool:
         return _is_pure_expr(expr.expr)
     if isinstance(expr, Binary):
         return _is_pure_expr(expr.left) and _is_pure_expr(expr.right)
+    if isinstance(expr, TryExpr):
+        return False
     if isinstance(expr, ArrayLit):
         return all(_is_pure_expr(e) for e in expr.elements)
     if isinstance(expr, StructLit):
@@ -386,6 +432,10 @@ def _is_pure_expr(expr: Any) -> bool:
         return _is_pure_expr(expr.expr)
     if isinstance(expr, CastExpr):
         return _is_pure_expr(expr.expr)
+    if isinstance(expr, OrPattern):
+        return all(_is_pure_expr(p) for p in expr.patterns)
+    if isinstance(expr, GuardedPattern):
+        return _is_pure_expr(expr.pattern) and _is_pure_expr(expr.guard)
     if isinstance(expr, (SizeOfTypeExpr, AlignOfTypeExpr, BitSizeOfTypeExpr, MaxValTypeExpr, MinValTypeExpr)):
         return True
     if isinstance(expr, (SizeOfValueExpr, AlignOfValueExpr)):
@@ -402,6 +452,8 @@ def _may_trap_expr(expr: Any) -> bool:
         return False
     if isinstance(expr, Unary):
         return _may_trap_expr(expr.expr)
+    if isinstance(expr, TryExpr):
+        return True
     if isinstance(expr, Binary):
         if _may_trap_expr(expr.left) or _may_trap_expr(expr.right):
             return True
@@ -419,6 +471,10 @@ def _may_trap_expr(expr: Any) -> bool:
         return _may_trap_expr(expr.expr)
     if isinstance(expr, CastExpr):
         return _may_trap_expr(expr.expr)
+    if isinstance(expr, OrPattern):
+        return any(_may_trap_expr(p) for p in expr.patterns)
+    if isinstance(expr, GuardedPattern):
+        return _may_trap_expr(expr.pattern) or _may_trap_expr(expr.guard)
     if isinstance(expr, (SizeOfTypeExpr, AlignOfTypeExpr, BitSizeOfTypeExpr, MaxValTypeExpr, MinValTypeExpr)):
         return False
     if isinstance(expr, (SizeOfValueExpr, AlignOfValueExpr)):
@@ -724,6 +780,8 @@ def _cse_expr(expr: Any, avail: dict[Any, tuple[str, set[str]]]) -> Any:
         expr.args = [_cse_expr(arg, avail) for arg in expr.args]
     elif isinstance(expr, AwaitExpr):
         expr.expr = _cse_expr(expr.expr, avail)
+    elif isinstance(expr, TryExpr):
+        expr.expr = _cse_expr(expr.expr, avail)
     elif isinstance(expr, IndexExpr):
         expr.obj = _cse_expr(expr.obj, avail)
         expr.index = _cse_expr(expr.index, avail)
@@ -737,6 +795,11 @@ def _cse_expr(expr: Any, avail: dict[Any, tuple[str, set[str]]]) -> Any:
         expr.expr = _cse_expr(expr.expr, avail)
     elif isinstance(expr, CastExpr):
         expr.expr = _cse_expr(expr.expr, avail)
+    elif isinstance(expr, OrPattern):
+        expr.patterns = [_cse_expr(p, avail) for p in expr.patterns]
+    elif isinstance(expr, GuardedPattern):
+        expr.pattern = _cse_expr(expr.pattern, avail)
+        expr.guard = _cse_expr(expr.guard, avail)
     elif isinstance(expr, (SizeOfValueExpr, AlignOfValueExpr)):
         expr.expr = _cse_expr(expr.expr, avail)
 
@@ -978,6 +1041,8 @@ def _used_names_expr(expr: Any) -> set[str]:
         return out
     if isinstance(expr, AwaitExpr):
         return _used_names_expr(expr.expr)
+    if isinstance(expr, TryExpr):
+        return _used_names_expr(expr.expr)
     if isinstance(expr, IndexExpr):
         return _used_names_expr(expr.obj) | _used_names_expr(expr.index)
     if isinstance(expr, FieldExpr):
@@ -996,6 +1061,13 @@ def _used_names_expr(expr: Any) -> set[str]:
         return _used_names_expr(expr.expr)
     if isinstance(expr, CastExpr):
         return _used_names_expr(expr.expr)
+    if isinstance(expr, OrPattern):
+        out: set[str] = set()
+        for p in expr.patterns:
+            out |= _used_names_expr(p)
+        return out
+    if isinstance(expr, GuardedPattern):
+        return _used_names_expr(expr.pattern) | _used_names_expr(expr.guard)
     if isinstance(expr, (SizeOfTypeExpr, AlignOfTypeExpr, BitSizeOfTypeExpr, MaxValTypeExpr, MinValTypeExpr)):
         return set()
     if isinstance(expr, (SizeOfValueExpr, AlignOfValueExpr)):

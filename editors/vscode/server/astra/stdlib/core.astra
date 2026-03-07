@@ -22,8 +22,8 @@ type Bytes = Vec<u8>;
 /// Add two integers with overflow detection.
 ///
 /// Returns `none` when signed overflow is detected.
-fn add_checked(a Int, b Int) -> Option<Int> {
-    let r = a + b;
+fn add_checked(a Int, b Int) Option<Int>{
+    r = a + b;
     if b > 0 && r < a {
         return none;
     }
@@ -38,8 +38,8 @@ fn add_checked(a Int, b Int) -> Option<Int> {
 /// Subtract two integers with overflow detection.
 ///
 /// Returns `none` when signed overflow is detected.
-fn sub_checked(a Int, b Int) -> Option<Int> {
-    let r = a - b;
+fn sub_checked(a Int, b Int) Option<Int>{
+    r = a - b;
     if b > 0 && r > a {
         return none;
     }
@@ -54,7 +54,7 @@ fn sub_checked(a Int, b Int) -> Option<Int> {
 /// Multiply two integers with overflow detection.
 ///
 /// Returns `none` on overflow.
-fn mul_checked(a Int, b Int) -> Option<Int> {
+fn mul_checked(a Int, b Int) Option<Int>{
     if a == 0 || b == 0 {
         return 0;
     }
@@ -63,7 +63,7 @@ fn mul_checked(a Int, b Int) -> Option<Int> {
         return none;
     }
     else {}
-    let r = a * b;
+    r = a * b;
     if r / b != a {
         return none;
     }
@@ -74,7 +74,7 @@ fn mul_checked(a Int, b Int) -> Option<Int> {
 /// Divide two integers with safety checks.
 ///
 /// Returns `none` on division by zero or signed overflow (`MIN / -1`).
-fn div_checked(a Int, b Int) -> Option<Int> {
+fn div_checked(a Int, b Int) Option<Int>{
     if b == 0 {
         return none;
     }
@@ -89,7 +89,7 @@ fn div_checked(a Int, b Int) -> Option<Int> {
 /// Compute integer remainder with safety checks.
 ///
 /// Returns `none` on division by zero or signed overflow (`MIN % -1`).
-fn rem_checked(a Int, b Int) -> Option<Int> {
+fn rem_checked(a Int, b Int) Option<Int>{
     if b == 0 {
         return none;
     }
@@ -104,7 +104,7 @@ fn rem_checked(a Int, b Int) -> Option<Int> {
 /// Shift left with bounds checks on shift amount.
 ///
 /// Returns `none` when `n` is negative or outside `[0, bitSizeOf(Int))`.
-fn shl_checked(a Int, n Int) -> Option<Int> {
+fn shl_checked(a Int, n Int) Option<Int>{
     if n < 0 || n >= bitSizeOf(Int) {
         return none;
     }
@@ -115,7 +115,7 @@ fn shl_checked(a Int, n Int) -> Option<Int> {
 /// Shift right with bounds checks on shift amount.
 ///
 /// Returns `none` when `n` is negative or outside `[0, bitSizeOf(Int))`.
-fn shr_checked(a Int, n Int) -> Option<Int> {
+fn shr_checked(a Int, n Int) Option<Int>{
     if n < 0 || n >= bitSizeOf(Int) {
         return none;
     }

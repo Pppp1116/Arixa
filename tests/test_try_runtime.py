@@ -3,7 +3,7 @@ from golden_helpers import assert_same_stdout_and_exit, compile_and_run_program
 
 def test_try_operator_propagates_none_and_short_circuits(tmp_path) -> None:
     src = """
-fn maybe(v Int) Option<Int>{
+fn maybe(v Int) Int?{
   if v > 0 {
     return v;
   }
@@ -11,7 +11,7 @@ fn maybe(v Int) Option<Int>{
   return none;
 }
 
-fn helper(v Int) Option<Int>{
+fn helper(v Int) Int?{
   x = maybe(v)!;
   print("after");
   return x + 1;
@@ -34,14 +34,14 @@ fn main() Int{
 
 def test_try_operator_runs_defers_on_early_return(tmp_path) -> None:
     src = """
-fn helper(v Option<Int>) Option<Int>{
+fn helper(v Int?) Int?{
   defer print("cleanup");
   x = v!;
   return x;
 }
 
 fn main() Int{
-  mut input: Option<Int> = none;
+  mut input: Int? = none;
   out = helper(input) ?? 5;
   return out;
 }
@@ -55,25 +55,20 @@ fn main() Int{
     assert_same_stdout_and_exit(results, expected_stdout="cleanup\n", expected_returncode=5)
 
 
-def test_try_operator_propagates_result_err_and_short_circuits(tmp_path) -> None:
+def test_try_operator_propagates_union_err_and_short_circuits(tmp_path) -> None:
     src = """
-enum Result<T, E> {
-  Ok(T),
-  Err(E),
-}
-
-fn parse(v Int) Result<Int, Int>{
+fn parse(v Int) Int | Int{
   if v > 0 {
-    return Result.Ok(v);
+    return v;
   }
   else {}
-  return Result.Err(404);
+  return 404;
 }
 
-fn add1(v Int) Result<Int, Int>{
+fn add1(v Int) Int | Int{
   x = parse(v)!;
   print("after-ok");
-  return Result.Ok(x + 1);
+  return x + 1;
 }
 
 fn main() Int{
@@ -92,32 +87,27 @@ fn main() Int{
         results,
         expected_stdout=(
             "after-ok\n"
-            '{"__enum__": "Result", "tag": "Ok", "values": [3]}\n'
-            '{"__enum__": "Result", "tag": "Err", "values": [404]}\n'
+            "3\n"
+            "404\n"
         ),
         expected_returncode=0,
     )
 
 
-def test_try_operator_result_propagation_matches_py_and_native(tmp_path) -> None:
+def test_try_operator_union_propagation_matches_py_and_native(tmp_path) -> None:
     src = """
-enum Result<T, E> {
-  Ok(T),
-  Err(E),
-}
-
-fn parse(v Int) Result<Int, Int>{
+fn parse(v Int) Int | Int{
   if v > 0 {
-    return Result.Ok(v);
+    return v;
   }
   else {}
-  return Result.Err(1);
+  return 1;
 }
 
-fn helper(v Int) Result<Int, Int>{
+fn helper(v Int) Int | Int{
   x = parse(v)!;
   print("after");
-  return Result.Ok(x + 1);
+  return x + 1;
 }
 
 fn main() Int{

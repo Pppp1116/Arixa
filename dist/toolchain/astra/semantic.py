@@ -807,10 +807,10 @@ def _parse_fn_type(typ: str) -> tuple[list[str], str, bool] | None:
                 break
     if close < 0 or depth != 0:
         return None
-    if close + 4 > len(t) or t[close + 1 : close + 5] != " -> ":
+    if close + 1 > len(t) or t[close + 1] != " ":
         return None
     params_text = t[3:close].strip()
-    ret = t[close + 5 :].strip()
+    ret = t[close + 1:].strip()
     if not ret:
         return None
     if not params_text:
@@ -820,7 +820,7 @@ def _parse_fn_type(typ: str) -> tuple[list[str], str, bool] | None:
 
 def _fn_type(params: list[tuple[str, str]], ret: str, *, unsafe: bool = False) -> str:
     head = "unsafe fn" if unsafe else "fn"
-    return f"{head}({', '.join(ty for _, ty in params)}) -> {ret}"
+    return f"{head}({', '.join(ty for _, ty in params)}) {ret}"
 
 
 def _is_send_type(
@@ -1763,7 +1763,7 @@ def _infer(
         if isinstance(e.value, bool):
             return _typed(e, "Bool")
         if isinstance(e.value, int):
-            return _typed(e, "Int")
+            return _typed(e, "fn() Int")
         if isinstance(e.value, float):
             return _typed(e, "Float")
         return _typed(e, "String")
@@ -1787,7 +1787,7 @@ def _infer(
             _require_freestanding_builtin_allowed(e.value, filename, e.line, e.col)
             if sig.args is None:
                 return _typed(e, "Any")
-            return _typed(e, f"fn({', '.join(sig.args)}) -> {sig.ret}")
+            return _typed(e, f"fn({', '.join(sig.args)}) {sig.ret}")
         raise SemanticError(_diag(filename, e.line, e.col, f"undefined name {e.value}"))
     if isinstance(e, SizeOfTypeExpr):
         try:

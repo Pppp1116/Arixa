@@ -17,7 +17,7 @@ postfix_type = primary_type ["?"] ;
 primary_type = ident ["<" type {"," type} ">"]
              | "&" ["mut"] type
              | "[" type "]"
-             | "fn" "(" [type {"," type}] ")" "->" type
+             | "fn" "(" [type {"," type}] ")" type
              | "(" type ")" ;
 block     = "{" { stmt } [expr] "}" ;
 stmt      = bind_stmt | set_stmt | comptime_stmt | defer_stmt | drop_stmt | return_stmt | if_stmt | while_stmt | for_stmt | match_stmt | assign_stmt | expr ";" ;
@@ -121,6 +121,9 @@ Conventions:
   - aliases: `popcnt(x)`, `clz(x)`, `ctz(x)`.
   - rotate helpers: `rotl(x, n)`, `rotr(x, n)` (rotation count is modulo bit width).
 - Nullable and error flows are modeled with unions and user-defined error types.
+- Flow-sensitive type narrowing with `is` keyword: `if result is String { result.uppercase() }`
+- Union types must be narrowed before use as specific members.
+- `match` on union types is exhaustiveness-checked.
 - `Never` is coercible to any type `T` (including `Void`).
 - In type joins, `Never` acts as bottom: `join(Never, T) = T` and `join(Never, Never) = Never`.
 - `Any` is a tagged dynamic value on native/LLVM backends.

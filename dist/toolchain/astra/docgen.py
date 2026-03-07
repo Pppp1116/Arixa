@@ -56,7 +56,7 @@ def main(argv=None):
             sig = ", ".join(sig_parts)
             libs = list(item.link_libs) or ([item.lib] if item.lib else [])
             attrs = "".join([f'@link("{lib}") ' for lib in libs])
-            lines.append(f"- `{attrs}{pub}{us}extern fn {item.name}({sig}) -> {item.ret}`")
+            lines.append(f"- `{attrs}{pub}{us}extern fn {item.name}({sig}) {item.ret}`")
             lines.extend(_doc_block(item.doc))
             lines.append("")
         elif isinstance(item, FnDecl):
@@ -64,7 +64,7 @@ def main(argv=None):
             impl_kw = "impl " if item.is_impl else ""
             async_kw = "async " if item.async_fn else ""
             sig = ", ".join(f"{n}: {t}" for n, t in item.params)
-            lines.append(f"- `{pub}{impl_kw}{async_kw}fn {item.name}({sig}) -> {item.ret}`")
+            lines.append(f"- `{pub}{impl_kw}{async_kw}fn {item.name}({sig}) {item.ret}`")
             lines.extend(_doc_block(item.doc))
             lines.append("")
     Path(ns.output).write_text("\n".join(lines).rstrip() + "\n")

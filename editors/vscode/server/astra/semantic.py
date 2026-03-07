@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import re
 from pathlib import Path
+from itertools import product
 
 from astra.ast import *
 from astra.int_types import is_int_type_name, parse_int_type_name
@@ -29,16 +31,75 @@ FLOAT_TYPES = {"f32", "f64"}
 PRIMITIVES = {"Int", "isize", "usize", "Float", "f32", "f64", "String", "str", "Bool", "Any", "Void", "Never", "Bytes"}
 COPY_SCALAR_TYPES = {"Float", "f32", "f64", "Bool"}
 NONE_LIT_TYPE = "<none>"
+_TRAIT_IMPLS_STACK: list[dict[str, set[str]]] = [{}]
+_KNOWN_TRAITS_STACK: list[set[str]] = [set()]
+_TRAITS_STACK: list[dict[str, TraitDecl]] = [{}]
+_FN_GROUPS_STACK: list[dict[str, list[FnDecl | ExternFnDecl]]] = [{}]
 
 
-def _is_option_type(typ: Any) -> bool:
-    t = type_text(typ)
-    return t.startswith("Option<") and t.endswith(">")
+
+def _parse_parametric_type(typ: Any) -> tuple[str, list[str]] | None:
+    t = type_text(typ).strip()
+    if "<" not in t or not t.endswith(">"):
+        return None
+    lt = t.find("<")
+    base = t[:lt].strip()
+    inner = t[lt + 1 : -1].strip()
+    if not base or not inner:
+        return None
+    args = _split_top_level(inner, ",")
+    if not args:
+        return None
+    return base, args
 
 
-def _option_inner(typ: Any) -> str:
-    t = type_text(typ)
-    return t[7:-1]
+
+def _union_members(typ: Any) -> list[str]:
+    t = type_text(typ).strip()
+    if "|" not in t:
+        return [t]
+    return [p.strip() for p in _split_top_level(t, "|") if p.strip()]
+
+
+def _is_union_type(typ: Any) -> bool:
+    return len(_union_members(typ)) > 1
+
+
+def _normalize_union(types: list[str]) -> str:
+    out: list[str] = []
+    seen: set[str] = set()
+    for t in types:
+        for m in _union_members(t):
+            c = _canonical_type(m)
+            if c in seen:
+                continue
+            seen.add(c)
+            out.append(c)
+    return " | ".join(out)
+
+
+def _is_nullable_union(typ: Any) -> bool:
+    members = _union_members(_canonical_type(typ))
+    return "none" in members and len(members) >= 2
+
+
+def _remove_none_from_union(typ: Any) -> str:
+    members = [m for m in _union_members(_canonical_type(typ)) if m != "none"]
+    if not members:
+        return "none"
+    if len(members) == 1:
+        return members[0]
+    return _normalize_union(members)
+
+
+def _remove_member_from_union(typ: Any, member: str) -> str:
+    m = _canonical_type(member)
+    members = [v for v in _union_members(_canonical_type(typ)) if _canonical_type(v) != m]
+    if not members:
+        return _canonical_type(typ)
+    if len(members) == 1:
+        return members[0]
+    return _normalize_union(members)
 
 
 def _is_vec_type(typ: Any) -> bool:
@@ -61,6 +122,44 @@ def _slice_inner(typ: Any) -> str:
     return t[1:-1]
 
 
+def _gpu_type_arg(typ: Any, base: str) -> str | None:
+    parsed = _parse_parametric_type(typ)
+    if parsed is None:
+        return None
+    head, args = parsed
+    if head != base or len(args) != 1:
+        return None
+    return args[0]
+
+
+def _is_gpu_buffer_type(typ: Any) -> bool:
+    return _gpu_type_arg(typ, "GpuBuffer") is not None
+
+
+def _is_gpu_slice_type(typ: Any) -> bool:
+    return _gpu_type_arg(typ, "GpuSlice") is not None
+
+
+def _is_gpu_mut_slice_type(typ: Any) -> bool:
+    return _gpu_type_arg(typ, "GpuMutSlice") is not None
+
+
+def _is_gpu_view_type(typ: Any) -> bool:
+    return _is_gpu_slice_type(typ) or _is_gpu_mut_slice_type(typ)
+
+
+def _is_gpu_memory_type(typ: Any) -> bool:
+    return _is_gpu_buffer_type(typ) or _is_gpu_view_type(typ)
+
+
+def _gpu_element_type(typ: Any) -> str | None:
+    for base in ("GpuBuffer", "GpuSlice", "GpuMutSlice"):
+        inner = _gpu_type_arg(typ, base)
+        if inner is not None:
+            return inner
+    return None
+
+
 def _strip_ref(typ: Any) -> str:
     t = _canonical_type(typ)
     if t.startswith("&mut "):
@@ -80,10 +179,10 @@ def _is_mut_ref_type(typ: Any) -> bool:
 
 def _canonical_type(typ: Any) -> str:
     t = type_text(typ)
+    if "|" in t:
+        return _normalize_union(_split_top_level(t, "|"))
     if t == "Bytes":
         return "Vec<u8>"
-    if _is_option_type(t):
-        return f"Option<{_canonical_type(_option_inner(t))}>"
     if t.startswith("&mut "):
         return f"&mut {_canonical_type(t[5:])}"
     if t.startswith("&"):
@@ -92,7 +191,30 @@ def _canonical_type(typ: Any) -> str:
         return f"[{_canonical_type(_slice_inner(t))}]"
     if _is_vec_type(t):
         return f"Vec<{_canonical_type(_vec_inner(t))}>"
+    parsed = _parse_parametric_type(t)
+    if parsed is not None:
+        base, args = parsed
+        return f"{base}<{', '.join(_canonical_type(a) for a in args)}>"
     return t
+
+
+def _substitute_typevars(typ: Any, bindings: dict[str, str]) -> str:
+    t = type_text(typ).strip()
+    if "|" in t:
+        return _normalize_union([_substitute_typevars(p, bindings) for p in _split_top_level(t, "|")])
+    if t in bindings:
+        return _canonical_type(bindings[t])
+    if t.startswith("&mut "):
+        return f"&mut {_substitute_typevars(t[5:], bindings)}"
+    if t.startswith("&"):
+        return f"&{_substitute_typevars(t[1:], bindings)}"
+    if _is_slice_type(t):
+        return f"[{_substitute_typevars(_slice_inner(t), bindings)}]"
+    parsed = _parse_parametric_type(t)
+    if parsed is not None:
+        base, args = parsed
+        return f"{base}<{', '.join(_substitute_typevars(a, bindings) for a in args)}>"
+    return _canonical_type(t)
 
 
 def _int_info(typ: str) -> tuple[int, bool] | None:
@@ -131,7 +253,74 @@ def _is_copy_type(typ: str) -> bool:
         return True
     if c in COPY_SCALAR_TYPES:
         return True
+    if _is_gpu_memory_type(c):
+        return True
     return _is_ref_type(c) and not _is_mut_ref_type(c)
+
+
+def _is_gpu_scalar_type(typ: str) -> bool:
+    c = _canonical_type(typ)
+    return c in {"Bool", "Int", "isize", "usize", "Float", "f32", "f64"} or _is_int_type(c)
+
+
+def _is_gpu_safe_type(typ: str, structs: dict[str, StructDecl], *, seen: set[str] | None = None) -> bool:
+    c = _canonical_type(typ)
+    if c in {"Void", "Never"}:
+        return True
+    if _is_gpu_scalar_type(c):
+        return True
+    if _is_gpu_memory_type(c):
+        inner = _gpu_element_type(c)
+        return inner is not None and _is_gpu_safe_type(inner, structs, seen=seen)
+    if c in {"String", "str", "Any"}:
+        return False
+    if _is_vec_type(c) or _is_slice_type(c):
+        return False
+    if c.startswith("fn(") or c.startswith("unsafe fn("):
+        return False
+    if c.startswith("&"):
+        return False
+    if c in structs:
+        guard = seen or set()
+        if c in guard:
+            return True
+        guard.add(c)
+        for _, fty in structs[c].fields:
+            if not _is_gpu_safe_type(fty, structs, seen=guard):
+                return False
+        guard.remove(c)
+        return True
+    return False
+
+
+def _is_gpu_kernel_param_type(typ: str, structs: dict[str, StructDecl]) -> bool:
+    c = _canonical_type(typ)
+    if _is_gpu_view_type(c):
+        inner = _gpu_element_type(c)
+        return inner is not None and _is_gpu_safe_type(inner, structs)
+    if _is_gpu_scalar_type(c):
+        return True
+    if c in structs:
+        return _is_gpu_safe_type(c, structs)
+    return False
+
+
+def _gpu_launch_arg_compatible(expected: str, actual: str) -> bool:
+    exp = _canonical_type(expected)
+    act = _canonical_type(actual)
+    if _same_type(exp, act):
+        return True
+    exp_el = _gpu_element_type(exp)
+    act_el = _gpu_element_type(act)
+    if exp_el is None or act_el is None:
+        return False
+    if _is_gpu_slice_type(exp) and (_is_gpu_buffer_type(act) or _is_gpu_slice_type(act) or _is_gpu_mut_slice_type(act)):
+        return _same_type(exp_el, act_el)
+    if _is_gpu_mut_slice_type(exp) and (_is_gpu_buffer_type(act) or _is_gpu_mut_slice_type(act)):
+        return _same_type(exp_el, act_el)
+    if _is_gpu_buffer_type(exp) and _is_gpu_buffer_type(act):
+        return _same_type(exp_el, act_el)
+    return False
 
 
 def _validate_decl_type(typ: Any, filename: str, line: int, col: int) -> None:
@@ -188,6 +377,19 @@ BUILTIN_SIGS: dict[str, BuiltinSig] = {
     "arg": BuiltinSig(["Int"], "String"),
     "spawn": BuiltinSig(None, "Int"),
     "join": BuiltinSig(["Int"], "Any"),
+    "__atomic_int_new": BuiltinSig(["Int"], "Int"),
+    "__atomic_load": BuiltinSig(["Int"], "Int"),
+    "__atomic_store": BuiltinSig(["Int", "Int"], "Int"),
+    "__atomic_fetch_add": BuiltinSig(["Int", "Int"], "Int"),
+    "__atomic_compare_exchange": BuiltinSig(["Int", "Int", "Int"], "Bool"),
+    "mutex_new": BuiltinSig([], "Int"),
+    "mutex_lock": BuiltinSig(["Int", "Int"], "Int"),
+    "mutex_unlock": BuiltinSig(["Int", "Int"], "Int"),
+    "chan_new": BuiltinSig([], "Int"),
+    "chan_send": BuiltinSig(["Int", "Any"], "Int"),
+    "chan_recv_try": BuiltinSig(["Int"], "Any?"),
+    "chan_recv_blocking": BuiltinSig(["Int"], "Any"),
+    "chan_close": BuiltinSig(["Int"], "Int"),
     "alloc": BuiltinSig(["Int"], "Int"),
     "free": BuiltinSig(["Int"], "Void"),
     "await_result": BuiltinSig(["Any"], "Any"),
@@ -210,6 +412,7 @@ BUILTIN_SIGS: dict[str, BuiltinSig] = {
     "from_json": BuiltinSig(["String"], "Any"),
     "sha256": BuiltinSig(["String"], "String"),
     "hmac_sha256": BuiltinSig(["String", "String"], "String"),
+    "rand_bytes": BuiltinSig(["Int"], "Any"),
     "proc_exit": BuiltinSig(["Int"], "Never"),
     "env_get": BuiltinSig(["String"], "String"),
     "cwd": BuiltinSig([], "String"),
@@ -272,6 +475,15 @@ _FREESTANDING_FORBIDDEN_BUILTINS: set[str] = {
     "from_json",
     "sha256",
     "hmac_sha256",
+    "rand_bytes",
+    "mutex_new",
+    "mutex_lock",
+    "mutex_unlock",
+    "chan_new",
+    "chan_send",
+    "chan_recv_try",
+    "chan_recv_blocking",
+    "chan_close",
     "env_get",
     "cwd",
     "proc_run",
@@ -282,6 +494,40 @@ _FREESTANDING_FORBIDDEN_BUILTINS: set[str] = {
     "proc_exit",
 }
 _FREESTANDING_MODE_STACK: list[bool] = []
+
+GPU_KERNEL_BUILTINS: set[str] = {
+    "global_id",
+    "thread_id",
+    "block_id",
+    "block_dim",
+    "grid_dim",
+    "barrier",
+}
+GPU_HOST_APIS: set[str] = {
+    "available",
+    "device_count",
+    "device_name",
+    "alloc",
+    "copy",
+    "read",
+    "launch",
+}
+GPU_ALLOWED_IN_KERNEL_BUILTINS: set[str] = {
+    "countOnes",
+    "leadingZeros",
+    "trailingZeros",
+    "popcnt",
+    "clz",
+    "ctz",
+    "rotl",
+    "rotr",
+    "vec_new",
+    "vec_from",
+    "vec_len",
+    "vec_get",
+    "vec_set",
+    "vec_push",
+}
 
 
 def _builtin_base_name(name: str) -> str:
@@ -438,14 +684,14 @@ class _BorrowState:
         ref_name: str,
         owner: str,
         mutable: bool,
-        fixed: bool,
+        owner_mutable: bool,
         filename: str,
         line: int,
         col: int,
         origin: str | None = None,
     ):
         self.release_ref(ref_name)
-        self.ensure_can_borrow(owner, mutable, fixed, filename, line, col)
+        self.ensure_can_borrow(owner, mutable, owner_mutable, filename, line, col)
         if mutable:
             self.mutable_borrowed.add(owner)
         else:
@@ -454,14 +700,20 @@ class _BorrowState:
         if origin is not None:
             self.ref_origins[ref_name] = origin
 
-    def ensure_can_borrow(self, owner: str, mutable: bool, fixed: bool, filename: str, line: int, col: int):
+    def ensure_can_borrow(self, owner: str, mutable: bool, owner_mutable: bool, filename: str, line: int, col: int):
         has_shared = self.shared_counts.get(owner, 0) > 0
         has_mut = owner in self.mutable_borrowed
         if mutable:
-            if fixed:
-                raise SemanticError(_diag(filename, line, col, f"cannot mutably borrow fixed binding {owner}"))
+            if not owner_mutable:
+                raise SemanticError(_diag(filename, line, col, f"cannot mutably borrow immutable binding {owner}"))
             if has_mut or has_shared:
-                raise SemanticError(_diag(filename, line, col, f"cannot mutably borrow {owner} while it is already borrowed"))
+                details: list[str] = []
+                if has_mut:
+                    details.append("an active mutable borrow exists")
+                if has_shared:
+                    details.append(f"{self.shared_counts.get(owner, 0)} active shared borrow(s)")
+                suffix = f" ({'; '.join(details)})" if details else ""
+                raise SemanticError(_diag(filename, line, col, f"cannot mutably borrow {owner} while it is already borrowed{suffix}"))
             return
         if has_mut:
             raise SemanticError(_diag(filename, line, col, f"cannot immutably borrow {owner} while it is mutably borrowed"))
@@ -478,14 +730,22 @@ class _BorrowState:
         if name in self.mutable_borrowed:
             raise SemanticError(_diag(filename, line, col, f"cannot mutate {name} while it is mutably borrowed"))
 
+    def ensure_can_move(self, name: str, filename: str, line: int, col: int):
+        if self.shared_counts.get(name, 0) > 0:
+            raise SemanticError(_diag(filename, line, col, f"cannot move {name} while it is immutably borrowed"))
+        if name in self.mutable_borrowed:
+            raise SemanticError(_diag(filename, line, col, f"cannot move {name} while it is mutably borrowed"))
+
 
 class _MoveState:
     def __init__(self):
         self.moved: dict[str, bool] = {}
+        self.fn_ret: str | None = None
 
     def copy(self):
         nxt = _MoveState()
         nxt.moved = self.moved.copy()
+        nxt.fn_ret = self.fn_ret
         return nxt
 
     def merge(self, left: "_MoveState", right: "_MoveState"):
@@ -493,6 +753,7 @@ class _MoveState:
         for name in set(left.moved) | set(right.moved):
             merged[name] = left.moved.get(name, False) or right.moved.get(name, False)
         self.moved = merged
+        self.fn_ret = left.fn_ret or right.fn_ret
 
     def release_scope(self, scope_prev: dict[str, bool | None]):
         for name, prev in scope_prev.items():
@@ -534,14 +795,27 @@ def _same_type(expected: str, actual: str) -> bool:
         return True
     expected = _canonical_type(expected)
     actual = _canonical_type(actual)
+    if _is_union_type(expected):
+        exp_members = _union_members(expected)
+        if _is_union_type(actual):
+            act_members = _union_members(actual)
+            return all(any(_same_type(e, a) for e in exp_members) for a in act_members)
+        return any(_same_type(e, actual) for e in exp_members)
+    if _is_union_type(actual):
+        return all(_same_type(expected, a) for a in _union_members(actual))
     if expected == actual:
         return True
     if expected.startswith("&") and not expected.startswith("&mut ") and actual.startswith("&mut "):
         return _same_type(expected[1:], actual[5:])
-    if _is_option_type(expected) and _is_option_type(actual):
-        return _same_type(_option_inner(expected), _option_inner(actual))
-    if _is_option_type(expected) and not _is_option_type(actual):
-        return _same_type(_option_inner(expected), actual)
+    exp_param = _parse_parametric_type(expected)
+    act_param = _parse_parametric_type(actual)
+    if exp_param is not None and act_param is not None:
+        exp_base, exp_args = exp_param
+        act_base, act_args = act_param
+        if exp_base == act_base and len(exp_args) == len(act_args):
+            if exp_base in {"GpuBuffer", "GpuSlice", "GpuMutSlice"}:
+                return all(_same_type(ea, aa) or _canonical_type(aa) == "Any" for ea, aa in zip(exp_args, act_args))
+            return all(_same_type(ea, aa) for ea, aa in zip(exp_args, act_args))
     if {expected, actual} == {"String", "str"}:
         return True
     if expected == "&str" and actual in {"String", "str", "&str"}:
@@ -563,9 +837,9 @@ def _same_type(expected: str, actual: str) -> bool:
 
 def _require_type(filename: str, line: int, col: int, expected: str, actual: str, what: str):
     if actual == NONE_LIT_TYPE:
-        if _is_option_type(expected):
+        if _is_nullable_union(expected):
             return
-        raise SemanticError(_diag(filename, line, col, f"`none` requires Option<T> context for {what}, got {expected}"))
+        raise SemanticError(_diag(filename, line, col, f"`none` requires nullable context for {what}, got {expected}"))
     if not _same_type(expected, actual):
         exp = _canonical_type(expected)
         act = _canonical_type(actual)
@@ -586,6 +860,8 @@ def _require_strict_int_operands(filename: str, line: int, col: int, op: str, le
     r = _canonical_type(right)
     if not _is_int_type(l) or not _is_int_type(r):
         raise SemanticError(_diag(filename, line, col, f"operator {op} expects integer operands, got {left} and {right}"))
+    if l == "Int" or r == "Int":
+        return
     if l != r:
         raise SemanticError(_diag(filename, line, col, f"operator {op} requires matching integer types, got {left} and {right}"))
 
@@ -593,6 +869,10 @@ def _require_strict_int_operands(filename: str, line: int, col: int, op: str, le
 def _cast_supported(src: str, dst: str) -> bool:
     src_c = _canonical_type(src)
     dst_c = _canonical_type(dst)
+    if _same_type(src_c, dst_c):
+        return True
+    def _is_generic_symbol_name(t: str) -> bool:
+        return bool(re.fullmatch(r"[A-Z][A-Za-z0-9_]*", t)) and t not in PRIMITIVES
     if _is_numeric_scalar_type(src_c) and _is_numeric_scalar_type(dst_c):
         return True
     if src_c == "Bool" and (_is_numeric_scalar_type(dst_c) or dst_c == "Bool"):
@@ -600,19 +880,25 @@ def _cast_supported(src: str, dst: str) -> bool:
     if dst_c == "Bool" and (_is_numeric_scalar_type(src_c) or src_c == "Bool"):
         return True
     if src_c == "Any":
+        if _is_generic_symbol_name(dst_c):
+            return True
         return _is_any_dynamic_cast_target(dst_c)
     if dst_c == "Any":
+        if _is_generic_symbol_name(src_c):
+            return True
         return _is_any_dynamic_cast_target(src_c) or _is_ref_type(src_c) or src_c.startswith("fn(")
     return False
 
 
 def _is_any_dynamic_cast_target(typ: str) -> bool:
     c = _canonical_type(typ)
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(<.*>)?", c):
+        return True
     return (
         c in {"Bool", "String", "str"}
         or _is_numeric_scalar_type(c)
+        or _is_gpu_memory_type(c)
         or _is_ref_type(c)
-        or _is_option_type(c)
         or _is_vec_type(c)
         or _is_slice_type(c)
         or c.startswith("fn(")
@@ -696,21 +982,41 @@ def _require_compound_assign_compat(filename: str, line: int, col: int, op: str,
     raise SemanticError(_diag(filename, line, col, f"unsupported assignment operator {op}"))
 
 
-def _consume_if_move_name(expr: Any, expr_ty: str, move: _MoveState, filename: str, line: int, col: int):
+def _consume_if_move_name(
+    expr: Any,
+    expr_ty: str,
+    borrow: _BorrowState,
+    move: _MoveState,
+    filename: str,
+    line: int,
+    col: int,
+):
     if isinstance(expr, Name) and not _is_copy_type(expr_ty):
+        borrow.ensure_can_move(expr.value, filename, line, col)
         move.consume(expr.value, filename, line, col)
 
 
-def _ref_return_tied_to_param(expr: Any, ref_param_names: set[str], borrow: _BorrowState) -> bool:
+def _ref_return_tie_info(expr: Any, ref_param_names: set[str], borrow: _BorrowState) -> tuple[bool, str | None]:
     if isinstance(expr, Name):
         if expr.value in ref_param_names:
-            return True
+            return True, None
         origin = borrow.ref_origins.get(expr.value)
         if origin in ref_param_names:
-            return True
+            return True, None
         info = borrow.ref_bindings.get(expr.value)
-        return info is not None and info.owner in ref_param_names
-    return False
+        if info is not None and info.owner in ref_param_names:
+            return True, None
+        if info is not None:
+            return False, f"returned `{expr.value}` currently borrows `{info.owner}`"
+        if origin is not None:
+            return False, f"returned `{expr.value}` originates from `{origin}`"
+        return False, f"returned `{expr.value}` does not originate from an input reference parameter"
+    return False, "only returning a named reference tied to an input reference parameter is currently supported"
+
+
+def _ref_return_tied_to_param(expr: Any, ref_param_names: set[str], borrow: _BorrowState) -> bool:
+    ok, _ = _ref_return_tie_info(expr, ref_param_names, borrow)
+    return ok
 
 
 def _lookup(name: str, scopes: list[dict[str, str]]) -> str | None:
@@ -718,6 +1024,39 @@ def _lookup(name: str, scopes: list[dict[str, str]]) -> str | None:
         if name in scope:
             return scope[name]
     return None
+
+
+def _scope_index(name: str, scopes: list[dict[str, str]]) -> int | None:
+    for i in range(len(scopes) - 1, -1, -1):
+        if name in scopes[i]:
+            return i
+    return None
+
+
+def _ensure_ref_owner_outlives_binding(
+    owner: str,
+    ref_name: str,
+    scopes: list[dict[str, str]],
+    filename: str,
+    line: int,
+    col: int,
+):
+    owner_i = _scope_index(owner, scopes)
+    ref_i = _scope_index(ref_name, scopes)
+    if owner_i is None or ref_i is None:
+        return
+    if owner_i > ref_i:
+        raise SemanticError(
+            _diag(
+                filename,
+                line,
+                col,
+                (
+                    f"reference {ref_name} cannot outlive borrowed value {owner} "
+                    f"(owner scope depth {owner_i}, reference scope depth {ref_i})"
+                ),
+            )
+        )
 
 
 def _assign(name: str, typ: str, scopes: list[dict[str, str]], filename: str, line: int, col: int):
@@ -728,8 +1067,8 @@ def _assign(name: str, typ: str, scopes: list[dict[str, str]], filename: str, li
     raise SemanticError(_diag(filename, line, col, f"assignment to undefined name {name}"))
 
 
-def _lookup_fixed(name: str, fixed_scopes: list[dict[str, bool]]) -> bool | None:
-    for scope in reversed(fixed_scopes):
+def _lookup_mut(name: str, mut_scopes: list[dict[str, bool]]) -> bool | None:
+    for scope in reversed(mut_scopes):
         if name in scope:
             return scope[name]
     return None
@@ -807,10 +1146,10 @@ def _parse_fn_type(typ: str) -> tuple[list[str], str, bool] | None:
                 break
     if close < 0 or depth != 0:
         return None
-    if close + 4 > len(t) or t[close + 1 : close + 5] != " -> ":
+    if close + 1 > len(t) or t[close + 1] != " ":
         return None
     params_text = t[3:close].strip()
-    ret = t[close + 5 :].strip()
+    ret = t[close + 1:].strip()
     if not ret:
         return None
     if not params_text:
@@ -820,7 +1159,7 @@ def _parse_fn_type(typ: str) -> tuple[list[str], str, bool] | None:
 
 def _fn_type(params: list[tuple[str, str]], ret: str, *, unsafe: bool = False) -> str:
     head = "unsafe fn" if unsafe else "fn"
-    return f"{head}({', '.join(ty for _, ty in params)}) -> {ret}"
+    return f"{head}({', '.join(ty for _, ty in params)}) {ret}"
 
 
 def _is_send_type(
@@ -840,8 +1179,9 @@ def _is_send_type(
         return _is_sync_type(c[1:], structs, seen=seen)
     if c.startswith("fn(") or c.startswith("unsafe fn("):
         return True
-    if _is_option_type(c):
-        return _is_send_type(_option_inner(c), structs, seen=seen)
+    if _is_gpu_memory_type(c):
+        inner = _gpu_element_type(c)
+        return inner is not None and _is_send_type(inner, structs, seen=seen)
     if _is_vec_type(c):
         return _is_send_type(_vec_inner(c), structs, seen=seen)
     if _is_slice_type(c):
@@ -878,8 +1218,9 @@ def _is_sync_type(
         return _is_sync_type(c[1:], structs, seen=seen)
     if c.startswith("fn(") or c.startswith("unsafe fn("):
         return True
-    if _is_option_type(c):
-        return _is_sync_type(_option_inner(c), structs, seen=seen)
+    if _is_gpu_memory_type(c):
+        inner = _gpu_element_type(c)
+        return inner is not None and _is_sync_type(inner, structs, seen=seen)
     if _is_vec_type(c):
         # Vec<T> is mutable by design and not Sync without synchronization.
         return False
@@ -929,11 +1270,122 @@ def _typed(node: Any, typ: str) -> str:
     return typ
 
 
-def _specialization_score(
+def _current_trait_impls() -> dict[str, set[str]]:
+    return _TRAIT_IMPLS_STACK[-1] if _TRAIT_IMPLS_STACK else {}
+
+
+def _current_traits() -> dict[str, TraitDecl]:
+    return _TRAITS_STACK[-1] if _TRAITS_STACK else {}
+
+
+def _current_fn_groups() -> dict[str, list[FnDecl | ExternFnDecl]]:
+    return _FN_GROUPS_STACK[-1] if _FN_GROUPS_STACK else {}
+
+
+def _replace_self_type(typ: str, concrete: str) -> str:
+    t = _canonical_type(typ)
+    if t == "Self":
+        return _canonical_type(concrete)
+    if t.startswith("&mut "):
+        inner = _replace_self_type(t[5:], concrete)
+        return f"&mut {inner}"
+    if t.startswith("&"):
+        inner = _replace_self_type(t[1:], concrete)
+        return f"&{inner}"
+    if "<" in t and t.endswith(">"):
+        parsed = _parse_parametric_type(t)
+        if parsed is not None:
+            base, args = parsed
+            return f"{base}<{', '.join(_replace_self_type(a, concrete) for a in args)}>"
+    return t
+
+
+def _trait_satisfied_by_type(trait_name: str, concrete: str) -> bool:
+    return len(_trait_missing_methods(trait_name, concrete)) == 0
+
+
+def _trait_missing_methods_in_context(
+    trait_name: str,
+    concrete: str,
+    *,
+    traits: dict[str, TraitDecl],
+    fn_groups: dict[str, list[FnDecl | ExternFnDecl]],
+    explicit_impls: dict[str, set[str]],
+) -> list[str]:
+    concrete_c = _canonical_type(concrete)
+    if concrete_c in explicit_impls.get(trait_name, set()):
+        return []
+    decl = traits.get(trait_name)
+    if decl is None:
+        return [f"unknown trait {trait_name}"]
+    missing: list[str] = []
+    for mname, params, ret in decl.methods:
+        target_params = [(n, _replace_self_type(t, concrete_c)) for n, t in params]
+        target_ret = _replace_self_type(ret, concrete_c)
+        cands = fn_groups.get(mname, [])
+        matched = False
+        for cand in cands:
+            if len(cand.params) != len(target_params):
+                continue
+            if not all(
+                _same_type(type_text(cp), type_text(tp))
+                for (_, cp), (_, tp) in zip(cand.params, target_params)
+            ):
+                continue
+            if not _same_type(type_text(cand.ret), target_ret):
+                continue
+            matched = True
+            break
+        if not matched:
+            sig = f"{mname}({', '.join(type_text(t) for _, t in target_params)}) {target_ret}"
+            missing.append(sig)
+    return missing
+
+
+def _trait_missing_methods(trait_name: str, concrete: str) -> list[str]:
+    return _trait_missing_methods_in_context(
+        trait_name,
+        concrete,
+        traits=_current_traits(),
+        fn_groups=_current_fn_groups(),
+        explicit_impls=_current_trait_impls(),
+    )
+
+
+def _where_bounds_satisfied_for_args(
     decl: FnDecl | ExternFnDecl,
     arg_types: list[str],
     known_types: set[str],
-) -> tuple[int, int, int, int] | None:
+    *,
+    traits: dict[str, TraitDecl],
+    fn_groups: dict[str, list[FnDecl | ExternFnDecl]],
+    trait_impls: dict[str, set[str]],
+) -> bool:
+    matched = _match_decl_bindings(decl, arg_types, known_types)
+    if matched is None:
+        return False
+    _, _, _, bindings = matched
+    for tvar, trait_name in list(getattr(decl, "where_bounds", [])):
+        concrete = bindings.get(tvar)
+        if concrete is None:
+            return False
+        missing = _trait_missing_methods_in_context(
+            trait_name,
+            concrete,
+            traits=traits,
+            fn_groups=fn_groups,
+            explicit_impls=trait_impls,
+        )
+        if missing:
+            return False
+    return True
+
+
+def _match_decl_bindings(
+    decl: FnDecl | ExternFnDecl,
+    arg_types: list[str],
+    known_types: set[str],
+) -> tuple[int, int, int, dict[str, str]] | None:
     is_variadic = bool(getattr(decl, "is_variadic", False))
     if is_variadic:
         if len(arg_types) < len(decl.params):
@@ -948,7 +1400,22 @@ def _specialization_score(
     exact = 0
     constrained = 0
     wildcards = 0
-    for (_, pty), aty in zip(decl.params, arg_types):
+    for i, ((_, pty), aty) in enumerate(zip(decl.params, arg_types)):
+        if i == 0 and _is_ref_type(pty):
+            inner = _strip_ref(pty)
+            if _is_typevar(inner, known_types):
+                bound = bindings.get(inner)
+                if bound is None:
+                    bindings[inner] = aty
+                elif not _same_type(bound, aty):
+                    return None
+                constrained += 1
+                continue
+            if _same_type(inner, aty):
+                constrained += 1
+                if _canonical_type(inner) == _canonical_type(aty):
+                    exact += 1
+                continue
         if pty in type_vars:
             bound = bindings.get(pty)
             if bound is None:
@@ -965,8 +1432,206 @@ def _specialization_score(
         constrained += 1
         if pty == aty:
             exact += 1
-    impl_bonus = 1 if getattr(decl, "is_impl", False) else 0
-    return (exact, constrained, -wildcards, impl_bonus)
+    return (exact, constrained, wildcards, bindings)
+
+
+def _decl_rejection_reason(
+    decl: FnDecl | ExternFnDecl,
+    arg_types: list[str],
+    known_types: set[str],
+) -> tuple[str, str]:
+    is_variadic = bool(getattr(decl, "is_variadic", False))
+    if is_variadic:
+        if len(arg_types) < len(decl.params):
+            return ("arity", f"expects at least {len(decl.params)} args, got {len(arg_types)}")
+    elif len(decl.params) != len(arg_types):
+        return ("arity", f"expects {len(decl.params)} args, got {len(arg_types)}")
+
+    type_vars = set(getattr(decl, "generics", []))
+    for _, pty in decl.params:
+        if _is_typevar(pty, known_types):
+            type_vars.add(pty)
+
+    bindings: dict[str, str] = {}
+    for i, ((_, pty), aty) in enumerate(zip(decl.params, arg_types), start=1):
+        if i == 1 and _is_ref_type(pty):
+            inner = _strip_ref(pty)
+            if _is_typevar(inner, known_types):
+                prev = bindings.get(inner)
+                if prev is not None and not _same_type(prev, aty):
+                    return ("generic", f"arg {i} gives inconsistent binding for {inner}: {prev} vs {aty}")
+                bindings[inner] = aty
+                continue
+            if _same_type(inner, aty):
+                continue
+        if pty in type_vars:
+            prev = bindings.get(pty)
+            if prev is not None and not _same_type(prev, aty):
+                return ("generic", f"arg {i} gives inconsistent binding for {pty}: {prev} vs {aty}")
+            bindings[pty] = aty
+            continue
+        if pty == "Any":
+            continue
+        if not _same_type(pty, aty):
+            return ("type", f"arg {i} expects {type_text(pty)}, got {aty}")
+
+    for tvar, trait_name in list(getattr(decl, "where_bounds", [])):
+        concrete = bindings.get(tvar)
+        if concrete is None:
+            return ("generic", f"could not bind type variable {tvar} for bound {tvar}: {trait_name}")
+        missing = _trait_missing_methods(trait_name, concrete)
+        if missing:
+            return (
+                "bound",
+                f"{tvar}: {trait_name} not satisfied for {concrete}; missing {', '.join(missing)}",
+            )
+    return ("unknown", "not viable")
+
+
+def _specialization_score(
+    decl: FnDecl | ExternFnDecl,
+    arg_types: list[str],
+    known_types: set[str],
+) -> tuple[int, int, int, int] | None:
+    matched = _match_decl_bindings(decl, arg_types, known_types)
+    if matched is None:
+        return None
+    exact, constrained, wildcards, bindings = matched
+    where_bounds = list(getattr(decl, "where_bounds", []))
+    if where_bounds:
+        for tvar, trait_name in where_bounds:
+            concrete = bindings.get(tvar)
+            if concrete is None:
+                return None
+            if not _trait_satisfied_by_type(trait_name, concrete):
+                return None
+    return (exact, constrained, -wildcards, 0)
+
+
+def _decl_signature_text(decl: FnDecl | ExternFnDecl) -> str:
+    params = ", ".join(type_text(t) for _, t in decl.params)
+    bounds = list(getattr(decl, "where_bounds", []))
+    generics = list(getattr(decl, "generics", []))
+    if not generics and bounds:
+        seen_tvars: set[str] = set()
+        for tv, _ in bounds:
+            if tv not in seen_tvars:
+                generics.append(tv)
+                seen_tvars.add(tv)
+    if bounds and generics:
+        grouped: dict[str, list[str]] = {}
+        for tv, tr in bounds:
+            grouped.setdefault(tv, []).append(tr)
+        gtext: list[str] = []
+        for g in generics:
+            cons = grouped.get(g, [])
+            if cons:
+                gtext.append(f"{g} {' + '.join(cons)}")
+            else:
+                gtext.append(g)
+        return f"{decl.name}<{', '.join(gtext)}>({params}) {type_text(decl.ret)}"
+    if generics:
+        return f"{decl.name}<{', '.join(generics)}>({params}) {type_text(decl.ret)}"
+    return f"{decl.name}({params}) {type_text(decl.ret)}"
+
+
+def _decl_more_specific(a: FnDecl | ExternFnDecl, b: FnDecl | ExternFnDecl, known_types: set[str]) -> bool:
+    if len(a.params) != len(b.params):
+        return False
+    a_typevars = set(getattr(a, "generics", []))
+    b_typevars = set(getattr(b, "generics", []))
+    for _, pty in a.params:
+        if _is_typevar(pty, known_types):
+            a_typevars.add(pty)
+    for _, pty in b.params:
+        if _is_typevar(pty, known_types):
+            b_typevars.add(pty)
+
+    strictly_more = False
+    for i, ((_, ap), (_, bp)) in enumerate(zip(a.params, b.params)):
+        ap_c = _canonical_type(ap)
+        bp_c = _canonical_type(bp)
+        a_wild = ap_c == "Any" or ap_c in a_typevars
+        b_wild = bp_c == "Any" or bp_c in b_typevars
+
+        if i == 0 and _is_ref_type(ap_c):
+            inner = _strip_ref(ap_c)
+            if inner in a_typevars:
+                a_wild = True
+        if i == 0 and _is_ref_type(bp_c):
+            inner = _strip_ref(bp_c)
+            if inner in b_typevars:
+                b_wild = True
+
+        if a_wild and not b_wild:
+            return False
+        if not a_wild and b_wild:
+            strictly_more = True
+            continue
+        if not a_wild and not b_wild and not _same_type(ap_c, bp_c):
+            return False
+
+    a_bounds = set(getattr(a, "where_bounds", []))
+    b_bounds = set(getattr(b, "where_bounds", []))
+    if a_bounds < b_bounds:
+        return False
+    if a_bounds > b_bounds:
+        strictly_more = True
+    return strictly_more
+
+
+def _decl_overlap_probe(a: FnDecl | ExternFnDecl, b: FnDecl | ExternFnDecl, known_types: set[str]) -> list[str] | None:
+    if bool(getattr(a, "is_variadic", False)) or bool(getattr(b, "is_variadic", False)):
+        return None
+    if len(a.params) != len(b.params):
+        return None
+    probes: list[str] = []
+    a_typevars = set(getattr(a, "generics", []))
+    b_typevars = set(getattr(b, "generics", []))
+    for _, pty in a.params:
+        if _is_typevar(pty, known_types):
+            a_typevars.add(pty)
+    for _, pty in b.params:
+        if _is_typevar(pty, known_types):
+            b_typevars.add(pty)
+
+    for i, ((_, ap), (_, bp)) in enumerate(zip(a.params, b.params)):
+        ap_c = _canonical_type(ap)
+        bp_c = _canonical_type(bp)
+        a_wild = ap_c == "Any" or ap_c in a_typevars
+        b_wild = bp_c == "Any" or bp_c in b_typevars
+        if i == 0 and _is_ref_type(ap_c) and _strip_ref(ap_c) in a_typevars:
+            a_wild = True
+        if i == 0 and _is_ref_type(bp_c) and _strip_ref(bp_c) in b_typevars:
+            b_wild = True
+        if a_wild and b_wild:
+            probes.append("Int")
+            continue
+        if a_wild and not b_wild:
+            probes.append(_strip_ref(bp_c) if i == 0 and _is_ref_type(bp_c) else bp_c)
+            continue
+        if b_wild and not a_wild:
+            probes.append(_strip_ref(ap_c) if i == 0 and _is_ref_type(ap_c) else ap_c)
+            continue
+        if _same_type(ap_c, bp_c):
+            probes.append(_strip_ref(ap_c) if i == 0 and _is_ref_type(ap_c) else ap_c)
+            continue
+        if i == 0 and _is_ref_type(ap_c) and _same_type(_strip_ref(ap_c), bp_c):
+            probes.append(bp_c)
+            continue
+        if i == 0 and _is_ref_type(bp_c) and _same_type(_strip_ref(bp_c), ap_c):
+            probes.append(ap_c)
+            continue
+        return None
+    if _match_decl_bindings(a, probes, known_types) is None:
+        return None
+    if _match_decl_bindings(b, probes, known_types) is None:
+        return None
+    return probes
+
+
+def _decls_overlap(a: FnDecl | ExternFnDecl, b: FnDecl | ExternFnDecl, known_types: set[str]) -> bool:
+    return _decl_overlap_probe(a, b, known_types) is not None
 
 
 def _choose_impl(
@@ -984,12 +1649,58 @@ def _choose_impl(
         if sc is not None:
             ranked.append((sc, d))
     if not ranked:
-        raise SemanticError(_diag(filename, line, col, f"no matching impl for {name}({', '.join(arg_types)})"))
+        bound_rejections: list[tuple[str, str]] = []
+        other_rejections: list[tuple[str, str]] = []
+        for d in decls:
+            sig = _decl_signature_text(d)
+            kind, reason = _decl_rejection_reason(d, arg_types, known_types)
+            if kind == "bound":
+                bound_rejections.append((sig, reason))
+            else:
+                other_rejections.append((sig, reason))
+        if bound_rejections:
+            sig, reason = bound_rejections[0]
+            raise SemanticError(
+                _diag(
+                    filename,
+                    line,
+                    col,
+                    (
+                        f"trait bound check failed for {name}({', '.join(arg_types)}): {reason}; "
+                        f"candidate `{sig}`"
+                    ),
+                )
+            )
+        rejection_text = ""
+        if other_rejections:
+            details = "; ".join(
+                f"`{sig}` rejected: {reason}" for sig, reason in other_rejections[:3]
+            )
+            rejection_text = f"; rejected: {details}"
+        available = ", ".join(f"`{_decl_signature_text(d)}`" for d in decls)
+        if available:
+            raise SemanticError(
+                _diag(
+                    filename,
+                    line,
+                    col,
+                    f"no matching overload for {name}({', '.join(arg_types)}); available: {available}{rejection_text}",
+                )
+            )
+        raise SemanticError(_diag(filename, line, col, f"no matching overload for {name}({', '.join(arg_types)})"))
     ranked.sort(key=lambda x: x[0], reverse=True)
     best_score = ranked[0][0]
     best = [d for s, d in ranked if s == best_score]
     if len(best) > 1:
-        raise SemanticError(_diag(filename, line, col, f"ambiguous impl for {name}({', '.join(arg_types)})"))
+        candidates = ", ".join(f"`{_decl_signature_text(d)}`" for d in best)
+        raise SemanticError(
+            _diag(
+                filename,
+                line,
+                col,
+                f"ambiguous overload for {name}({', '.join(arg_types)}): candidates {candidates}",
+            )
+        )
     return best[0]
 
 
@@ -1093,8 +1804,9 @@ def analyze(
         fn_groups: dict[str, list[FnDecl | ExternFnDecl]] = {}
         structs: dict[str, StructDecl] = {}
         enums: dict[str, EnumDecl] = {}
+        traits: dict[str, TraitDecl] = {}
         global_scope: dict[str, str] = {}
-        global_fixed_scope: dict[str, bool] = {}
+        global_mut_scope: dict[str, bool] = {}
         imported_seen: set[str] = set()
         ffi_libs: set[str] = set()
         local_const_types: dict[str, str] = {}
@@ -1133,6 +1845,9 @@ def analyze(
                                 raise SemanticError(_diag(item_filename, item.line, item.col, "packed struct fields must be integer or bool types"))
                     structs[item.name] = item
                     continue
+                if isinstance(item, TraitDecl):
+                    traits[item.name] = item
+                    continue
                 if isinstance(item, TypeAliasDecl):
                     _validate_decl_type(item.target, item_filename, item.line, item.col)
                     continue
@@ -1140,15 +1855,17 @@ def analyze(
                     enums[item.name] = item
                     continue
                 if isinstance(item, LetStmt):
-                    if not item.fixed:
-                        raise SemanticError(_diag(item_filename, item.line, item.col, "top-level `let` bindings must be `fixed`"))
+                    if getattr(item, "reassign_if_exists", False):
+                        raise SemanticError(_diag(item_filename, item.line, item.col, "top-level assignment requires a prior binding"))
+                    if item.mut and not getattr(item, "_decl_unsafe", False):
+                        raise SemanticError(_diag(item_filename, item.line, item.col, "top-level mutable bindings require `unsafe mut`"))
                     inferred = item.type_name or _const_expr_type(item.expr, local_const_types)
                     if inferred is None:
-                        raise SemanticError(_diag(item_filename, item.line, item.col, f"cannot infer type for top-level fixed binding {item.name}"))
+                        raise SemanticError(_diag(item_filename, item.line, item.col, f"cannot infer type for top-level binding {item.name}"))
                     _validate_decl_type(inferred, item_filename, item.line, item.col)
                     local_const_types[item.name] = inferred
                     global_scope[item.name] = inferred
-                    global_fixed_scope[item.name] = True
+                    global_mut_scope[item.name] = bool(item.mut)
                     continue
                 if isinstance(item, (FnDecl, ExternFnDecl)):
                     for _, pty in item.params:
@@ -1178,10 +1895,134 @@ def analyze(
                 _record(err)
                 continue
 
+        trait_impls: dict[str, set[str]] = {name: set() for name in traits}
+
+        for decls in fn_groups.values():
+            for fn in decls:
+                if not isinstance(fn, FnDecl):
+                    continue
+                if getattr(fn, "gpu_kernel", False):
+                    fn_filename = getattr(fn, "_source_filename", filename)
+                    if fn.async_fn:
+                        _record(
+                            SemanticError(
+                                _diag(fn_filename, fn.line, fn.col, "gpu kernels cannot be async")
+                            )
+                        )
+                    if fn.unsafe:
+                        _record(
+                            SemanticError(
+                                _diag(fn_filename, fn.line, fn.col, "gpu kernels cannot be unsafe")
+                            )
+                        )
+                    if fn.generics:
+                        _record(
+                            SemanticError(
+                                _diag(fn_filename, fn.line, fn.col, "gpu kernels do not support generic parameters yet")
+                            )
+                        )
+                    if fn.where_bounds:
+                        _record(
+                            SemanticError(
+                                _diag(fn_filename, fn.line, fn.col, "gpu kernels do not support trait bounds on generics")
+                            )
+                        )
+                    if _canonical_type(fn.ret) != "Void":
+                        _record(
+                            SemanticError(
+                                _diag(fn_filename, fn.line, fn.col, "gpu kernels must return Void")
+                            )
+                        )
+                    for pname, pty in fn.params:
+                        if not _is_gpu_kernel_param_type(pty, structs):
+                            _record(
+                                SemanticError(
+                                    _diag(
+                                        fn_filename,
+                                        fn.line,
+                                        fn.col,
+                                        f"gpu kernel parameter {pname} uses unsupported type {pty}",
+                                    )
+                                )
+                            )
+                known_types = set(PRIMITIVES) | set(structs.keys()) | set(enums.keys())
+                type_vars = set(fn.generics)
+                for _, pty in fn.params:
+                    if _is_typevar(pty, known_types):
+                        type_vars.add(pty)
+                if _is_typevar(fn.ret, known_types):
+                    type_vars.add(fn.ret)
+                for tvar, trait_name in getattr(fn, "where_bounds", []):
+                    if tvar not in type_vars:
+                        _record(
+                            SemanticError(
+                                _diag(
+                                    getattr(fn, "_source_filename", filename),
+                                    fn.line,
+                                    fn.col,
+                                    f"generic bound type variable {tvar} is not declared in function generics",
+                                )
+                            )
+                        )
+                    if trait_name not in traits:
+                        _record(
+                            SemanticError(
+                                _diag(
+                                    getattr(fn, "_source_filename", filename),
+                                    fn.line,
+                                    fn.col,
+                                    f"unknown trait {trait_name} in generic bounds",
+                                )
+                            )
+                        )
+
+        known_types = set(PRIMITIVES) | set(structs.keys()) | set(enums.keys())
+        for name, decls in fn_groups.items():
+            fn_decls = [d for d in decls if isinstance(d, FnDecl) and not bool(getattr(d, "is_variadic", False))]
+            for i, a in enumerate(fn_decls):
+                for b in fn_decls[i + 1 :]:
+                    probe = _decl_overlap_probe(a, b, known_types)
+                    if probe is None:
+                        continue
+                    if not _where_bounds_satisfied_for_args(
+                        a,
+                        probe,
+                        known_types,
+                        traits=traits,
+                        fn_groups=fn_groups,
+                        trait_impls=trait_impls,
+                    ):
+                        continue
+                    if not _where_bounds_satisfied_for_args(
+                        b,
+                        probe,
+                        known_types,
+                        traits=traits,
+                        fn_groups=fn_groups,
+                        trait_impls=trait_impls,
+                    ):
+                        continue
+                    if _decl_more_specific(a, b, known_types) or _decl_more_specific(b, a, known_types):
+                        continue
+                    probe_text = ", ".join(probe)
+                    _record(
+                        SemanticError(
+                            _diag(
+                                getattr(a, "_source_filename", filename),
+                                a.line,
+                                a.col,
+                                (
+                                    f"overlapping overloads for {name} are ambiguous for ({probe_text}): "
+                                    f"`{_decl_signature_text(a)}` vs `{_decl_signature_text(b)}`"
+                                ),
+                            )
+                        )
+                    )
+
         prog.ffi_libs = set(sorted(ffi_libs))
 
         for name, decls in fn_groups.items():
-            if len(decls) == 1 and not (isinstance(decls[0], FnDecl) and decls[0].is_impl):
+            if len(decls) == 1:
                 if isinstance(decls[0], FnDecl):
                     decls[0].symbol = name
                 continue
@@ -1202,12 +2043,10 @@ def analyze(
                             filename,
                             entries[0].line,
                             entries[0].col,
-                            f"{require_entrypoint}() must have a single unambiguous impl",
+                            f"{require_entrypoint}() must have a single unambiguous declaration",
                         )
                     )
                 entry = entries[0]
-                if entry.is_impl:
-                    raise SemanticError(_diag(filename, entry.line, entry.col, f"{require_entrypoint}() cannot be declared with impl"))
                 if entry.params:
                     raise SemanticError(_diag(filename, entry.line, entry.col, f"{require_entrypoint}() must not take parameters"))
                 if require_entrypoint == "main" and _canonical_type(entry.ret) != "Int":
@@ -1215,16 +2054,26 @@ def analyze(
             except SemanticError as err:
                 _record(err)
 
-        for decls in fn_groups.values():
-            for fn in decls:
-                if isinstance(fn, ExternFnDecl):
-                    continue
-                try:
-                    fn_filename = getattr(fn, "_source_filename", filename)
-                    _analyze_fn(fn, fn_groups, structs, enums, fn_filename, global_scope, global_fixed_scope)
-                except SemanticError as err:
-                    _record(err)
-                    continue
+        _KNOWN_TRAITS_STACK.append(set(traits.keys()))
+        _TRAIT_IMPLS_STACK.append({k: set(v) for k, v in trait_impls.items()})
+        _TRAITS_STACK.append(dict(traits))
+        _FN_GROUPS_STACK.append(fn_groups)
+        try:
+            for decls in fn_groups.values():
+                for fn in decls:
+                    if isinstance(fn, ExternFnDecl):
+                        continue
+                    try:
+                        fn_filename = getattr(fn, "_source_filename", filename)
+                        _analyze_fn(fn, fn_groups, structs, enums, fn_filename, global_scope, global_mut_scope)
+                    except SemanticError as err:
+                        _record(err)
+                        continue
+        finally:
+            _FN_GROUPS_STACK.pop()
+            _TRAITS_STACK.pop()
+            _TRAIT_IMPLS_STACK.pop()
+            _KNOWN_TRAITS_STACK.pop()
         if errors:
             raise SemanticError("\n".join(errors))
     finally:
@@ -1238,7 +2087,7 @@ def _analyze_fn(
     enums: dict[str, EnumDecl],
     filename: str,
     global_scope: dict[str, str],
-    global_fixed_scope: dict[str, bool],
+    global_mut_scope: dict[str, bool],
 ):
     for pname, pty in fn.params:
         _require_sized_value_type(filename, fn.line, fn.col, pty, f"parameter {pname}")
@@ -1247,10 +2096,12 @@ def _analyze_fn(
     if _is_ref_type(fn.ret) and not ref_param_names:
         raise SemanticError(_diag(filename, fn.line, fn.col, f"function {fn.name} returns a reference but has no reference parameter to tie its lifetime"))
     scopes: list[dict[str, str]] = [global_scope, {n: t for n, t in fn.params}]
-    fixed_scopes: list[dict[str, bool]] = [global_fixed_scope, {n: False for n, _ in fn.params}]
+    param_mut = dict(getattr(fn, "param_mut", {}))
+    mut_scopes: list[dict[str, bool]] = [global_mut_scope, {n: bool(param_mut.get(n, False)) for n, _ in fn.params}]
     owned = _OwnedState()
     borrow = _BorrowState()
     move = _MoveState()
+    move.fn_ret = _canonical_type(fn.ret)
     for n, _ in fn.params:
         move.declare(n)
     borrow_scopes: list[set[str]] = [set()]
@@ -1258,7 +2109,7 @@ def _analyze_fn(
     _check_block(
         fn.body,
         scopes,
-        fixed_scopes,
+        mut_scopes,
         borrow_scopes,
         move_scopes,
         fn_groups,
@@ -1273,6 +2124,7 @@ def _analyze_fn(
         fn.name,
         0,
         fn.unsafe,
+        bool(getattr(fn, "gpu_kernel", False)),
     )
     if _canonical_type(fn.ret) not in {"Void", "Never"} and not _has_value_return(fn.body):
         raise SemanticError(_diag(filename, fn.line, fn.col, f"function {fn.name} must return {fn.ret}"))
@@ -1307,7 +2159,7 @@ def _has_value_return(body: list[Any]) -> bool:
 def _check_block(
     body: list[Any],
     scopes: list[dict[str, str]],
-    fixed_scopes: list[dict[str, bool]],
+    mut_scopes: list[dict[str, bool]],
     borrow_scopes: list[set[str]],
     move_scopes: list[dict[str, bool | None]],
     fn_groups: dict[str, list[FnDecl | ExternFnDecl]],
@@ -1322,12 +2174,13 @@ def _check_block(
     fn_name: str,
     loop_depth: int,
     unsafe_ok: bool,
+    gpu_kernel: bool,
 ):
     for st in body:
         _check_stmt(
             st,
             scopes,
-            fixed_scopes,
+            mut_scopes,
             borrow_scopes,
             move_scopes,
             fn_groups,
@@ -1342,15 +2195,347 @@ def _check_block(
             fn_name,
             loop_depth,
             unsafe_ok,
+            gpu_kernel,
         )
     borrow.release_scope(borrow_scopes[-1])
     move.release_scope(move_scopes[-1])
 
 
+def _flatten_or_pattern(pat: Any) -> list[Any]:
+    if isinstance(pat, OrPattern):
+        out: list[Any] = []
+        for p in pat.patterns:
+            out.extend(_flatten_or_pattern(p))
+        return out
+    return [pat]
+
+
+def _split_match_pattern(pat: Any) -> tuple[list[Any], Any | None]:
+    if isinstance(pat, GuardedPattern):
+        return _flatten_or_pattern(pat.pattern), pat.guard
+    return _flatten_or_pattern(pat), None
+
+
+def _enum_variant_name_for_pattern(pat: Any, enum_name: str) -> str | None:
+    if isinstance(pat, FieldExpr) and isinstance(pat.obj, Name) and pat.obj.value == enum_name:
+        return pat.field
+    if (
+        isinstance(pat, Call)
+        and isinstance(pat.fn, FieldExpr)
+        and isinstance(pat.fn.obj, Name)
+        and pat.fn.obj.value == enum_name
+    ):
+        return pat.fn.field
+    return None
+
+
+def _enum_variant_payload_patterns_for_pattern(pat: Any, enum_name: str) -> list[Any] | None:
+    if isinstance(pat, FieldExpr) and isinstance(pat.obj, Name) and pat.obj.value == enum_name:
+        return []
+    if (
+        isinstance(pat, Call)
+        and isinstance(pat.fn, FieldExpr)
+        and isinstance(pat.fn.obj, Name)
+        and pat.fn.obj.value == enum_name
+    ):
+        return list(pat.args)
+    return None
+
+
+def _enum_decl_for_type(typ: str, enums: dict[str, EnumDecl]) -> EnumDecl | None:
+    c = _canonical_type(typ)
+    if c in enums:
+        return enums[c]
+    parsed = _parse_parametric_type(c)
+    if parsed is not None and parsed[0] in enums:
+        return enums[parsed[0]]
+    return None
+
+
+def _covered_enum_variants_by_pattern(pat: Any, enum_decl: EnumDecl, enums: dict[str, EnumDecl]) -> set[str] | None:
+    all_variants = {name for name, _ in enum_decl.variants}
+    if isinstance(pat, Name):
+        # `_` and any identifier binding are total for the expected enum type.
+        return set(all_variants)
+    if isinstance(pat, WildcardPattern):
+        return set(all_variants)
+    variant_name = _enum_variant_name_for_pattern(pat, enum_decl.name)
+    if variant_name is None:
+        return None
+    payload_types = next((vtypes for vname, vtypes in enum_decl.variants if vname == variant_name), None)
+    if payload_types is None:
+        return None
+    payload_pats = _enum_variant_payload_patterns_for_pattern(pat, enum_decl.name)
+    if payload_pats is None:
+        payload_pats = []
+    if len(payload_pats) != len(payload_types):
+        return None
+    for pnode, pty in zip(payload_pats, payload_types):
+        if isinstance(pnode, Name) or isinstance(pnode, WildcardPattern):
+            continue
+        inner_decl = _enum_decl_for_type(pty, enums)
+        if inner_decl is None:
+            return None
+        inner_cov = _covered_enum_variants_by_pattern(pnode, inner_decl, enums)
+        if inner_cov is None:
+            return None
+        if inner_cov != {name for name, _ in inner_decl.variants}:
+            return None
+    return {variant_name}
+
+
+def _finite_axes_for_type(
+    typ: str,
+    structs: dict[str, StructDecl],
+    enums: dict[str, EnumDecl],
+    *,
+    seen_structs: set[str] | None = None,
+) -> list[tuple[set[str], set[str]]]:
+    exp_c = _canonical_type(typ)
+    if exp_c == "Bool":
+        universe = {"false", "true"}
+        return [(set(universe), set(universe))]
+    enum_decl = _enum_decl_for_type(exp_c, enums)
+    if enum_decl is not None:
+        universe = {name for name, _ in enum_decl.variants}
+        return [(set(universe), set(universe))]
+    if exp_c in structs:
+        guard = seen_structs or set()
+        if exp_c in guard:
+            return []
+        guard.add(exp_c)
+        axes: list[tuple[set[str], set[str]]] = []
+        for _, fty in structs[exp_c].fields:
+            axes.extend(_finite_axes_for_type(fty, structs, enums, seen_structs=guard))
+        guard.remove(exp_c)
+        return axes
+    return []
+
+
+def _coverage_axes_for_pattern(
+    pat: Any,
+    expected_ty: str,
+    structs: dict[str, StructDecl],
+    enums: dict[str, EnumDecl],
+) -> list[tuple[set[str], set[str]]] | None:
+    if isinstance(pat, (WildcardPattern, Name)):
+        return _finite_axes_for_type(expected_ty, structs, enums)
+
+    exp_c = _canonical_type(expected_ty)
+    if exp_c == "Bool":
+        if isinstance(pat, BoolLit):
+            value = "true" if pat.value else "false"
+            return [({value}, {"false", "true"})]
+        return None
+
+    enum_decl = _enum_decl_for_type(exp_c, enums)
+    if enum_decl is not None:
+        variant_name = _enum_variant_name_for_pattern(pat, enum_decl.name)
+        if variant_name is None:
+            return None
+        payload_types = next((vtypes for vname, vtypes in enum_decl.variants if vname == variant_name), None)
+        if payload_types is None:
+            return None
+        payload_pats = _enum_variant_payload_patterns_for_pattern(pat, enum_decl.name)
+        if payload_pats is None or len(payload_pats) != len(payload_types):
+            return None
+        universe = {name for name, _ in enum_decl.variants}
+        axes: list[tuple[set[str], set[str]]] = [({variant_name}, universe)]
+        for pnode, pty in zip(payload_pats, payload_types):
+            inner_axes = _coverage_axes_for_pattern(pnode, pty, structs, enums)
+            if inner_axes is None:
+                return None
+            axes.extend(inner_axes)
+        return axes
+
+    if exp_c in structs and isinstance(pat, Call) and isinstance(pat.fn, Name) and pat.fn.value == exp_c:
+        decl = structs[exp_c]
+        if len(pat.args) != len(decl.fields):
+            return None
+        axes: list[tuple[set[str], set[str]]] = []
+        for pnode, (_, fty) in zip(pat.args, decl.fields):
+            inner_axes = _coverage_axes_for_pattern(pnode, fty, structs, enums)
+            if inner_axes is None:
+                return None
+            axes.extend(inner_axes)
+        return axes
+
+    # Non-finite domains (e.g., Int/String) are only analyzable when total, which
+    # is handled by wildcard/name above.
+    return None
+
+
+def _variant_payload_coverage_keys(
+    payload_pats: list[Any],
+    payload_types: list[str],
+    structs: dict[str, StructDecl],
+    enums: dict[str, EnumDecl],
+) -> tuple[set[tuple[str, ...]] | None, set[tuple[str, ...]] | None]:
+    axes: list[tuple[set[str], set[str]]] = []
+    for pnode, pty in zip(payload_pats, payload_types):
+        field_axes = _coverage_axes_for_pattern(pnode, pty, structs, enums)
+        if field_axes is None:
+            return None, None
+        axes.extend(field_axes)
+    if not axes:
+        return set(), set()
+    cov_keys = {tuple(parts) for parts in product(*(sorted(c) for c, _ in axes))}
+    full_keys = {tuple(parts) for parts in product(*(sorted(u) for _, u in axes))}
+    return cov_keys, full_keys
+
+
+def _pattern_is_total_for_type(pat: Any, expected_ty: str, structs: dict[str, StructDecl], enums: dict[str, EnumDecl]) -> bool:
+    if isinstance(pat, WildcardPattern):
+        return True
+    if isinstance(pat, Name):
+        return True
+    exp_c = _canonical_type(expected_ty)
+    enum_decl = _enum_decl_for_type(exp_c, enums)
+    if enum_decl is not None:
+        variant_name = _enum_variant_name_for_pattern(pat, enum_decl.name)
+        if variant_name is None:
+            return False
+        # A single enum constructor never covers the full enum domain unless the
+        # pattern itself is a wildcard/binding (handled above).
+        return False
+    if exp_c in structs and isinstance(pat, Call) and isinstance(pat.fn, Name) and pat.fn.value == exp_c:
+        decl = structs[exp_c]
+        if len(pat.args) != len(decl.fields):
+            return False
+        return all(_pattern_is_total_for_type(pp, pty, structs, enums) for pp, (_, pty) in zip(pat.args, decl.fields))
+    return False
+
+
+def _analyze_pattern_against_type(
+    pat: Any,
+    expected_ty: str,
+    scopes: list[dict[str, str]],
+    mut_scopes: list[dict[str, bool]],
+    fn_groups: dict[str, list[FnDecl | ExternFnDecl]],
+    structs: dict[str, StructDecl],
+    enums: dict[str, EnumDecl],
+    owned: _OwnedState,
+    borrow: _BorrowState,
+    move: _MoveState,
+    filename: str,
+    fn_name: str,
+    unsafe_ok: bool,
+    gpu_kernel: bool,
+    bindings_for_arm: dict[str, str],
+) -> None:
+    if isinstance(pat, WildcardPattern):
+        return
+    if isinstance(pat, Name):
+        if pat.value == "_":
+            return
+        prev = bindings_for_arm.get(pat.value)
+        exp_c = _canonical_type(expected_ty)
+        if prev is not None and not _same_type(prev, exp_c):
+            raise SemanticError(
+                _diag(
+                    filename,
+                    pat.line,
+                    pat.col,
+                    f"pattern binding {pat.value} has conflicting types {prev} and {exp_c}",
+                )
+            )
+        bindings_for_arm[pat.value] = exp_c
+        return
+
+    exp_c = _canonical_type(expected_ty)
+    enum_decl = _enum_decl_for_type(exp_c, enums)
+    if enum_decl is not None:
+        variant_name = _enum_variant_name_for_pattern(pat, enum_decl.name)
+        if variant_name is not None:
+            payload_types = next((vtypes for vname, vtypes in enum_decl.variants if vname == variant_name), None)
+            if payload_types is None:
+                raise SemanticError(_diag(filename, pat.line, pat.col, f"unknown enum variant {enum_decl.name}.{variant_name}"))
+            payload_pats = _enum_variant_payload_patterns_for_pattern(pat, enum_decl.name) or []
+            if len(payload_pats) != len(payload_types):
+                raise SemanticError(
+                    _diag(
+                        filename,
+                        pat.line,
+                        pat.col,
+                        f"{enum_decl.name}.{variant_name} pattern expects {len(payload_types)} args, got {len(payload_pats)}",
+                    )
+                )
+            for pnode, pty in zip(payload_pats, payload_types):
+                _analyze_pattern_against_type(
+                    pnode,
+                    pty,
+                    scopes,
+                    mut_scopes,
+                    fn_groups,
+                    structs,
+                    enums,
+                    owned,
+                    borrow,
+                    move,
+                    filename,
+                    fn_name,
+                    unsafe_ok,
+                    gpu_kernel,
+                    bindings_for_arm,
+                )
+            return
+
+    if exp_c in structs and isinstance(pat, Call) and isinstance(pat.fn, Name):
+        struct_name = pat.fn.value
+        if struct_name != exp_c:
+            raise SemanticError(_diag(filename, pat.line, pat.col, f"match pattern expects {exp_c}, got {struct_name}"))
+        decl = structs[exp_c]
+        if len(pat.args) != len(decl.fields):
+            raise SemanticError(
+                _diag(
+                    filename,
+                    pat.line,
+                    pat.col,
+                    f"{exp_c} pattern expects {len(decl.fields)} args, got {len(pat.args)}",
+                )
+            )
+        for pnode, (_, fty) in zip(pat.args, decl.fields):
+            _analyze_pattern_against_type(
+                pnode,
+                fty,
+                scopes,
+                mut_scopes,
+                fn_groups,
+                structs,
+                enums,
+                owned,
+                borrow,
+                move,
+                filename,
+                fn_name,
+                unsafe_ok,
+                gpu_kernel,
+                bindings_for_arm,
+            )
+        return
+
+    pty = _infer(
+        pat,
+        scopes,
+        mut_scopes,
+        fn_groups,
+        structs,
+        enums,
+        owned,
+        borrow,
+        move,
+        filename,
+        fn_name,
+        unsafe_ok,
+        gpu_kernel,
+    )
+    _require_type(filename, pat.line, pat.col, expected_ty, pty, "match pattern")
+
+
 def _check_stmt(
     st,
     scopes: list[dict[str, str]],
-    fixed_scopes: list[dict[str, bool]],
+    mut_scopes: list[dict[str, bool]],
     borrow_scopes: list[set[str]],
     move_scopes: list[dict[str, bool | None]],
     fn_groups: dict[str, list[FnDecl | ExternFnDecl]],
@@ -1365,74 +2550,158 @@ def _check_stmt(
     fn_name: str,
     loop_depth: int,
     unsafe_ok: bool,
+    gpu_kernel: bool,
 ):
+    def _is_narrowing_cond(expr: Any) -> tuple[str, str] | None:
+        if not (isinstance(expr, Binary) and expr.op == "is"):
+            return None
+        if not (isinstance(expr.left, Name) and isinstance(expr.right, Name)):
+            return None
+        return expr.left.value, _canonical_type(expr.right.value)
+
+    if gpu_kernel and isinstance(st, (DeferStmt, ComptimeStmt, UnsafeStmt, DropStmt, MatchStmt)):
+        raise SemanticError(
+            _diag(
+                filename,
+                st.line,
+                st.col,
+                f"{type(st).__name__} is not supported in gpu kernels",
+            )
+        )
+
     if isinstance(st, LetStmt):
-        ty = _infer(st.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        if st.name == "_":
+            ty = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
+            if gpu_kernel and not _is_gpu_safe_type(ty, structs):
+                raise SemanticError(_diag(filename, st.line, st.col, f"gpu kernel local `_` uses unsupported type {ty}"))
+            _consume_if_move_name(st.expr, ty, borrow, move, filename, st.line, st.col)
+            return
+        ty = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
         if ty == NONE_LIT_TYPE and st.type_name is None:
-            raise SemanticError(_diag(filename, st.line, st.col, f"`none` requires explicit Option<T> type for {st.name}"))
+            raise SemanticError(_diag(filename, st.line, st.col, f"`none` requires explicit nullable type for {st.name}"))
         if st.type_name is not None:
             _require_type(filename, st.line, st.col, st.type_name, ty, st.name)
             ty = st.type_name
         _require_sized_value_type(filename, st.line, st.col, ty, st.name)
+        exists = _lookup(st.name, scopes)
+        if st.reassign_if_exists and exists is not None:
+            synthetic = AssignStmt(
+                target=Name(st.name, st.pos, st.line, st.col),
+                op="=",
+                expr=st.expr,
+                pos=st.pos,
+                line=st.line,
+                col=st.col,
+                explicit_set=False,
+            )
+            _check_stmt(
+                synthetic,
+                scopes,
+                mut_scopes,
+                borrow_scopes,
+                move_scopes,
+                fn_groups,
+                structs,
+                enums,
+                fn_ret,
+                ref_param_names,
+                owned,
+                borrow,
+                move,
+                filename,
+                fn_name,
+                loop_depth,
+                unsafe_ok,
+                gpu_kernel,
+            )
+            return
+        if gpu_kernel and not _is_gpu_safe_type(ty, structs):
+            raise SemanticError(_diag(filename, st.line, st.col, f"gpu kernel local {st.name} uses unsupported type {ty}"))
         if st.name in scopes[-1]:
             borrow.release_ref(st.name)
         if st.name not in move_scopes[-1]:
             move_scopes[-1][st.name] = move.moved.get(st.name)
         move.declare(st.name)
         scopes[-1][st.name] = ty
-        fixed_scopes[-1][st.name] = st.fixed
+        mut_scopes[-1][st.name] = bool(st.mut)
         borrow_scopes[-1].add(st.name)
         if _is_ref_type(ty):
             if isinstance(st.expr, Unary) and st.expr.op in {"&", "&mut"} and isinstance(st.expr.expr, Name):
                 owner = st.expr.expr.value
-                fixed_owner = bool(_lookup_fixed(owner, fixed_scopes))
-                borrow.bind_ref(st.name, owner, st.expr.op == "&mut", fixed_owner, filename, st.line, st.col)
+                owner_mut = bool(_lookup_mut(owner, mut_scopes))
+                _ensure_ref_owner_outlives_binding(owner, st.name, scopes, filename, st.line, st.col)
+                borrow.bind_ref(st.name, owner, st.expr.op == "&mut", owner_mut, filename, st.line, st.col)
             elif isinstance(st.expr, Name):
                 src_ref = borrow.ref_bindings.get(st.expr.value)
                 if src_ref is not None:
                     if src_ref.mutable:
                         raise SemanticError(_diag(filename, st.line, st.col, "cannot copy mutable reference"))
-                    fixed_owner = bool(_lookup_fixed(src_ref.owner, fixed_scopes))
+                    owner_mut = bool(_lookup_mut(src_ref.owner, mut_scopes))
                     origin = borrow.ref_origins.get(st.expr.value)
-                    borrow.bind_ref(st.name, src_ref.owner, False, fixed_owner, filename, st.line, st.col, origin=origin)
+                    _ensure_ref_owner_outlives_binding(src_ref.owner, st.name, scopes, filename, st.line, st.col)
+                    borrow.bind_ref(st.name, src_ref.owner, False, owner_mut, filename, st.line, st.col, origin=origin)
                 elif st.expr.value in ref_param_names:
                     borrow.ref_origins[st.name] = st.expr.value
         if isinstance(st.expr, Name):
             owned.assign_name(st.name, st.expr.value, Span.at(filename, st.line, st.col))
-        _consume_if_move_name(st.expr, ty, move, filename, st.line, st.col)
+        _consume_if_move_name(st.expr, ty, borrow, move, filename, st.line, st.col)
         if _is_alloc_call(st.expr):
             owned.track_alloc(st.name)
         return
     if isinstance(st, AssignStmt):
-        rhs = _infer(st.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        rhs = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
+        if gpu_kernel and isinstance(st.target, IndexExpr):
+            target_obj_ty = _infer(
+                st.target.obj,
+                scopes,
+                mut_scopes,
+                fn_groups,
+                structs,
+                enums,
+                owned,
+                borrow,
+                move,
+                filename,
+                fn_name,
+                unsafe_ok,
+                gpu_kernel,
+            )
+            if _is_gpu_slice_type(target_obj_ty):
+                raise SemanticError(_diag(filename, st.line, st.col, "cannot write through immutable GpuSlice<T> in gpu kernel"))
         base = _assign_base_name(st.target)
         if base is not None:
             borrow.check_write(base, filename, st.line, st.col)
         if isinstance(st.target, Name):
-            is_fixed = _lookup_fixed(st.target.value, fixed_scopes)
-            if is_fixed is None:
+            is_mutable = _lookup_mut(st.target.value, mut_scopes)
+            if is_mutable is None:
                 raise SemanticError(_diag(filename, st.line, st.col, f"assignment to undefined name {st.target.value}"))
-            if is_fixed:
-                raise SemanticError(_diag(filename, st.line, st.col, f"cannot assign to fixed binding {st.target.value}"))
+            if not is_mutable:
+                raise SemanticError(_diag(filename, st.line, st.col, f"cannot assign to immutable binding {st.target.value}"))
             lhs = _lookup(st.target.value, scopes)
             if lhs is None:
                 raise SemanticError(_diag(filename, st.line, st.col, f"assignment to undefined name {st.target.value}"))
+            if _is_ref_type(lhs) and lhs.startswith("&mut ") and getattr(st, "explicit_set", False):
+                inner = lhs[5:]
+                _require_type(filename, st.line, st.col, inner, rhs, "set-through-reference")
+                return
             _require_compound_assign_compat(filename, st.line, st.col, st.op, lhs, rhs)
             if st.op in {"<<=", ">>="}:
                 _require_shift_rhs_static_safe(filename, st.op, lhs, st.expr)
             if _is_ref_type(lhs):
                 if isinstance(st.expr, Unary) and st.expr.op in {"&", "&mut"} and isinstance(st.expr.expr, Name):
                     owner = st.expr.expr.value
-                    fixed_owner = bool(_lookup_fixed(owner, fixed_scopes))
-                    borrow.bind_ref(st.target.value, owner, st.expr.op == "&mut", fixed_owner, filename, st.line, st.col)
+                    owner_mut = bool(_lookup_mut(owner, mut_scopes))
+                    _ensure_ref_owner_outlives_binding(owner, st.target.value, scopes, filename, st.line, st.col)
+                    borrow.bind_ref(st.target.value, owner, st.expr.op == "&mut", owner_mut, filename, st.line, st.col)
                 elif isinstance(st.expr, Name):
                     src_ref = borrow.ref_bindings.get(st.expr.value)
                     if src_ref is not None:
                         if src_ref.mutable:
                             raise SemanticError(_diag(filename, st.line, st.col, "cannot copy mutable reference"))
-                        fixed_owner = bool(_lookup_fixed(src_ref.owner, fixed_scopes))
+                        owner_mut = bool(_lookup_mut(src_ref.owner, mut_scopes))
                         origin = borrow.ref_origins.get(st.expr.value)
-                        borrow.bind_ref(st.target.value, src_ref.owner, False, fixed_owner, filename, st.line, st.col, origin=origin)
+                        _ensure_ref_owner_outlives_binding(src_ref.owner, st.target.value, scopes, filename, st.line, st.col)
+                        borrow.bind_ref(st.target.value, src_ref.owner, False, owner_mut, filename, st.line, st.col, origin=origin)
                     else:
                         borrow.release_ref(st.target.value)
                         if st.expr.value in ref_param_names:
@@ -1445,24 +2714,29 @@ def _check_stmt(
                 owned.assign_name(st.target.value, st.expr.value, Span.at(filename, st.line, st.col))
             else:
                 owned._require_reassigned_after_drop(st.target.value, Span.at(filename, st.line, st.col))
-            _consume_if_move_name(st.expr, rhs, move, filename, st.line, st.col)
+            _consume_if_move_name(st.expr, rhs, borrow, move, filename, st.line, st.col)
             _assign(st.target.value, lhs, scopes, filename, st.line, st.col)
             move.reinitialize(st.target.value)
             return
-        lhs = _infer(st.target, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        lhs = _infer(st.target, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
         _require_compound_assign_compat(filename, st.line, st.col, st.op, lhs, rhs)
         if st.op in {"<<=", ">>="}:
             _require_shift_rhs_static_safe(filename, st.op, lhs, st.expr)
         return
     if isinstance(st, ReturnStmt):
-        expr_ty = "Void" if st.expr is None else _infer(st.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        expr_ty = "Void" if st.expr is None else _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
         _require_type(filename, st.line, st.col, fn_ret, expr_ty, "return")
-        if _is_ref_type(fn_ret) and st.expr is not None and not _ref_return_tied_to_param(st.expr, ref_param_names, borrow):
-            raise SemanticError(_diag(filename, st.line, st.col, "returned reference is not tied to an input reference parameter"))
+        if _is_ref_type(fn_ret) and st.expr is not None:
+            tied, note = _ref_return_tie_info(st.expr, ref_param_names, borrow)
+            if not tied:
+                msg = "returned reference is not tied to an input reference parameter"
+                if note:
+                    msg = f"{msg}: {note}"
+                raise SemanticError(_diag(filename, st.line, st.col, msg))
         if isinstance(st.expr, Name):
             owned.invalidate(st.expr.value)
         if st.expr is not None:
-            _consume_if_move_name(st.expr, expr_ty, move, filename, st.line, st.col)
+            _consume_if_move_name(st.expr, expr_ty, borrow, move, filename, st.line, st.col)
         return
     if isinstance(st, BreakStmt):
         if loop_depth <= 0:
@@ -1473,13 +2747,13 @@ def _check_stmt(
             raise SemanticError(_diag(filename, st.line, st.col, "continue used outside loop"))
         return
     if isinstance(st, DeferStmt):
-        _infer(st.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
         return
     if isinstance(st, ComptimeStmt):
         _check_block(
             st.body,
             scopes + [{}],
-            fixed_scopes + [{}],
+            mut_scopes + [{}],
             borrow_scopes + [set()],
             move_scopes + [{}],
             fn_groups,
@@ -1494,13 +2768,14 @@ def _check_stmt(
             fn_name,
             loop_depth,
             unsafe_ok,
+            gpu_kernel,
         )
         return
     if isinstance(st, UnsafeStmt):
         _check_block(
             st.body,
             scopes + [{}],
-            fixed_scopes + [{}],
+            mut_scopes + [{}],
             borrow_scopes + [set()],
             move_scopes + [{}],
             fn_groups,
@@ -1515,22 +2790,30 @@ def _check_stmt(
             fn_name,
             loop_depth,
             True,
+            gpu_kernel,
         )
         return
     if isinstance(st, IfStmt):
-        cond_ty = _infer(st.cond, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        cond_ty = _infer(st.cond, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
         _require_type(filename, st.line, st.col, "Bool", cond_ty, "if condition")
         then_owned = owned.copy()
         then_scopes = scopes + [{}]
-        then_fixed_scopes = fixed_scopes + [{}]
+        then_mut_scopes = mut_scopes + [{}]
         then_borrow = borrow.copy()
         then_move = move.copy()
         then_borrow_scopes = borrow_scopes + [set()]
         then_move_scopes = move_scopes + [{}]
+        narrow = _is_narrowing_cond(st.cond)
+        if narrow is not None:
+            n_name, n_type = narrow
+            cur_ty = _lookup(n_name, scopes)
+            if cur_ty is not None and _is_union_type(cur_ty):
+                if any(_same_type(n_type, m) for m in _union_members(cur_ty)):
+                    then_scopes[-1][n_name] = n_type
         _check_block(
             st.then_body,
             then_scopes,
-            then_fixed_scopes,
+            then_mut_scopes,
             then_borrow_scopes,
             then_move_scopes,
             fn_groups,
@@ -1545,18 +2828,24 @@ def _check_stmt(
             fn_name,
             loop_depth,
             unsafe_ok,
+            gpu_kernel,
         )
         else_owned = owned.copy()
         else_scopes = scopes + [{}]
-        else_fixed_scopes = fixed_scopes + [{}]
+        else_mut_scopes = mut_scopes + [{}]
         else_borrow = borrow.copy()
         else_move = move.copy()
         else_borrow_scopes = borrow_scopes + [set()]
         else_move_scopes = move_scopes + [{}]
+        if narrow is not None:
+            n_name, n_type = narrow
+            cur_ty = _lookup(n_name, scopes)
+            if cur_ty is not None and _is_union_type(cur_ty):
+                else_scopes[-1][n_name] = _remove_member_from_union(cur_ty, n_type)
         _check_block(
             st.else_body,
             else_scopes,
-            else_fixed_scopes,
+            else_mut_scopes,
             else_borrow_scopes,
             else_move_scopes,
             fn_groups,
@@ -1571,17 +2860,18 @@ def _check_stmt(
             fn_name,
             loop_depth,
             unsafe_ok,
+            gpu_kernel,
         )
         owned.merge(then_owned, else_owned)
         borrow.merge(then_borrow, else_borrow)
         move.merge(then_move, else_move)
         return
     if isinstance(st, WhileStmt):
-        cond_ty = _infer(st.cond, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        cond_ty = _infer(st.cond, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
         _require_type(filename, st.line, st.col, "Bool", cond_ty, "while condition")
         loop_owned = owned.copy()
         loop_scopes = scopes + [{}]
-        loop_fixed_scopes = fixed_scopes + [{}]
+        loop_mut_scopes = mut_scopes + [{}]
         loop_borrow = borrow.copy()
         loop_move = move.copy()
         loop_borrow_scopes = borrow_scopes + [set()]
@@ -1589,7 +2879,7 @@ def _check_stmt(
         _check_block(
             st.body,
             loop_scopes,
-            loop_fixed_scopes,
+            loop_mut_scopes,
             loop_borrow_scopes,
             loop_move_scopes,
             fn_groups,
@@ -1604,6 +2894,7 @@ def _check_stmt(
             fn_name,
             loop_depth + 1,
             unsafe_ok,
+            gpu_kernel,
         )
         owned.merge(owned, loop_owned)
         borrow.merge(borrow, loop_borrow)
@@ -1612,14 +2903,14 @@ def _check_stmt(
     if isinstance(st, ForStmt):
         loop_var_ty: str
         if isinstance(st.iterable, RangeExpr):
-            start_ty = _infer(st.iterable.start, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
-            end_ty = _infer(st.iterable.end, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+            start_ty = _infer(st.iterable.start, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
+            end_ty = _infer(st.iterable.end, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
             if not _is_int_type(start_ty) or not _is_int_type(end_ty):
                 raise SemanticError(_diag(filename, st.line, st.col, "range for-in expects integer bounds"))
             _require_type(filename, st.line, st.col, start_ty, end_ty, "for-in range bounds")
             loop_var_ty = _canonical_type(start_ty)
         else:
-            iterable_ty = _infer(st.iterable, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+            iterable_ty = _infer(st.iterable, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
             base_ty = _strip_ref(_canonical_type(iterable_ty))
             if _is_vec_type(base_ty):
                 loop_var_ty = _vec_inner(base_ty)
@@ -1636,20 +2927,22 @@ def _check_stmt(
                         f"for-in over {iterable_ty} currently requires Copy element type, got {loop_var_ty}",
                     )
                 )
+        if gpu_kernel and not _is_gpu_safe_type(loop_var_ty, structs):
+            raise SemanticError(_diag(filename, st.line, st.col, f"gpu kernel loop variable {st.var} uses unsupported type {loop_var_ty}"))
         loop_scopes = scopes + [{}]
-        loop_fixed_scopes = fixed_scopes + [{}]
+        loop_mut_scopes = mut_scopes + [{}]
         loop_owned = owned.copy()
         loop_borrow = borrow.copy()
         loop_move = move.copy()
         loop_borrow_scopes = borrow_scopes + [set()]
         loop_move_scopes = move_scopes + [{}]
         loop_scopes[-1][st.var] = loop_var_ty
-        loop_fixed_scopes[-1][st.var] = True
+        loop_mut_scopes[-1][st.var] = False
         loop_move_scopes[-1][st.var] = loop_move.moved.get(st.var, False)
         _check_block(
             st.body,
             loop_scopes,
-            loop_fixed_scopes,
+            loop_mut_scopes,
             loop_borrow_scopes,
             loop_move_scopes,
             fn_groups,
@@ -1664,40 +2957,203 @@ def _check_stmt(
             fn_name,
             loop_depth + 1,
             unsafe_ok,
+            gpu_kernel,
         )
         owned.merge(owned, loop_owned)
         borrow.merge(borrow, loop_borrow)
         move.merge(move, loop_move)
         return
     if isinstance(st, MatchStmt):
-        subject_ty = _infer(st.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        subject_ty = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
         seen_bool: set[bool] = set()
-        seen_wildcard = False
+        seen_enum_variants: set[str] = set()
+        nested_enum_coverage: dict[str, set[tuple[str, ...]]] = {}
+        nested_enum_universe: dict[str, set[tuple[str, ...]]] = {}
+        subject_enum_decl: EnumDecl | None = None
+        subject_canon = _canonical_type(subject_ty)
+        if subject_canon in enums:
+            subject_enum_decl = enums[subject_canon]
+        else:
+            parsed_subject = _parse_parametric_type(subject_canon)
+            if parsed_subject is not None and parsed_subject[0] in enums:
+                subject_enum_decl = enums[parsed_subject[0]]
+        seen_catch_all = False
         for idx, (pat, body) in enumerate(st.arms):
-            if isinstance(pat, WildcardPattern):
-                if seen_wildcard:
+            patterns, guard_expr = _split_match_pattern(pat)
+            if guard_expr is not None:
+                gty = _infer(
+                    guard_expr,
+                    scopes,
+                    mut_scopes,
+                    fn_groups,
+                    structs,
+                    enums,
+                    owned,
+                    borrow,
+                    move,
+                    filename,
+                    fn_name,
+                    unsafe_ok,
+                    gpu_kernel,
+                )
+                _require_type(filename, st.line, st.col, "Bool", gty, "match guard")
+
+            wildcard_count = sum(1 for p in patterns if isinstance(p, WildcardPattern))
+            if wildcard_count > 0 and len(patterns) > 1:
+                raise SemanticError(
+                    _diag(filename, pat.line, pat.col, "wildcard pattern `_` cannot be combined with `|` alternatives")
+                )
+            has_unconditional_wildcard = wildcard_count == 1 and guard_expr is None
+            if has_unconditional_wildcard:
+                if seen_catch_all:
                     raise SemanticError(_diag(filename, pat.line, pat.col, "duplicate wildcard match arm"))
                 if idx != len(st.arms) - 1:
                     raise SemanticError(_diag(filename, pat.line, pat.col, "wildcard match arm must be last"))
-                seen_wildcard = True
-                pty = subject_ty
-            else:
-                pty = _infer(pat, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
-                if subject_ty != "Any":
-                    _require_type(filename, st.line, st.col, subject_ty, pty, "match pattern")
-                if isinstance(pat, BoolLit):
-                    if pat.value in seen_bool:
-                        value_text = "true" if pat.value else "false"
-                        raise SemanticError(_diag(filename, pat.line, pat.col, f"duplicate Bool match arm for {value_text}"))
-                    seen_bool.add(pat.value)
+                seen_catch_all = True
+
+            total_alt_count = 0
+            for alt_pat in patterns:
+                if guard_expr is None and _pattern_is_total_for_type(alt_pat, subject_ty, structs, enums):
+                    total_alt_count += 1
+            if total_alt_count > 0 and len(patterns) > 1:
+                raise SemanticError(
+                    _diag(filename, pat.line, pat.col, "catch-all pattern cannot be combined with `|` alternatives")
+                )
+            has_unconditional_catch_all = total_alt_count > 0 and guard_expr is None and not has_unconditional_wildcard
+            if has_unconditional_catch_all:
+                if seen_catch_all:
+                    raise SemanticError(_diag(filename, pat.line, pat.col, "duplicate catch-all match arm"))
+                if idx != len(st.arms) - 1:
+                    raise SemanticError(_diag(filename, pat.line, pat.col, "catch-all match arm must be last"))
+                seen_catch_all = True
+
+            for alt_pat in patterns:
+                if isinstance(alt_pat, WildcardPattern):
+                    continue
+                handled_enum_pattern = False
+                if subject_enum_decl is not None:
+                    enum_name = subject_enum_decl.name
+                    variant_name = _enum_variant_name_for_pattern(alt_pat, enum_name)
+                    if variant_name is not None:
+                        handled_enum_pattern = True
+                if guard_expr is None and isinstance(alt_pat, BoolLit):
+                    if alt_pat.value in seen_bool:
+                        value_text = "true" if alt_pat.value else "false"
+                        raise SemanticError(_diag(filename, alt_pat.line, alt_pat.col, f"duplicate Bool match arm for {value_text}"))
+                    seen_bool.add(alt_pat.value)
+                if guard_expr is None and subject_enum_decl is not None:
+                    enum_name = subject_enum_decl.name
+                    variant_name = _enum_variant_name_for_pattern(alt_pat, enum_name)
+                    if variant_name is not None:
+                        known = {name for name, _ in subject_enum_decl.variants}
+                        if variant_name not in known:
+                            raise SemanticError(
+                                _diag(filename, alt_pat.line, alt_pat.col, f"unknown enum variant {enum_name}.{variant_name}")
+                            )
+                        payload_types = next(vtypes for vname, vtypes in subject_enum_decl.variants if vname == variant_name)
+                        payload_pats = _enum_variant_payload_patterns_for_pattern(alt_pat, enum_name)
+                        if payload_pats is None:
+                            payload_pats = []
+                        if len(payload_pats) != len(payload_types):
+                            raise SemanticError(
+                                _diag(
+                                    filename,
+                                    alt_pat.line,
+                                    alt_pat.col,
+                                    f"{enum_name}.{variant_name} pattern expects {len(payload_types)} args, got {len(payload_pats)}",
+                                )
+                            )
+                        bindings_for_arm: dict[str, str] = {}
+                        for pnode, pty in zip(payload_pats, payload_types):
+                            _analyze_pattern_against_type(
+                                pnode,
+                                pty,
+                                scopes,
+                                mut_scopes,
+                                fn_groups,
+                                structs,
+                                enums,
+                                owned,
+                                borrow,
+                                move,
+                                filename,
+                                fn_name,
+                                unsafe_ok,
+                                gpu_kernel,
+                                bindings_for_arm,
+                            )
+                        variant_total = all(
+                            _pattern_is_total_for_type(pnode, pty, structs, enums) for pnode, pty in zip(payload_pats, payload_types)
+                        )
+                        if variant_total:
+                            if variant_name in seen_enum_variants:
+                                raise SemanticError(
+                                    _diag(filename, alt_pat.line, alt_pat.col, f"duplicate enum match arm for {enum_name}.{variant_name}")
+                                )
+                            seen_enum_variants.add(variant_name)
+                        else:
+                            cov_keys, full_keys = _variant_payload_coverage_keys(payload_pats, payload_types, structs, enums)
+                            if cov_keys is not None and full_keys is not None and full_keys:
+                                nested_enum_universe.setdefault(variant_name, full_keys)
+                                current = nested_enum_coverage.setdefault(variant_name, set())
+                                if cov_keys.issubset(current):
+                                    raise SemanticError(
+                                        _diag(
+                                            filename,
+                                            alt_pat.line,
+                                            alt_pat.col,
+                                            f"duplicate enum payload match arm for {enum_name}.{variant_name}",
+                                        )
+                                    )
+                                current.update(cov_keys)
+                                if current == nested_enum_universe.get(variant_name, set()):
+                                    if variant_name in seen_enum_variants:
+                                        raise SemanticError(
+                                            _diag(
+                                                filename,
+                                                alt_pat.line,
+                                                alt_pat.col,
+                                                f"duplicate enum match arm for {enum_name}.{variant_name}",
+                                            )
+                                        )
+                                    seen_enum_variants.add(variant_name)
+                        setattr(alt_pat, "_pattern_bindings", bindings_for_arm)
+                        continue
+                if handled_enum_pattern:
+                    continue
+                bindings_for_arm = {}
+                _analyze_pattern_against_type(
+                    alt_pat,
+                    subject_ty,
+                    scopes,
+                    mut_scopes,
+                    fn_groups,
+                    structs,
+                    enums,
+                    owned,
+                    borrow,
+                    move,
+                    filename,
+                    fn_name,
+                    unsafe_ok,
+                    gpu_kernel,
+                    bindings_for_arm,
+                )
+                setattr(alt_pat, "_pattern_bindings", bindings_for_arm)
             arm_scopes = scopes + [{}]
-            arm_fixed_scopes = fixed_scopes + [{}]
+            arm_mut_scopes = mut_scopes + [{}]
             arm_borrow_scopes = borrow_scopes + [set()]
             arm_move_scopes = move_scopes + [{}]
+            for alt_pat in patterns:
+                for bname, bty in getattr(alt_pat, "_pattern_bindings", {}).items():
+                    if bname in arm_scopes[-1]:
+                        raise SemanticError(_diag(filename, alt_pat.line, alt_pat.col, f"duplicate pattern binding {bname}"))
+                    arm_scopes[-1][bname] = bty
+                    arm_mut_scopes[-1][bname] = False
             _check_block(
                 body,
                 arm_scopes,
-                arm_fixed_scopes,
+                arm_mut_scopes,
                 arm_borrow_scopes,
                 arm_move_scopes,
                 fn_groups,
@@ -1712,12 +3168,44 @@ def _check_stmt(
                 fn_name,
                 loop_depth,
                 unsafe_ok,
+                gpu_kernel,
             )
-        if subject_ty == "Bool" and not seen_wildcard and seen_bool != {True, False}:
+        if subject_ty == "Bool" and not seen_catch_all and seen_bool != {True, False}:
             raise SemanticError(_diag(filename, st.line, st.col, "non-exhaustive match for Bool"))
+        if subject_enum_decl is not None and not seen_catch_all:
+            all_variants = {name for name, _ in subject_enum_decl.variants}
+            if seen_enum_variants != all_variants:
+                missing = ", ".join(sorted(all_variants - seen_enum_variants))
+                detail_parts: list[str] = []
+                for variant_name in sorted(all_variants - seen_enum_variants):
+                    full_keys = nested_enum_universe.get(variant_name)
+                    if not full_keys:
+                        continue
+                    covered = nested_enum_coverage.get(variant_name, set())
+                    missing_keys = sorted(full_keys - covered)
+                    if not missing_keys:
+                        continue
+                    preview = ", ".join(
+                        "/".join(parts) if parts else "<all>"
+                        for parts in missing_keys[:3]
+                    )
+                    if len(missing_keys) > 3:
+                        preview = f"{preview} (+{len(missing_keys) - 3} more)"
+                    detail_parts.append(f"{variant_name} payload combinations missing: {preview}")
+                detail = ""
+                if detail_parts:
+                    detail = "; " + "; ".join(detail_parts)
+                raise SemanticError(
+                    _diag(
+                        filename,
+                        st.line,
+                        st.col,
+                        f"non-exhaustive match for enum {subject_enum_decl.name}; missing variants: {missing}{detail}",
+                    )
+                )
         return
     if isinstance(st, ExprStmt):
-        _infer(st.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
         if _is_free_call(st.expr):
             ptr = st.expr.args[0]
             if not isinstance(ptr, Name):
@@ -1725,8 +3213,8 @@ def _check_stmt(
             owned.free(ptr.value, Span.at(filename, st.line, st.col))
         return
     if isinstance(st, DropStmt):
-        expr_ty = _infer(st.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
-        _consume_if_move_name(st.expr, expr_ty, move, filename, st.line, st.col)
+        expr_ty = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
+        _consume_if_move_name(st.expr, expr_ty, borrow, move, filename, st.line, st.col)
         if isinstance(st.expr, Name):
             if st.expr.value in owned.owners:
                 setattr(st, "drop_free", True)
@@ -1742,7 +3230,7 @@ def _check_stmt(
 def _infer(
     e,
     scopes: list[dict[str, str]],
-    fixed_scopes: list[dict[str, bool]],
+    mut_scopes: list[dict[str, bool]],
     fn_groups: dict[str, list[FnDecl | ExternFnDecl]],
     structs: dict[str, StructDecl],
     enums: dict[str, EnumDecl],
@@ -1752,9 +3240,14 @@ def _infer(
     filename: str,
     fn_name: str,
     unsafe_ok: bool,
+    gpu_kernel: bool,
 ):
     if isinstance(e, WildcardPattern):
         raise SemanticError(_diag(filename, e.line, e.col, "wildcard pattern `_` is only valid in match arms"))
+    if isinstance(e, OrPattern):
+        raise SemanticError(_diag(filename, e.line, e.col, "or-patterns are only valid in match arms"))
+    if isinstance(e, GuardedPattern):
+        raise SemanticError(_diag(filename, e.line, e.col, "match guards are only valid in match arms"))
     if isinstance(e, BoolLit):
         return _typed(e, "Bool")
     if isinstance(e, NilLit):
@@ -1772,6 +3265,9 @@ def _infer(
         if local is not None:
             move.check_use(e.value, filename, e.line, e.col)
             borrow.check_read(e.value, filename, e.line, e.col)
+            ref_info = borrow.ref_bindings.get(e.value)
+            if ref_info is not None:
+                move.check_use(ref_info.owner, filename, e.line, e.col)
             if owned is not None:
                 owned.check_use(e.value, Span.at(filename, e.line, e.col))
             return _typed(e, local)
@@ -1784,10 +3280,13 @@ def _infer(
             return _typed(e, "Any")
         sig = BUILTIN_SIGS.get(e.value)
         if sig is not None:
+            base = _builtin_base_name(e.value)
+            if gpu_kernel and base not in GPU_ALLOWED_IN_KERNEL_BUILTINS:
+                raise SemanticError(_diag(filename, e.line, e.col, f"builtin {base} is not available in gpu kernels"))
             _require_freestanding_builtin_allowed(e.value, filename, e.line, e.col)
             if sig.args is None:
                 return _typed(e, "Any")
-            return _typed(e, f"fn({', '.join(sig.args)}) -> {sig.ret}")
+            return _typed(e, f"fn({', '.join(sig.args)}) {sig.ret}")
         raise SemanticError(_diag(filename, e.line, e.col, f"undefined name {e.value}"))
     if isinstance(e, SizeOfTypeExpr):
         try:
@@ -1834,7 +3333,7 @@ def _infer(
         owned_copy = owned.copy() if owned is not None else None
         borrow_copy = borrow.copy()
         move_copy = move.copy()
-        val_ty = _infer(e.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned_copy, borrow_copy, move_copy, filename, fn_name, unsafe_ok)
+        val_ty = _infer(e.expr, scopes, mut_scopes, fn_groups, structs, enums, owned_copy, borrow_copy, move_copy, filename, fn_name, unsafe_ok, gpu_kernel)
         try:
             layout_of_type(val_ty, structs, mode="query")
         except LayoutError as err:
@@ -1842,7 +3341,29 @@ def _infer(
         setattr(e, "query_type", _canonical_type(val_ty))
         return _typed(e, "Int")
     if isinstance(e, AwaitExpr):
-        return _typed(e, _infer(e.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok))
+        if gpu_kernel:
+            raise SemanticError(_diag(filename, e.line, e.col, "await is not supported in gpu kernels"))
+        return _typed(e, _infer(e.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel))
+    if isinstance(e, TryExpr):
+        if gpu_kernel:
+            raise SemanticError(_diag(filename, e.line, e.col, "try propagation (`!`) is not supported in gpu kernels"))
+        src_ty = _infer(e.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
+        fn_ret = _canonical_type(getattr(move, "fn_ret", ""))
+        src_c = _canonical_type(src_ty)
+        if _is_union_type(src_c):
+            members = _union_members(src_c)
+            if len(members) < 2:
+                raise SemanticError(_diag(filename, e.line, e.col, f"`!` expects a fallible union operand, got {src_ty}"))
+            ok_ty = members[0]
+            err_tys = members[1:]
+            fn_members = set(_union_members(fn_ret))
+            for et in err_tys:
+                if et not in fn_members:
+                    raise SemanticError(_diag(filename, e.line, e.col, f"`!` requires function return to include propagated branch `{et}`, got {fn_ret or '<unknown>'}"))
+            setattr(e, "try_kind", "union")
+            setattr(e, "try_error_types", err_tys)
+            return _typed(e, ok_ty)
+        raise SemanticError(_diag(filename, e.line, e.col, f"`!` expects a fallible union operand, got {src_ty}"))
     if isinstance(e, Unary):
         if e.op in {"&", "&mut"}:
             if not isinstance(e.expr, Name):
@@ -1853,12 +3374,12 @@ def _infer(
                 raise SemanticError(_diag(filename, e.line, e.col, f"cannot borrow undefined name {owner}"))
             if owned is not None:
                 owned.check_use(owner, Span.at(filename, e.line, e.col))
-            fixed_owner = bool(_lookup_fixed(owner, fixed_scopes))
-            borrow.ensure_can_borrow(owner, e.op == "&mut", fixed_owner, filename, e.line, e.col)
+            owner_mut = bool(_lookup_mut(owner, mut_scopes))
+            borrow.ensure_can_borrow(owner, e.op == "&mut", owner_mut, filename, e.line, e.col)
             if e.op == "&mut":
                 return _typed(e, f"&mut {owner_ty}")
             return _typed(e, f"&{owner_ty}")
-        inner = _infer(e.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        inner = _infer(e.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
         if e.op == "!":
             _require_type(filename, e.line, e.col, "Bool", inner, "unary !")
             return _typed(e, "Bool")
@@ -1872,7 +3393,7 @@ def _infer(
             return _typed(e, _strip_ref(inner))
         return _typed(e, inner)
     if isinstance(e, CastExpr):
-        src = _infer(e.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        src = _infer(e.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
         dst = _canonical_type(e.type_name)
         _validate_decl_type(dst, filename, e.line, e.col)
         src_c = _canonical_type(src)
@@ -1886,34 +3407,39 @@ def _infer(
             raise SemanticError(_diag(filename, e.line, e.col, f"unsupported cast from {src} to {e.type_name}"))
         return _typed(e, dst)
     if isinstance(e, TypeAnnotated):
-        src = _infer(e.expr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        src = _infer(e.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
         dst = _canonical_type(e.type_name)
         _validate_decl_type(dst, filename, e.line, e.col)
         _require_type(filename, e.line, e.col, dst, src, "type annotation")
         return _typed(e, dst)
     if isinstance(e, Binary):
-        l = _infer(e.left, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
-        r = _infer(e.right, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        l = _infer(e.left, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
+        # For 'is' operator, right side is a type name, not an expression to infer
+        if e.op == "is":
+            return _typed(e, "Bool")
+        r = _infer(e.right, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
+        l_eff = _strip_ref(l)
+        r_eff = _strip_ref(r)
         if e.op in {"+", "-", "*", "/", "%"}:
-            if e.op == "+" and _is_text_type(l) and _is_text_type(r):
+            if e.op == "+" and _is_text_type(l_eff) and _is_text_type(r_eff):
                 return _typed(e, "String")
-            if _is_int_type(l) and _is_int_type(r):
-                _require_strict_int_operands(filename, e.line, e.col, e.op, l, r)
-                return _typed(e, _canonical_type(l))
-            if _is_float_type(l) and _is_float_type(r):
-                return _typed(e, _canonical_type(l))
-            if (_is_int_type(l) and _is_float_type(r)) or (_is_float_type(l) and _is_int_type(r)):
+            if _is_int_type(l_eff) and _is_int_type(r_eff):
+                _require_strict_int_operands(filename, e.line, e.col, e.op, l_eff, r_eff)
+                return _typed(e, _canonical_type(l_eff))
+            if _is_float_type(l_eff) and _is_float_type(r_eff):
+                return _typed(e, _canonical_type(l_eff))
+            if (_is_int_type(l_eff) and _is_float_type(r_eff)) or (_is_float_type(l_eff) and _is_int_type(r_eff)):
                 raise SemanticError(_diag(filename, e.line, e.col, f"mixed int/float arithmetic requires explicit cast for operator {e.op}"))
             raise SemanticError(_diag(filename, e.line, e.col, f"numeric operator {e.op} expects numeric operands"))
         if e.op in {"&", "|", "^", "<<", ">>"}:
-            _require_strict_int_operands(filename, e.line, e.col, e.op, l, r)
+            _require_strict_int_operands(filename, e.line, e.col, e.op, l_eff, r_eff)
             if e.op in {"<<", ">>"}:
-                _require_shift_rhs_static_safe(filename, e.op, l, e.right)
-            return _typed(e, _canonical_type(l))
+                _require_shift_rhs_static_safe(filename, e.op, l_eff, e.right)
+            return _typed(e, _canonical_type(l_eff))
         if e.op in {"==", "!=", "<", "<=", ">", ">="}:
-            if _is_int_type(l) and _is_int_type(r):
-                _require_strict_int_operands(filename, e.line, e.col, e.op, l, r)
-            elif (_is_int_type(l) and _is_float_type(r)) or (_is_float_type(l) and _is_int_type(r)):
+            if _is_int_type(l_eff) and _is_int_type(r_eff):
+                _require_strict_int_operands(filename, e.line, e.col, e.op, l_eff, r_eff)
+            elif (_is_int_type(l_eff) and _is_float_type(r_eff)) or (_is_float_type(l_eff) and _is_int_type(r_eff)):
                 raise SemanticError(_diag(filename, e.line, e.col, f"mixed int/float comparison requires explicit cast for operator {e.op}"))
             return _typed(e, "Bool")
         if e.op in {"&&", "||"}:
@@ -1923,17 +3449,17 @@ def _infer(
         if e.op == "??":
             if l == NONE_LIT_TYPE:
                 return _typed(e, r)
-            if not _is_option_type(l):
-                raise SemanticError(_diag(filename, e.line, e.col, "left operand of ?? must be Option<T>"))
-            inner = _option_inner(l)
+            if not _is_nullable_union(l):
+                raise SemanticError(_diag(filename, e.line, e.col, "left operand of ?? must be nullable"))
+            inner = _remove_none_from_union(l)
             _require_type(filename, e.line, e.col, inner, r, "?? right operand")
             return _typed(e, inner)
         return _typed(e, "Any")
     if isinstance(e, Call):
-        return _typed(e, _infer_call(e, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok))
+        return _typed(e, _infer_call(e, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel))
     if isinstance(e, IndexExpr):
-        obj_ty = _infer(e.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
-        idx_ty = _infer(e.index, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        obj_ty = _infer(e.obj, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
+        idx_ty = _infer(e.index, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
         _require_type(filename, e.line, e.col, "Int", idx_ty, "index")
         base_ty = _strip_ref(_canonical_type(obj_ty))
         if base_ty in {"String", "str"}:
@@ -1949,22 +3475,43 @@ def _infer(
             return _typed(e, _slice_inner(base_ty))
         if _is_vec_type(base_ty):
             return _typed(e, _vec_inner(base_ty))
+        if _is_gpu_memory_type(base_ty):
+            inner = _gpu_element_type(base_ty)
+            if inner is not None:
+                return _typed(e, inner)
         return _typed(e, "Any")
     if isinstance(e, FieldExpr):
-        obj_ty = _infer(e.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        if isinstance(e.obj, Name) and _lookup(e.obj.value, scopes) is None and e.obj.value in enums:
+            enum_decl = enums[e.obj.value]
+            variant = next((v for v, _ in enum_decl.variants if v == e.field), None)
+            if variant is None:
+                raise SemanticError(_diag(filename, e.line, e.col, f"unknown enum variant {e.obj.value}.{e.field}"))
+            payload = next(vtypes for vname, vtypes in enum_decl.variants if vname == e.field)
+            if payload:
+                ret = enum_decl.name
+                if enum_decl.generics:
+                    ret = f"{enum_decl.name}<{', '.join('Any' for _ in enum_decl.generics)}>"
+                return _typed(e, f"fn({', '.join(payload)}) {ret}")
+            ret = enum_decl.name
+            if enum_decl.generics:
+                ret = f"{enum_decl.name}<{', '.join('Any' for _ in enum_decl.generics)}>"
+            return _typed(e, ret)
+        obj_ty = _infer(e.obj, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
         # Strip reference types to get the underlying struct type
         base_ty = _strip_ref(obj_ty)
         if base_ty in structs:
             for fname, fty in structs[base_ty].fields:
                 if fname == e.field:
                     return _typed(e, fty)
+        if _is_gpu_memory_type(base_ty) and e.field == "len":
+            return _typed(e, "fn() Int")
         return _typed(e, "Any")
     if isinstance(e, ArrayLit):
         if not e.elements:
             return _typed(e, "[Any]")
-        first_ty = _infer(e.elements[0], scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        first_ty = _infer(e.elements[0], scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
         for el in e.elements[1:]:
-            ety = _infer(el, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+            ety = _infer(el, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
             _require_type(filename, el.line, el.col, first_ty, ety, "array element")
         return _typed(e, f"[{first_ty}]")
     if isinstance(e, StructLit):
@@ -1984,7 +3531,7 @@ def _infer(
             fexpr = field_map.get(fname)
             if fexpr is None:
                 raise SemanticError(_diag(filename, e.line, e.col, f"missing field {fname} for struct {e.name}"))
-            ety = _infer(fexpr, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+            ety = _infer(fexpr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
             _require_type(filename, getattr(fexpr, "line", e.line), getattr(fexpr, "col", e.col), fty, ety, f"field {fname} of {e.name}")
         return _typed(e, e.name)
     return _typed(e, "Any")
@@ -1992,7 +3539,7 @@ def _infer(
 
 def _check_call_arg_borrows(
     args: list[Any],
-    fixed_scopes: list[dict[str, bool]],
+    mut_scopes: list[dict[str, bool]],
     borrow: _BorrowState,
     filename: str,
 ):
@@ -2001,19 +3548,128 @@ def _check_call_arg_borrows(
         if not (isinstance(arg, Unary) and arg.op in {"&", "&mut"} and isinstance(arg.expr, Name)):
             continue
         owner = arg.expr.value
-        fixed_owner = bool(_lookup_fixed(owner, fixed_scopes))
+        owner_mut = bool(_lookup_mut(owner, mut_scopes))
         mutable = arg.op == "&mut"
-        temp.ensure_can_borrow(owner, mutable, fixed_owner, filename, arg.line, arg.col)
+        temp.ensure_can_borrow(owner, mutable, owner_mut, filename, arg.line, arg.col)
         if mutable:
             temp.mutable_borrowed.add(owner)
         else:
             temp.shared_counts[owner] = temp.shared_counts.get(owner, 0) + 1
 
 
+def _infer_gpu_namespace_call(
+    e: Call,
+    method: str,
+    arg_types: list[str],
+    fn_groups: dict[str, list[FnDecl | ExternFnDecl]],
+    structs: dict[str, StructDecl],
+    enums: dict[str, EnumDecl],
+    filename: str,
+    gpu_kernel: bool,
+) -> str:
+    if method in GPU_KERNEL_BUILTINS:
+        if not gpu_kernel:
+            raise SemanticError(_diag(filename, e.line, e.col, f"gpu.{method}() is only valid inside gpu kernels"))
+        if len(e.args) != 0:
+            raise SemanticError(_diag(filename, e.line, e.col, f"gpu.{method} expects 0 args, got {len(e.args)}"))
+        if method == "barrier":
+            return "Void"
+        return "Int"
+
+    if method not in GPU_HOST_APIS:
+        raise SemanticError(_diag(filename, e.line, e.col, f"unknown gpu API gpu.{method}"))
+    if gpu_kernel:
+        raise SemanticError(_diag(filename, e.line, e.col, f"gpu.{method}() is host-only and cannot run inside gpu kernels"))
+
+    if method == "available":
+        if len(e.args) != 0:
+            raise SemanticError(_diag(filename, e.line, e.col, f"gpu.available expects 0 args, got {len(e.args)}"))
+        return "Bool"
+    if method == "device_count":
+        if len(e.args) != 0:
+            raise SemanticError(_diag(filename, e.line, e.col, f"gpu.device_count expects 0 args, got {len(e.args)}"))
+        return "Int"
+    if method == "device_name":
+        if len(e.args) != 1:
+            raise SemanticError(_diag(filename, e.line, e.col, f"gpu.device_name expects 1 args, got {len(e.args)}"))
+        _require_type(filename, e.args[0].line, e.args[0].col, "Int", arg_types[0], "arg 0 for gpu.device_name")
+        return "String"
+    if method == "alloc":
+        if len(e.args) != 1:
+            raise SemanticError(_diag(filename, e.line, e.col, f"gpu.alloc expects 1 args, got {len(e.args)}"))
+        _require_type(filename, e.args[0].line, e.args[0].col, "Int", arg_types[0], "arg 0 for gpu.alloc")
+        return "GpuBuffer<Any>"
+    if method == "copy":
+        if len(e.args) != 1:
+            raise SemanticError(_diag(filename, e.line, e.col, f"gpu.copy expects 1 args, got {len(e.args)}"))
+        src_ty = _canonical_type(arg_types[0])
+        if _is_slice_type(src_ty):
+            return f"GpuBuffer<{_slice_inner(src_ty)}>"
+        if _is_vec_type(src_ty):
+            return f"GpuBuffer<{_vec_inner(src_ty)}>"
+        raise SemanticError(_diag(filename, e.args[0].line, e.args[0].col, f"gpu.copy expects [T] or Vec<T>, got {src_ty}"))
+    if method == "read":
+        if len(e.args) != 1:
+            raise SemanticError(_diag(filename, e.line, e.col, f"gpu.read expects 1 args, got {len(e.args)}"))
+        src_ty = _canonical_type(arg_types[0])
+        inner = _gpu_element_type(src_ty)
+        if inner is None:
+            raise SemanticError(_diag(filename, e.args[0].line, e.args[0].col, f"gpu.read expects GpuBuffer<T>/GpuSlice<T>/GpuMutSlice<T>, got {src_ty}"))
+        return f"[{inner}]"
+
+    # gpu.launch(kernel, grid_size, block_size, ...args)
+    if len(e.args) < 3:
+        raise SemanticError(_diag(filename, e.line, e.col, "gpu.launch expects at least 3 args: kernel, grid_size, block_size"))
+    _require_type(filename, e.args[1].line, e.args[1].col, "Int", arg_types[1], "arg 1 for gpu.launch")
+    _require_type(filename, e.args[2].line, e.args[2].col, "Int", arg_types[2], "arg 2 for gpu.launch")
+
+    kernel_expr = e.args[0]
+    launch_arg_types = arg_types[3:]
+    launch_args = e.args[3:]
+    if isinstance(kernel_expr, Name) and kernel_expr.value in fn_groups:
+        kernel_name = kernel_expr.value
+        candidates = [
+            d for d in fn_groups[kernel_name] if isinstance(d, FnDecl) and bool(getattr(d, "gpu_kernel", False))
+        ]
+        if not candidates:
+            raise SemanticError(_diag(filename, kernel_expr.line, kernel_expr.col, f"gpu.launch expects a gpu fn kernel, got `{kernel_name}`"))
+        matching: list[FnDecl] = []
+        for cand in candidates:
+            if len(cand.params) != len(launch_arg_types):
+                continue
+            if all(_gpu_launch_arg_compatible(pty, aty) for (_, pty), aty in zip(cand.params, launch_arg_types)):
+                matching.append(cand)
+        if not matching:
+            sig = ", ".join(launch_arg_types)
+            raise SemanticError(_diag(filename, e.line, e.col, f"no matching gpu kernel overload for launch {kernel_name}({sig})"))
+        if len(matching) > 1:
+            raise SemanticError(_diag(filename, e.line, e.col, f"ambiguous gpu kernel overload for launch {kernel_name}"))
+        chosen = matching[0]
+        for i, ((_, expected), arg, aty) in enumerate(zip(chosen.params, launch_args, launch_arg_types), start=3):
+            if not _gpu_launch_arg_compatible(expected, aty):
+                raise SemanticError(_diag(filename, arg.line, arg.col, f"arg {i} for gpu.launch kernel expects {expected}, got {aty}"))
+        setattr(e, "launch_resolved_name", chosen.symbol or chosen.name)
+        return "Void"
+
+    kernel_ty = _canonical_type(arg_types[0])
+    parsed = _parse_fn_type(kernel_ty)
+    if parsed is None:
+        raise SemanticError(_diag(filename, kernel_expr.line, kernel_expr.col, "gpu.launch arg 0 must be a gpu kernel function"))
+    param_tys, ret_ty, _ = parsed
+    if _canonical_type(ret_ty) != "Void":
+        raise SemanticError(_diag(filename, kernel_expr.line, kernel_expr.col, "gpu.launch kernel function must return Void"))
+    if len(param_tys) != len(launch_arg_types):
+        raise SemanticError(_diag(filename, e.line, e.col, f"gpu.launch kernel expects {len(param_tys)} args, got {len(launch_arg_types)}"))
+    for i, (expected, arg, aty) in enumerate(zip(param_tys, launch_args, launch_arg_types), start=3):
+        if not _gpu_launch_arg_compatible(expected, aty):
+            raise SemanticError(_diag(filename, arg.line, arg.col, f"arg {i} for gpu.launch kernel expects {expected}, got {aty}"))
+    return "Void"
+
+
 def _infer_call(
     e: Call,
     scopes: list[dict[str, str]],
-    fixed_scopes: list[dict[str, bool]],
+    mut_scopes: list[dict[str, bool]],
     fn_groups: dict[str, list[FnDecl | ExternFnDecl]],
     structs: dict[str, StructDecl],
     enums: dict[str, EnumDecl],
@@ -2023,27 +3679,47 @@ def _infer_call(
     filename: str,
     fn_name: str,
     unsafe_ok: bool,
+    gpu_kernel: bool,
 ) -> str:
     spawn_like = False
+    gpu_launch_like = False
     if isinstance(e.fn, Name):
         base = e.fn.value[2:] if e.fn.value.startswith("__") else e.fn.value
         spawn_like = base == "spawn"
+    if (
+        isinstance(e.fn, FieldExpr)
+        and isinstance(e.fn.obj, Name)
+        and e.fn.obj.value == "gpu"
+        and _lookup("gpu", scopes) is None
+        and e.fn.field == "launch"
+    ):
+        gpu_launch_like = True
     arg_types: list[str] = []
     for i, arg in enumerate(e.args):
-        if spawn_like and i == 0 and isinstance(arg, Name) and arg.value in fn_groups and len(fn_groups[arg.value]) > 1:
+        if (spawn_like or gpu_launch_like) and i == 0 and isinstance(arg, Name) and arg.value in fn_groups and len(fn_groups[arg.value]) > 1:
             arg_types.append("Any")
             continue
-        arg_types.append(_infer(arg, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok))
-    _check_call_arg_borrows(e.args, fixed_scopes, borrow, filename)
+        arg_types.append(_infer(arg, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel))
+    _check_call_arg_borrows(e.args, mut_scopes, borrow, filename)
 
     def _require_unsafe_context(callee_name: str, line: int, col: int) -> None:
         if unsafe_ok:
             return
         raise SemanticError(_diag(filename, line, col, f"call to unsafe function {callee_name} requires unsafe context"))
 
+    if (
+        isinstance(e.fn, FieldExpr)
+        and isinstance(e.fn.obj, Name)
+        and e.fn.obj.value == "gpu"
+        and _lookup("gpu", scopes) is None
+    ):
+        return _infer_gpu_namespace_call(e, e.fn.field, arg_types, fn_groups, structs, enums, filename, gpu_kernel)
+
     if isinstance(e.fn, Name):
         name = e.fn.value
         builtin_base = name[2:] if name.startswith("__") else name
+        if gpu_kernel and builtin_base in BUILTIN_SIGS and builtin_base not in GPU_ALLOWED_IN_KERNEL_BUILTINS:
+            raise SemanticError(_diag(filename, e.line, e.col, f"builtin {builtin_base} is not available in gpu kernels"))
         if builtin_base == "spawn":
             if len(e.args) < 1:
                 raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects at least a function argument"))
@@ -2085,7 +3761,7 @@ def _infer_call(
                 aty = arg_types[i]
                 _require_type(filename, arg.line, arg.col, expected, aty, f"arg {i} for {name}")
                 if not _is_ref_type(expected) and expected != "Any":
-                    _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
+                    _consume_if_move_name(arg, aty, borrow, move, filename, arg.line, arg.col)
                 _require_send(aty, structs, filename, arg.line, arg.col, f"spawn arg {i}")
                 if _is_ref_type(aty):
                     _require_sync(_strip_ref(aty), structs, filename, arg.line, arg.col, f"spawn arg {i}")
@@ -2135,7 +3811,7 @@ def _infer_call(
             if not _is_vec_type(src_ty):
                 raise SemanticError(_diag(filename, e.args[0].line, e.args[0].col, f"{name} expects Vec<T>, got {src_ty}"))
             _require_type(filename, e.args[1].line, e.args[1].col, "Int", arg_types[1], f"arg 1 for {name}")
-            return f"Option<{_vec_inner(src_ty)}>"
+            return f"{_vec_inner(src_ty)}?"
         if builtin_base == "vec_set":
             if len(e.args) != 3:
                 raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects 3 args, got {len(e.args)}"))
@@ -2155,7 +3831,17 @@ def _infer_call(
             return "Int"
         if name in fn_groups:
             known_types = set(PRIMITIVES) | set(structs.keys()) | set(enums.keys())
+            if not gpu_kernel:
+                gpu_decls = [d for d in fn_groups[name] if isinstance(d, FnDecl) and bool(getattr(d, "gpu_kernel", False))]
+                host_decls = [d for d in fn_groups[name] if not (isinstance(d, FnDecl) and bool(getattr(d, "gpu_kernel", False)))]
+                if gpu_decls and not host_decls:
+                    raise SemanticError(_diag(filename, e.line, e.col, f"gpu kernel {name} cannot be called directly; use gpu.launch"))
             decl = _choose_impl(name, fn_groups[name], arg_types, known_types, filename, e.line, e.col)
+            if isinstance(decl, FnDecl) and bool(getattr(decl, "gpu_kernel", False)):
+                if not gpu_kernel:
+                    raise SemanticError(_diag(filename, e.line, e.col, f"gpu kernel {name} cannot be called directly; use gpu.launch"))
+            elif gpu_kernel:
+                raise SemanticError(_diag(filename, e.line, e.col, f"gpu kernels cannot call host function {name}"))
             if getattr(decl, "unsafe", False):
                 _require_unsafe_context(name, e.line, e.col)
             is_variadic = bool(getattr(decl, "is_variadic", False))
@@ -2166,17 +3852,26 @@ def _infer_call(
                     )
             elif len(e.args) != len(decl.params):
                 raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects {len(decl.params)} args, got {len(e.args)}"))
+            type_bindings: dict[str, str] = {}
             for i, ((_, pty), arg) in enumerate(zip(decl.params, e.args)):
                 aty = arg_types[i]
+                if _is_typevar(pty, known_types):
+                    bound = type_bindings.get(pty)
+                    if bound is None:
+                        type_bindings[pty] = aty
+                    elif not _same_type(bound, aty):
+                        raise SemanticError(_diag(filename, arg.line, arg.col, f"inconsistent generic binding for {pty}: {bound} vs {aty}"))
                 if not _is_typevar(pty, known_types):
                     _require_type(filename, arg.line, arg.col, pty, aty, f"arg {i} for {name}")
                 if not _is_ref_type(pty) and pty != "Any" and not _is_typevar(pty, known_types):
-                    _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
+                    _consume_if_move_name(arg, aty, borrow, move, filename, arg.line, arg.col)
             if isinstance(decl, FnDecl):
                 e.resolved_name = decl.symbol or decl.name
-            return decl.ret
+            return _substitute_typevars(decl.ret, type_bindings)
         local = _lookup(name, scopes)
         if local is not None:
+            if gpu_kernel:
+                raise SemanticError(_diag(filename, e.line, e.col, "function-pointer calls are not supported in gpu kernels"))
             setattr(e.fn, "inferred_type", local)
             parsed = _parse_fn_type(local)
             if parsed is None:
@@ -2190,7 +3885,7 @@ def _infer_call(
                 aty = arg_types[i]
                 _require_type(filename, arg.line, arg.col, expected, aty, f"arg {i} for {name}")
                 if not _is_ref_type(expected) and expected != "Any":
-                    _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
+                    _consume_if_move_name(arg, aty, borrow, move, filename, arg.line, arg.col)
             return ret_ty
         if name in structs:
             fields = structs[name].fields
@@ -2199,11 +3894,18 @@ def _infer_call(
             for i, ((_, fty), arg) in enumerate(zip(fields, e.args)):
                 aty = arg_types[i]
                 _require_type(filename, arg.line, arg.col, fty, aty, f"struct field for {name}")
-                _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
+                _consume_if_move_name(arg, aty, borrow, move, filename, arg.line, arg.col)
             return name
         sig = BUILTIN_SIGS.get(name)
         if sig is not None:
+            base = _builtin_base_name(name)
+            if gpu_kernel and base not in GPU_ALLOWED_IN_KERNEL_BUILTINS:
+                raise SemanticError(_diag(filename, e.line, e.col, f"builtin {base} is not available in gpu kernels"))
             _require_freestanding_builtin_allowed(name, filename, e.line, e.col)
+            if base == "to_json":
+                if len(e.args) != 1:
+                    raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects 1 args, got {len(e.args)}"))
+                return "String"
             if sig.args is not None and len(e.args) != len(sig.args):
                 raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects {len(sig.args)} args, got {len(e.args)}"))
             if sig.args is not None:
@@ -2213,18 +3915,115 @@ def _infer_call(
             return sig.ret
         raise SemanticError(_diag(filename, e.line, e.col, f"undefined function {name}"))
     if isinstance(e.fn, FieldExpr):
-        obj_ty = _infer(e.fn.obj, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+        if isinstance(e.fn.obj, Name) and _lookup(e.fn.obj.value, scopes) is None and e.fn.obj.value in enums:
+            enum_decl = enums[e.fn.obj.value]
+            variant = None
+            for vname, vtypes in enum_decl.variants:
+                if vname == e.fn.field:
+                    variant = (vname, vtypes)
+                    break
+            if variant is None:
+                raise SemanticError(
+                    _diag(filename, e.line, e.col, f"unknown enum variant {enum_decl.name}.{e.fn.field}")
+                )
+            _, payload_types = variant
+            if len(e.args) != len(payload_types):
+                raise SemanticError(
+                    _diag(
+                        filename,
+                        e.line,
+                        e.col,
+                        f"{enum_decl.name}.{e.fn.field} expects {len(payload_types)} args, got {len(e.args)}",
+                    )
+                )
+            type_bindings: dict[str, str] = {}
+            type_param_set = set(enum_decl.generics)
+            fn_ret_defaults: dict[str, str] = {}
+            fn_ret = _canonical_type(getattr(move, "fn_ret", ""))
+            fn_ret_param = _parse_parametric_type(fn_ret)
+            if fn_ret_param is not None:
+                fn_base, fn_args = fn_ret_param
+                if fn_base == enum_decl.name and len(fn_args) == len(enum_decl.generics):
+                    fn_ret_defaults = {tp: ty for tp, ty in zip(enum_decl.generics, fn_args)}
+            for i, (expected, arg) in enumerate(zip(payload_types, e.args)):
+                aty = arg_types[i]
+                exp_c = _canonical_type(expected)
+                if exp_c in type_param_set:
+                    prev = type_bindings.get(exp_c)
+                    if prev is None:
+                        type_bindings[exp_c] = aty
+                    else:
+                        _require_type(filename, arg.line, arg.col, prev, aty, f"arg {i} for {enum_decl.name}.{e.fn.field}")
+                else:
+                    _require_type(filename, arg.line, arg.col, expected, aty, f"arg {i} for {enum_decl.name}.{e.fn.field}")
+                if not _is_ref_type(aty):
+                    _consume_if_move_name(arg, aty, borrow, move, filename, arg.line, arg.col)
+            if enum_decl.generics:
+                bound = [type_bindings.get(tp, fn_ret_defaults.get(tp, "Any")) for tp in enum_decl.generics]
+                return f"{enum_decl.name}<{', '.join(bound)}>"
+            return enum_decl.name
+        obj_ty = _infer(e.fn.obj, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
+        if e.fn.field in fn_groups:
+            ufcs_name = e.fn.field
+            all_arg_types = [obj_ty] + arg_types
+            known_types = set(PRIMITIVES) | set(structs.keys()) | set(enums.keys())
+            decl = _choose_impl(ufcs_name, fn_groups[ufcs_name], all_arg_types, known_types, filename, e.line, e.col)
+            if isinstance(decl, FnDecl) and bool(getattr(decl, "gpu_kernel", False)):
+                if not gpu_kernel:
+                    raise SemanticError(_diag(filename, e.line, e.col, f"gpu kernel {ufcs_name} cannot be called directly; use gpu.launch"))
+            elif gpu_kernel:
+                raise SemanticError(_diag(filename, e.line, e.col, f"gpu kernels cannot call host function {ufcs_name}"))
+            if getattr(decl, "unsafe", False):
+                _require_unsafe_context(ufcs_name, e.line, e.col)
+            if len(decl.params) != len(all_arg_types):
+                raise SemanticError(_diag(filename, e.line, e.col, f"{ufcs_name} expects {len(decl.params)} args, got {len(all_arg_types)}"))
+            type_bindings: dict[str, str] = {}
+            receiver_and_args = [e.fn.obj] + e.args
+            for i, ((_, pty), arg, aty) in enumerate(zip(decl.params, receiver_and_args, all_arg_types)):
+                if _is_typevar(pty, known_types):
+                    bound = type_bindings.get(pty)
+                    if bound is None:
+                        type_bindings[pty] = aty
+                    elif not _same_type(bound, aty):
+                        raise SemanticError(_diag(filename, arg.line, arg.col, f"inconsistent generic binding for {pty}: {bound} vs {aty}"))
+                    continue
+                if i == 0 and _is_ref_type(pty):
+                    inner = _strip_ref(pty)
+                    _require_type(filename, arg.line, arg.col, inner, aty, f"receiver for {ufcs_name}")
+                    if pty.startswith("&mut "):
+                        if not isinstance(arg, Name):
+                            raise SemanticError(_diag(filename, arg.line, arg.col, f"mutable receiver for {ufcs_name} must be a name"))
+                        is_mutable = _lookup_mut(arg.value, mut_scopes)
+                        if not is_mutable:
+                            raise SemanticError(_diag(filename, arg.line, arg.col, f"receiver {arg.value} must be mutable for {ufcs_name}"))
+                    continue
+                _require_type(filename, arg.line, arg.col, pty, aty, f"arg {i} for {ufcs_name}")
+                if not _is_ref_type(pty) and pty != "Any" and not _is_typevar(pty, known_types):
+                    _consume_if_move_name(arg, aty, borrow, move, filename, arg.line, arg.col)
+            if isinstance(decl, FnDecl):
+                e.resolved_name = decl.symbol or decl.name
+            setattr(e, "ufcs_receiver", e.fn.obj)
+            setattr(e, "ufcs_receiver_ty", obj_ty)
+            return _substitute_typevars(decl.ret, type_bindings)
         if e.fn.field == "get":
             if len(e.args) != 1:
                 raise SemanticError(_diag(filename, e.line, e.col, "get expects 1 arg"))
             _require_type(filename, e.args[0].line, e.args[0].col, "Int", arg_types[0], "arg 0 for get")
             base_ty = _strip_ref(_canonical_type(obj_ty))
             if _is_slice_type(base_ty):
-                return f"Option<{_slice_inner(base_ty)}>"
+                return f"{_slice_inner(base_ty)}?"
             if _is_vec_type(base_ty):
-                return f"Option<{_vec_inner(base_ty)}>"
+                return f"{_vec_inner(base_ty)}?"
+        if e.fn.field == "len":
+            if len(e.args) != 0:
+                raise SemanticError(_diag(filename, e.line, e.col, "len expects 0 args"))
+            base_ty = _strip_ref(_canonical_type(obj_ty))
+            if _is_vec_type(base_ty) or _is_slice_type(base_ty) or _is_gpu_memory_type(base_ty):
+                return "Int"
         return "Any"
-    callee_ty = _infer(e.fn, scopes, fixed_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok)
+    callee_ty = _infer(e.fn, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
+    if gpu_kernel:
+        raise SemanticError(_diag(filename, e.line, e.col, "function-pointer calls are not supported in gpu kernels"))
     setattr(e.fn, "inferred_type", callee_ty)
     parsed = _parse_fn_type(callee_ty)
     if parsed is None:
@@ -2238,7 +4037,7 @@ def _infer_call(
         aty = arg_types[i]
         _require_type(filename, arg.line, arg.col, expected, aty, f"arg {i} for function pointer call")
         if not _is_ref_type(expected) and expected != "Any":
-            _consume_if_move_name(arg, aty, move, filename, arg.line, arg.col)
+            _consume_if_move_name(arg, aty, borrow, move, filename, arg.line, arg.col)
     return ret_ty
 
 

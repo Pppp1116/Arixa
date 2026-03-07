@@ -121,7 +121,12 @@ def _canonical_type(typ: Any) -> str:
 
 def _is_option_type(typ: str) -> bool:
     t = typ.strip()
-    return t.endswith("?") or (t.startswith("Option<") and t.endswith(">"))
+    if t.endswith("?") or (t.startswith("Option<") and t.endswith(">")):
+        return True
+    parts = [p.strip() for p in _split_top_level(t, "|")]
+    if len(parts) == 2 and "none" in parts:
+        return True
+    return False
 
 
 def _option_inner_type(typ: str) -> str:
@@ -130,7 +135,40 @@ def _option_inner_type(typ: str) -> str:
         return t[:-1].strip()
     if t.startswith("Option<") and t.endswith(">"):
         return t[7:-1].strip()
+    parts = [p.strip() for p in _split_top_level(t, "|")]
+    if len(parts) == 2 and "none" in parts:
+        return parts[0] if parts[1] == "none" else parts[1]
     return typ
+
+
+def _parse_parametric_type(typ: str) -> tuple[str, list[str]] | None:
+    text = _canonical_type(typ).strip()
+    if "<" not in text or not text.endswith(">"):
+        return None
+    lt = text.find("<")
+    base = text[:lt].strip()
+    inner = text[lt + 1 : -1].strip()
+    if not base or not inner:
+        return None
+    args = _split_top_level(inner, ",")
+    if not args:
+        return None
+    return base, args
+
+
+def _is_result_type(typ: str) -> bool:
+    parsed = _parse_parametric_type(typ)
+    return parsed is not None and parsed[0] == "Result" and len(parsed[1]) == 2
+
+
+def _result_inner_types(typ: str) -> tuple[str, str] | None:
+    parsed = _parse_parametric_type(typ)
+    if parsed is None:
+        return None
+    base, args = parsed
+    if base != "Result" or len(args) != 2:
+        return None
+    return _canonical_type(args[0]), _canonical_type(args[1])
 
 
 def _int_info(typ: str) -> tuple[int, bool] | None:
@@ -415,6 +453,8 @@ def _llvm_type(ctx: _ModuleCtx, typ: str) -> ir.Type:
         return out_ty
     if _is_option_type(c):
         return ir.IntType(8).as_pointer()
+    if _is_result_type(c):
+        return ir.IntType(8).as_pointer()
     if c == "Bool":
         return ir.IntType(1)
     info = _int_info(c)
@@ -455,6 +495,42 @@ def _default_value(ctx: _ModuleCtx, typ: str) -> ir.Constant:
     if isinstance(llty, ir.VoidType):
         return ir.Constant(ir.IntType(1), 0)
     raise CodegenError(f"internal: no default value for {typ}")
+
+
+def _result_storage_ty() -> ir.LiteralStructType:
+    return ir.LiteralStructType([ir.IntType(8), ir.IntType(64)], packed=False)
+
+
+def _emit_result_value(
+    ctx: _ModuleCtx,
+    state: _FnState,
+    result_ty: str,
+    *,
+    is_ok: bool,
+    payload_v: ir.Value,
+    payload_ty: str,
+    node: Any,
+) -> ir.Value:
+    parsed = _result_inner_types(result_ty)
+    if parsed is None:
+        raise CodegenError(_diag(node, f"internal: expected Result<T, E> type, got {result_ty}"))
+    _ok_ty, _err_ty = parsed
+    payload_any = _coerce_value(ctx, state, payload_v, payload_ty, "Any", node)
+    if not (isinstance(payload_any.type, ir.IntType) and payload_any.type.width == 64):
+        payload_any = state.builder.bitcast(payload_any, ir.IntType(64))
+
+    i64 = ir.IntType(64)
+    mem = _alloc_bytes(ctx, state, ir.Constant(i64, 16), ir.Constant(i64, 8), node)
+    s_ptr = state.builder.bitcast(mem, _result_storage_ty().as_pointer())
+    tag_ptr = state.builder.gep(s_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+    payload_ptr = state.builder.gep(s_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
+    state.builder.store(ir.Constant(ir.IntType(8), 1 if is_ok else 0), tag_ptr)
+    state.builder.store(payload_any, payload_ptr)
+
+    out_ty = _llvm_type(ctx, result_ty)
+    if mem.type != out_ty:
+        return state.builder.bitcast(mem, out_ty)
+    return mem
 
 
 def _is_terminated(state: _FnState) -> bool:
@@ -697,6 +773,14 @@ def _expr_type(state: _FnState, e: Any) -> str:
         return _canonical_type(e.name)
     if isinstance(e, AwaitExpr):
         return _expr_type(state, e.expr)
+    if isinstance(e, TryExpr):
+        src_ty = _expr_type(state, e.expr)
+        if _is_option_type(src_ty):
+            return _option_inner_type(src_ty)
+        parsed = _result_inner_types(src_ty)
+        if parsed is not None:
+            return parsed[0]
+        return "Any"
     return "Int"
 
 
@@ -748,6 +832,8 @@ def _declare_runtime(ctx: _ModuleCtx, name: str) -> ir.Function:
         fnty = ir.FunctionType(i8p, [i64])
     elif name == "astra_any_to_ptr":
         fnty = ir.FunctionType(i64, [i64])
+    elif name == "astra_any_is_none":
+        fnty = ir.FunctionType(i1, [i64])
     elif name == "astra_len_any":
         fnty = ir.FunctionType(i64, [i64])
     elif name == "astra_len_str":
@@ -762,9 +848,37 @@ def _declare_runtime(ctx: _ModuleCtx, name: str) -> ir.Function:
         fnty = ir.FunctionType(i64, [])
     elif name == "astra_arg":
         fnty = ir.FunctionType(i8p, [i64])
+    elif name == "astra_spawn_start":
+        fnty = ir.FunctionType(i64, [i64, i64])
     elif name == "astra_spawn_store":
         fnty = ir.FunctionType(i64, [i64])
     elif name == "astra_join":
+        fnty = ir.FunctionType(i64, [i64])
+    elif name == "astra_atomic_int_new":
+        fnty = ir.FunctionType(i64, [i64])
+    elif name == "astra_atomic_load":
+        fnty = ir.FunctionType(i64, [i64])
+    elif name == "astra_atomic_store":
+        fnty = ir.FunctionType(i64, [i64, i64])
+    elif name == "astra_atomic_fetch_add":
+        fnty = ir.FunctionType(i64, [i64, i64])
+    elif name == "astra_atomic_compare_exchange":
+        fnty = ir.FunctionType(i1, [i64, i64, i64])
+    elif name == "astra_mutex_new":
+        fnty = ir.FunctionType(i64, [])
+    elif name == "astra_mutex_lock":
+        fnty = ir.FunctionType(i64, [i64, i64])
+    elif name == "astra_mutex_unlock":
+        fnty = ir.FunctionType(i64, [i64, i64])
+    elif name == "astra_chan_new":
+        fnty = ir.FunctionType(i64, [])
+    elif name == "astra_chan_send":
+        fnty = ir.FunctionType(i64, [i64, i64])
+    elif name == "astra_chan_recv_try":
+        fnty = ir.FunctionType(i64, [i64])
+    elif name == "astra_chan_recv_blocking":
+        fnty = ir.FunctionType(i64, [i64])
+    elif name == "astra_chan_close":
         fnty = ir.FunctionType(i64, [i64])
     elif name == "astra_list_new":
         fnty = ir.FunctionType(i64, [])
@@ -804,6 +918,8 @@ def _declare_runtime(ctx: _ModuleCtx, name: str) -> ir.Function:
         fnty = ir.FunctionType(i8p, [i8p])
     elif name == "astra_hmac_sha256":
         fnty = ir.FunctionType(i8p, [i8p, i8p])
+    elif name == "astra_rand_bytes":
+        fnty = ir.FunctionType(i64, [i64])
     elif name == "astra_env_get":
         fnty = ir.FunctionType(i8p, [i8p])
     elif name == "astra_cwd":
@@ -1186,6 +1302,31 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
     def _as_any_i64(v: _Value, node: Any) -> ir.Value:
         return _coerce_value(ctx, state, v.value, v.ty, "Any", node)
 
+    def _spawn_entry_wrapper(arity: int) -> ir.Function:
+        key = f"__astra_spawn_entry_i64_{arity}"
+        existing = ctx.fn_map.get(key)
+        if isinstance(existing, ir.Function):
+            return existing
+        payload_i64p = i64.as_pointer()
+        wrapper = ir.Function(ctx.module, ir.FunctionType(i64, [i64]), name=key)
+        ctx.fn_map[key] = wrapper
+        wb = ir.IRBuilder(wrapper.append_basic_block("entry"))
+        payload_ptr = wb.inttoptr(wrapper.args[0], payload_i64p)
+        fn_bits_ptr = wb.gep(payload_ptr, [ir.Constant(i64, 0)])
+        fn_bits = wb.load(fn_bits_ptr)
+        worker_ty = ir.FunctionType(i64, [i64 for _ in range(arity)])
+        worker_ptr = wb.inttoptr(fn_bits, worker_ty.as_pointer())
+        args: list[ir.Value] = []
+        for idx in range(arity):
+            arg_ptr = wb.gep(payload_ptr, [ir.Constant(i64, idx + 1)])
+            args.append(wb.load(arg_ptr))
+        free_fn = _declare_runtime(ctx, "astra_free")
+        payload_size = ir.Constant(i64, (arity + 1) * 8)
+        wb.call(free_fn, [wrapper.args[0], payload_size, ir.Constant(i64, 8)])
+        out = wb.call(worker_ptr, args)
+        wb.ret(out)
+        return wrapper
+
     if base == "vec_new":
         if len(call.args) != 0:
             raise CodegenError(_diag(call, "vec_new expects 0 arguments"))
@@ -1401,13 +1542,35 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
     if base == "spawn":
         if len(call.args) < 1:
             raise CodegenError(_diag(call, "spawn expects at least a function argument"))
-        pseudo = Call(fn=call.args[0], args=call.args[1:], pos=call.pos, line=call.line, col=call.col)
-        resolved = getattr(call, "spawn_resolved_name", None)
-        if isinstance(resolved, str):
-            pseudo.resolved_name = resolved
-        out = _compile_call(ctx, state, pseudo, overflow_mode=overflow_mode)
-        fn = _declare_runtime(ctx, "astra_spawn_store")
-        tid = b.call(fn, [_as_any_i64(out, call)])
+        _declare_runtime(ctx, "astra_spawn_store")
+        worker = _compile_expr(ctx, state, call.args[0], overflow_mode=overflow_mode)
+        parsed = _parse_fn_type(worker.ty)
+        if parsed is None:
+            raise CodegenError(_diag(call, "spawn expects function value as arg 0"))
+        worker_param_tys, worker_ret_ty = parsed
+        if len(worker_param_tys) != len(call.args) - 1:
+            raise CodegenError(
+                _diag(call, f"spawn worker expects {len(worker_param_tys)} args, got {len(call.args) - 1}")
+            )
+        if _canonical_type(worker_ret_ty) != "Int":
+            raise CodegenError(_diag(call, "spawn currently requires worker return type Int"))
+        for idx, pty in enumerate(worker_param_tys):
+            if _canonical_type(pty) != "Int":
+                raise CodegenError(_diag(call.args[idx + 1], "spawn currently supports only Int worker parameters"))
+        arity = len(worker_param_tys)
+        payload_ptr_i8 = _alloc_bytes(ctx, state, ir.Constant(i64, (arity + 1) * 8), ir.Constant(i64, 8), call)
+        payload_ptr = b.bitcast(payload_ptr_i8, i64.as_pointer())
+        worker_ptr_i8 = _as_i8_ptr(state, worker.value, call.args[0])
+        worker_bits = b.ptrtoint(worker_ptr_i8, i64)
+        b.store(worker_bits, b.gep(payload_ptr, [ir.Constant(i64, 0)]))
+        for idx, arg_node in enumerate(call.args[1:]):
+            av = _compile_expr(ctx, state, arg_node, overflow_mode=overflow_mode)
+            ai64 = _as_i64(av, arg_node)
+            b.store(ai64, b.gep(payload_ptr, [ir.Constant(i64, idx + 1)]))
+        wrapper = _spawn_entry_wrapper(arity)
+        wrapper_bits = b.ptrtoint(wrapper, i64)
+        fn = _declare_runtime(ctx, "astra_spawn_start")
+        tid = b.call(fn, [wrapper_bits, b.ptrtoint(payload_ptr_i8, i64)])
         return _Value(tid, "Int")
 
     if base == "join":
@@ -1417,6 +1580,53 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
         fn = _declare_runtime(ctx, "astra_join")
         out = b.call(fn, [_as_i64(t, call.args[0])])
         return _Value(out, "Any")
+
+    if base == "atomic_int_new":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "atomic_int_new expects 1 argument"))
+        v = _compile_expr(ctx, state, call.args[0])
+        fn = _declare_runtime(ctx, "astra_atomic_int_new")
+        out = b.call(fn, [_as_i64(v, call.args[0])])
+        return _Value(out, "Int")
+
+    if base == "atomic_load":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "atomic_load expects 1 argument"))
+        h = _compile_expr(ctx, state, call.args[0])
+        fn = _declare_runtime(ctx, "astra_atomic_load")
+        out = b.call(fn, [_as_i64(h, call.args[0])])
+        return _Value(out, "Int")
+
+    if base == "atomic_store":
+        if len(call.args) != 2:
+            raise CodegenError(_diag(call, "atomic_store expects 2 arguments"))
+        h = _compile_expr(ctx, state, call.args[0])
+        v = _compile_expr(ctx, state, call.args[1])
+        fn = _declare_runtime(ctx, "astra_atomic_store")
+        out = b.call(fn, [_as_i64(h, call.args[0]), _as_i64(v, call.args[1])])
+        return _Value(out, "Int")
+
+    if base == "atomic_fetch_add":
+        if len(call.args) != 2:
+            raise CodegenError(_diag(call, "atomic_fetch_add expects 2 arguments"))
+        h = _compile_expr(ctx, state, call.args[0])
+        d = _compile_expr(ctx, state, call.args[1])
+        fn = _declare_runtime(ctx, "astra_atomic_fetch_add")
+        out = b.call(fn, [_as_i64(h, call.args[0]), _as_i64(d, call.args[1])])
+        return _Value(out, "Int")
+
+    if base == "atomic_compare_exchange":
+        if len(call.args) != 3:
+            raise CodegenError(_diag(call, "atomic_compare_exchange expects 3 arguments"))
+        h = _compile_expr(ctx, state, call.args[0])
+        expected = _compile_expr(ctx, state, call.args[1])
+        desired = _compile_expr(ctx, state, call.args[2])
+        fn = _declare_runtime(ctx, "astra_atomic_compare_exchange")
+        out = b.call(
+            fn,
+            [_as_i64(h, call.args[0]), _as_i64(expected, call.args[1]), _as_i64(desired, call.args[2])],
+        )
+        return _Value(out, "Bool")
 
     if base == "list_new":
         if len(call.args) != 0:
@@ -1498,6 +1708,95 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
             fn,
             [_as_any_i64(m, call.args[0]), _as_any_i64(k, call.args[1]), _as_any_i64(v, call.args[2])],
         )
+        return _Value(out, "Int")
+
+    if base == "mutex_new":
+        if len(call.args) != 0:
+            raise CodegenError(_diag(call, "mutex_new expects 0 arguments"))
+        fn = _declare_runtime(ctx, "astra_mutex_new")
+        return _Value(b.call(fn, []), "Int")
+
+    if base == "mutex_lock":
+        if len(call.args) != 2:
+            raise CodegenError(_diag(call, "mutex_lock expects 2 arguments"))
+        m = _compile_expr(ctx, state, call.args[0])
+        tid = _compile_expr(ctx, state, call.args[1])
+        fn = _declare_runtime(ctx, "astra_mutex_lock")
+        out = b.call(fn, [_as_i64(m, call.args[0]), _as_i64(tid, call.args[1])])
+        return _Value(out, "Int")
+
+    if base == "mutex_unlock":
+        if len(call.args) != 2:
+            raise CodegenError(_diag(call, "mutex_unlock expects 2 arguments"))
+        m = _compile_expr(ctx, state, call.args[0])
+        tid = _compile_expr(ctx, state, call.args[1])
+        fn = _declare_runtime(ctx, "astra_mutex_unlock")
+        out = b.call(fn, [_as_i64(m, call.args[0]), _as_i64(tid, call.args[1])])
+        return _Value(out, "Int")
+
+    if base == "chan_new":
+        if len(call.args) != 0:
+            raise CodegenError(_diag(call, "chan_new expects 0 arguments"))
+        fn = _declare_runtime(ctx, "astra_chan_new")
+        return _Value(b.call(fn, []), "Int")
+
+    if base == "chan_send":
+        if len(call.args) != 2:
+            raise CodegenError(_diag(call, "chan_send expects 2 arguments"))
+        cid = _compile_expr(ctx, state, call.args[0])
+        v = _compile_expr(ctx, state, call.args[1])
+        fn = _declare_runtime(ctx, "astra_chan_send")
+        out = b.call(fn, [_as_i64(cid, call.args[0]), _as_any_i64(v, call.args[1])])
+        return _Value(out, "Int")
+
+    if base == "chan_recv_try":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "chan_recv_try expects 1 argument"))
+        cid = _compile_expr(ctx, state, call.args[0])
+        fn = _declare_runtime(ctx, "astra_chan_recv_try")
+        out_any = b.call(fn, [_as_i64(cid, call.args[0])])
+        is_none_fn = _declare_runtime(ctx, "astra_any_is_none")
+        is_none = b.call(is_none_fn, [out_any])
+        fn_ir = state.fn_ir
+        none_block = fn_ir.append_basic_block("chan_try_none")
+        some_block = fn_ir.append_basic_block("chan_try_some")
+        end_block = fn_ir.append_basic_block("chan_try_end")
+        b.cbranch(is_none, none_block, some_block)
+
+        i64 = ir.IntType(64)
+        b.position_at_end(none_block)
+        none_val = ir.Constant(ir.IntType(8).as_pointer(), None)
+        b.branch(end_block)
+        none_block = b.block
+
+        b.position_at_end(some_block)
+        mem = _alloc_bytes(ctx, state, ir.Constant(i64, 8), ir.Constant(i64, 8), call)
+        any_ptr = b.bitcast(mem, i64.as_pointer())
+        b.store(out_any, any_ptr)
+        some_val = mem if mem.type == ir.IntType(8).as_pointer() else b.bitcast(mem, ir.IntType(8).as_pointer())
+        b.branch(end_block)
+        some_block = b.block
+
+        b.position_at_end(end_block)
+        out = b.phi(ir.IntType(8).as_pointer())
+        out.add_incoming(none_val, none_block)
+        out.add_incoming(some_val, some_block)
+        return _Value(out, "Any?")
+
+    if base == "chan_recv_blocking":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "chan_recv_blocking expects 1 argument"))
+        cid = _compile_expr(ctx, state, call.args[0])
+        fn = _declare_runtime(ctx, "astra_chan_recv_blocking")
+        out = b.call(fn, [_as_i64(cid, call.args[0])])
+        return _Value(out, "Any")
+
+    if base == "chan_close":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "chan_close expects 1 argument"))
+        cid = _compile_expr(ctx, state, call.args[0])
+        fn = _declare_runtime(ctx, "astra_chan_close")
+        out = b.call(fn, [_as_i64(cid, call.args[0])])
         return _Value(out, "Int")
 
     if base == "file_exists":
@@ -1582,6 +1881,14 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
         fn = _declare_runtime(ctx, "astra_hmac_sha256")
         out = b.call(fn, [_as_string_ptr(k, call.args[0]), _as_string_ptr(s, call.args[1])])
         return _Value(out, "String")
+
+    if base == "rand_bytes":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "rand_bytes expects 1 argument"))
+        n = _compile_expr(ctx, state, call.args[0])
+        fn = _declare_runtime(ctx, "astra_rand_bytes")
+        out = b.call(fn, [_as_i64(n, call.args[0])])
+        return _Value(out, "Any")
 
     if base == "env_get":
         if len(call.args) != 1:
@@ -1720,6 +2027,65 @@ def _compile_struct_init(
 
 
 def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: str) -> _Value:
+    ufcs_receiver = getattr(call, "ufcs_receiver", None)
+    if ufcs_receiver is not None:
+        if call.resolved_name:
+            target_name = call.resolved_name
+        elif isinstance(call.fn, Name):
+            target_name = call.fn.value
+        elif isinstance(call.fn, FieldExpr):
+            target_name = call.fn.field
+        else:
+            raise CodegenError(_diag(call, "cannot resolve UFCS call target"))
+        synthetic = Call(
+            fn=Name(target_name, call.pos, call.line, call.col),
+            args=[ufcs_receiver] + list(call.args),
+            pos=call.pos,
+            line=call.line,
+            col=call.col,
+            resolved_name=call.resolved_name,
+        )
+        setattr(synthetic, "inferred_type", getattr(call, "inferred_type", None))
+        return _compile_call(ctx, state, synthetic, overflow_mode)
+
+    if (
+        isinstance(call.fn, FieldExpr)
+        and isinstance(call.fn.obj, Name)
+        and call.fn.obj.value == "Result"
+        and call.fn.field in {"Ok", "Err"}
+    ):
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, f"Result.{call.fn.field} expects 1 argument"))
+        out_ty = _expr_type(state, call)
+        parsed = _result_inner_types(out_ty)
+        if parsed is None:
+            raise CodegenError(_diag(call, f"Result constructor requires Result<T, E> context, got {out_ty}"))
+        ok_ty, err_ty = parsed
+        arg = _compile_expr(ctx, state, call.args[0], overflow_mode=overflow_mode)
+        if call.fn.field == "Ok":
+            payload = _coerce_value(ctx, state, arg.value, arg.ty, ok_ty, call.args[0])
+            out_ptr = _emit_result_value(
+                ctx,
+                state,
+                out_ty,
+                is_ok=True,
+                payload_v=payload,
+                payload_ty=ok_ty,
+                node=call,
+            )
+        else:
+            payload = _coerce_value(ctx, state, arg.value, arg.ty, err_ty, call.args[0])
+            out_ptr = _emit_result_value(
+                ctx,
+                state,
+                out_ty,
+                is_ok=False,
+                payload_v=payload,
+                payload_ty=err_ty,
+                node=call,
+            )
+        return _Value(out_ptr, out_ty)
+
     if isinstance(call.fn, FieldExpr) and call.fn.field == "get":
         if len(call.args) != 1:
             raise CodegenError(_diag(call, "get expects 1 argument"))
@@ -1799,6 +2165,15 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
             "from_json",
             "sha256",
             "hmac_sha256",
+            "rand_bytes",
+            "mutex_new",
+            "mutex_lock",
+            "mutex_unlock",
+            "chan_new",
+            "chan_send",
+            "chan_recv_try",
+            "chan_recv_blocking",
+            "chan_close",
             "proc_exit",
             "env_get",
             "cwd",
@@ -1831,6 +2206,11 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
             "__spawn",
             "__join",
             "__await_result",
+            "__atomic_int_new",
+            "__atomic_load",
+            "__atomic_store",
+            "__atomic_fetch_add",
+            "__atomic_compare_exchange",
             "__list_new",
             "__list_push",
             "__list_get",
@@ -1850,6 +2230,15 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
             "__from_json",
             "__sha256",
             "__hmac_sha256",
+            "__rand_bytes",
+            "__mutex_new",
+            "__mutex_lock",
+            "__mutex_unlock",
+            "__chan_new",
+            "__chan_send",
+            "__chan_recv_try",
+            "__chan_recv_blocking",
+            "__chan_close",
             "__proc_exit",
             "__env_get",
             "__cwd",
@@ -1881,6 +2270,18 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
         if isinstance(callee, ir.Function) and sig is not None:
             args: list[ir.Value] = []
             for arg_node, pty in zip(call.args, sig.params):
+                pty_c = _canonical_type(pty)
+                if (
+                    pty_c.startswith("&")
+                    and not (isinstance(arg_node, Unary) and arg_node.op in {"&", "&mut"})
+                    and isinstance(arg_node, Name)
+                    and arg_node.value in state.vars
+                ):
+                    inner = _strip_ref_type(pty_c)
+                    actual = state.var_types.get(arg_node.value, "Any")
+                    if _canonical_type(inner) == _canonical_type(actual):
+                        args.append(state.vars[arg_node.value])
+                        continue
                 a = _compile_expr(ctx, state, arg_node)
                 args.append(_coerce_value(ctx, state, a.value, a.ty, pty, arg_node))
             if len(call.args) != len(sig.params):
@@ -1917,6 +2318,10 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
     b = state.builder
     if isinstance(e, WildcardPattern):
         raise CodegenError(_diag(e, "wildcard pattern `_` is only valid in match arms"))
+    if isinstance(e, OrPattern):
+        raise CodegenError(_diag(e, "or-patterns are only valid in match arms"))
+    if isinstance(e, GuardedPattern):
+        raise CodegenError(_diag(e, "match guards are only valid in match arms"))
     if isinstance(e, BoolLit):
         return _Value(ir.Constant(ir.IntType(1), 1 if e.value else 0), "Bool")
     if isinstance(e, NilLit):
@@ -1953,6 +2358,83 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
             parsed = f"fn({', '.join(sig.params)}) -> {sig.ret}"
             return _Value(b.bitcast(fn, ir.IntType(8).as_pointer()), parsed)
         raise CodegenError(_diag(e, f"undefined local or function value {e.value}"))
+    if isinstance(e, TryExpr):
+        src = _compile_expr(ctx, state, e.expr, overflow_mode=overflow_mode)
+        src_ty = _canonical_type(src.ty)
+        fn_ret = _canonical_type(state.ret_type)
+        if _is_option_type(src_ty):
+            if not _is_option_type(fn_ret):
+                raise CodegenError(_diag(e, f"`?` requires Option<T> function return type, got {fn_ret}"))
+            if not isinstance(src.value.type, ir.PointerType):
+                raise CodegenError(_diag(e, "internal: Option<T> lowering expects pointer storage"))
+            is_none = b.icmp_unsigned("==", src.value, ir.Constant(src.value.type, None))
+            fn_ir = state.fn_ir
+            none_block = fn_ir.append_basic_block("try_none")
+            some_block = fn_ir.append_basic_block("try_some")
+            b.cbranch(is_none, none_block, some_block)
+
+            b.position_at_end(none_block)
+            if state.ret_alloca is None:
+                raise CodegenError(_diag(e, "internal: missing return storage for `?` propagation"))
+            none_rv = _default_value(ctx, fn_ret)
+            b.store(none_rv, state.ret_alloca)
+            b.branch(state.epilogue_block)
+
+            b.position_at_end(some_block)
+            inner_ty = _option_inner_type(src_ty)
+            inner_ll = _llvm_type(ctx, inner_ty)
+            some_ptr = b.bitcast(src.value, inner_ll.as_pointer())
+            some_v = b.load(some_ptr)
+            return _Value(some_v, inner_ty)
+
+        parsed_src = _result_inner_types(src_ty)
+        if parsed_src is None:
+            raise CodegenError(_diag(e, f"`?` expects Option<T> or Result<T, E> operand, got {src_ty}"))
+        if not _is_result_type(fn_ret):
+            raise CodegenError(_diag(e, f"`?` on Result<T, E> requires Result<T, E> function return type, got {fn_ret}"))
+        parsed_fn = _result_inner_types(fn_ret)
+        if parsed_fn is None:
+            raise CodegenError(_diag(e, f"internal: malformed function return type {fn_ret}"))
+        ok_ty, err_ty = parsed_src
+        _, fn_err_ty = parsed_fn
+        if _canonical_type(err_ty) != _canonical_type(fn_err_ty):
+            raise CodegenError(
+                _diag(e, f"`?` on Result<T, E> requires matching error type, got {err_ty} and {fn_err_ty}")
+            )
+        if not isinstance(src.value.type, ir.PointerType):
+            raise CodegenError(_diag(e, "internal: Result<T, E> lowering expects pointer storage"))
+
+        fn_ir = state.fn_ir
+        is_ok_block = fn_ir.append_basic_block("try_result_ok")
+        is_err_block = fn_ir.append_basic_block("try_result_err")
+        res_ptr = b.bitcast(src.value, _result_storage_ty().as_pointer())
+        tag_ptr = b.gep(res_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+        payload_ptr = b.gep(res_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
+        tag = b.load(tag_ptr)
+        ok_cond = b.icmp_unsigned("==", tag, ir.Constant(ir.IntType(8), 1))
+        b.cbranch(ok_cond, is_ok_block, is_err_block)
+
+        b.position_at_end(is_err_block)
+        if state.ret_alloca is None:
+            raise CodegenError(_diag(e, "internal: missing return storage for `?` propagation"))
+        err_any = b.load(payload_ptr)
+        err_value = _coerce_value(ctx, state, err_any, "Any", fn_err_ty, e)
+        err_result = _emit_result_value(
+            ctx,
+            state,
+            fn_ret,
+            is_ok=False,
+            payload_v=err_value,
+            payload_ty=fn_err_ty,
+            node=e,
+        )
+        b.store(err_result, state.ret_alloca)
+        b.branch(state.epilogue_block)
+
+        b.position_at_end(is_ok_block)
+        ok_any = b.load(payload_ptr)
+        ok_value = _coerce_value(ctx, state, ok_any, "Any", ok_ty, e)
+        return _Value(ok_value, ok_ty)
     if isinstance(e, AwaitExpr):
         return _compile_expr(ctx, state, e.expr, overflow_mode=overflow_mode)
     if isinstance(e, CastExpr):
@@ -2315,10 +2797,157 @@ def _collect_defer_sites(stmts: list[Any], out: list[DeferStmt]) -> None:
             _collect_defer_sites(st.body, out)
 
 
+def _compile_match_condition(
+    ctx: _ModuleCtx,
+    state: _FnState,
+    subj: _Value,
+    pat: Any,
+    overflow_mode: str,
+) -> ir.Value:
+    b = state.builder
+    if isinstance(pat, Name):
+        return ir.Constant(ir.IntType(1), 1)
+    if isinstance(pat, WildcardPattern):
+        return ir.Constant(ir.IntType(1), 1)
+    if isinstance(pat, GuardedPattern):
+        cond = _compile_match_condition(ctx, state, subj, pat.pattern, overflow_mode)
+        fn = state.fn_ir
+        no_guard_block = b.block
+        guard_block = fn.append_basic_block("match_guard")
+        merge_block = fn.append_basic_block("match_guard_end")
+        b.cbranch(cond, guard_block, merge_block)
+
+        b.position_at_end(guard_block)
+        g = _compile_expr(ctx, state, pat.guard, overflow_mode=overflow_mode)
+        gv = _coerce_value(ctx, state, g.value, g.ty, "Bool", pat.guard)
+        b.branch(merge_block)
+        guard_done = b.block
+
+        b.position_at_end(merge_block)
+        phi = b.phi(ir.IntType(1))
+        phi.add_incoming(ir.Constant(ir.IntType(1), 0), no_guard_block)
+        phi.add_incoming(gv, guard_done)
+        return phi
+    if isinstance(pat, OrPattern):
+        out = ir.Constant(ir.IntType(1), 0)
+        for alt in pat.patterns:
+            out = b.or_(out, _compile_match_condition(ctx, state, subj, alt, overflow_mode))
+        return out
+    if isinstance(pat, Call) and isinstance(pat.fn, Name):
+        struct_name = pat.fn.value
+        subj_ty = _strip_ref_type(_canonical_type(subj.ty))
+        if struct_name in ctx.structs and subj_ty == struct_name:
+            sinfo = ctx.structs[struct_name]
+            if len(pat.args) != len(sinfo.decl.fields):
+                return ir.Constant(ir.IntType(1), 0)
+            ptr = _struct_ptr(ctx, state, subj.value, subj.ty, sinfo, pat)
+            cond = ir.Constant(ir.IntType(1), 1)
+            for i, (sub, fty) in enumerate(zip(pat.args, sinfo.field_types)):
+                if sinfo.packed:
+                    raw, bits, _ = _packed_load_bits(ctx, state, ptr, sinfo, sinfo.decl.fields[i][0], pat)
+                    ll = _llvm_type(ctx, fty)
+                    if isinstance(ll, ir.IntType) and bits != ll.width:
+                        if ll.width > bits:
+                            info = _int_info(fty)
+                            if info is not None and info[1]:
+                                fv = state.builder.sext(raw, ll)
+                            else:
+                                fv = state.builder.zext(raw, ll)
+                        else:
+                            fv = state.builder.trunc(raw, ll)
+                    else:
+                        fv = raw
+                else:
+                    fld = state.builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), i)])
+                    fv = state.builder.load(fld)
+                sub_cond = _compile_match_condition(ctx, state, _Value(fv, fty), sub, overflow_mode)
+                cond = b.and_(cond, sub_cond)
+            return cond
+    pv = _compile_expr(ctx, state, pat, overflow_mode=overflow_mode)
+    pvv = _coerce_value(ctx, state, pv.value, pv.ty, subj.ty, pat)
+    if isinstance(subj.value.type, (ir.FloatType, ir.DoubleType)):
+        return b.fcmp_ordered("==", subj.value, pvv)
+    return b.icmp_unsigned("==", subj.value, pvv)
+
+
+def _compile_match_bindings(
+    ctx: _ModuleCtx,
+    state: _FnState,
+    subj: _Value,
+    pat: Any,
+) -> None:
+    b = state.builder
+    if isinstance(pat, Name):
+        if pat.value == "_":
+            return
+        name = pat.value
+        ty = _canonical_type(subj.ty)
+        ptr = state.vars.get(name)
+        if ptr is None:
+            ptr = b.alloca(_llvm_type(ctx, ty), name=name)
+            state.vars[name] = ptr
+            state.var_types[name] = ty
+        v = _coerce_value(ctx, state, subj.value, subj.ty, ty, pat)
+        b.store(v, ptr)
+        return
+    if isinstance(pat, WildcardPattern):
+        return
+    if isinstance(pat, GuardedPattern):
+        _compile_match_bindings(ctx, state, subj, pat.pattern)
+        return
+    if isinstance(pat, OrPattern):
+        # Binding extraction for `|` alternatives is not lowered here because
+        # the matched alternative is not tracked in this stage.
+        return
+    if isinstance(pat, Call) and isinstance(pat.fn, Name):
+        struct_name = pat.fn.value
+        subj_ty = _strip_ref_type(_canonical_type(subj.ty))
+        if struct_name in ctx.structs and subj_ty == struct_name:
+            sinfo = ctx.structs[struct_name]
+            if len(pat.args) != len(sinfo.decl.fields):
+                return
+            ptr = _struct_ptr(ctx, state, subj.value, subj.ty, sinfo, pat)
+            for i, (sub, fty) in enumerate(zip(pat.args, sinfo.field_types)):
+                if sinfo.packed:
+                    raw, bits, _ = _packed_load_bits(ctx, state, ptr, sinfo, sinfo.decl.fields[i][0], pat)
+                    ll = _llvm_type(ctx, fty)
+                    if isinstance(ll, ir.IntType) and bits != ll.width:
+                        if ll.width > bits:
+                            info = _int_info(fty)
+                            if info is not None and info[1]:
+                                fv = b.sext(raw, ll)
+                            else:
+                                fv = b.zext(raw, ll)
+                        else:
+                            fv = b.trunc(raw, ll)
+                    else:
+                        fv = raw
+                else:
+                    fld = b.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), i)])
+                    fv = b.load(fld)
+                _compile_match_bindings(ctx, state, _Value(fv, fty), sub)
+
+
 def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str) -> None:
     b = state.builder
 
     if isinstance(st, LetStmt):
+        if st.reassign_if_exists and st.name in state.vars:
+            _compile_stmt(
+                ctx,
+                state,
+                AssignStmt(
+                    target=Name(st.name, st.pos, st.line, st.col),
+                    op="=",
+                    expr=st.expr,
+                    pos=st.pos,
+                    line=st.line,
+                    col=st.col,
+                    explicit_set=False,
+                ),
+                overflow_mode,
+            )
+            return
         ty = _canonical_type(st.type_name or _expr_type(state, st.expr))
         val = _compile_expr(ctx, state, st.expr, overflow_mode=overflow_mode)
         v = _coerce_value(ctx, state, val.value, val.ty, ty, st)
@@ -2699,34 +3328,23 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
         for i, (pat, body) in enumerate(st.arms):
             state.builder.position_at_end(cur_check)
             arm_block = fn.append_basic_block(f"match_arm_{i}")
-            if isinstance(pat, WildcardPattern):
-                state.builder.branch(arm_block)
-            else:
-                next_block = fn.append_basic_block(f"match_next_{i}")
-                pv = _compile_expr(ctx, state, pat, overflow_mode=overflow_mode)
-                pvv = _coerce_value(ctx, state, pv.value, pv.ty, subj.ty, pat)
-                if isinstance(subj.value.type, (ir.FloatType, ir.DoubleType)):
-                    cmpv = state.builder.fcmp_ordered("==", subj.value, pvv)
-                else:
-                    cmpv = state.builder.icmp_unsigned("==", subj.value, pvv)
-                state.builder.cbranch(cmpv, arm_block, next_block)
+            next_block = fn.append_basic_block(f"match_next_{i}")
+            cmpv = _compile_match_condition(ctx, state, subj, pat, overflow_mode)
+            state.builder.cbranch(cmpv, arm_block, next_block)
 
             state.builder.position_at_end(arm_block)
+            _compile_match_bindings(ctx, state, subj, pat)
             for sub in body:
                 _compile_stmt(ctx, state, sub, overflow_mode)
                 if _is_terminated(state):
                     break
             if not _is_terminated(state):
                 state.builder.branch(end_block)
-            if isinstance(pat, WildcardPattern):
-                cur_check = None
-                break
             cur_check = next_block
 
-        if cur_check is not None:
-            state.builder.position_at_end(cur_check)
-            if not _is_terminated(state):
-                state.builder.branch(end_block)
+        state.builder.position_at_end(cur_check)
+        if not _is_terminated(state):
+            state.builder.branch(end_block)
         state.builder.position_at_end(end_block)
         return
 

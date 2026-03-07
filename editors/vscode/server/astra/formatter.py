@@ -97,7 +97,7 @@ def _expr_prec(e) -> int:
         return _PREC_CAST
     if isinstance(e, (AwaitExpr, Unary)):
         return _PREC_UNARY
-    if isinstance(e, (Call, IndexExpr, FieldExpr)):
+    if isinstance(e, (Call, IndexExpr, FieldExpr, TryExpr)):
         return _PREC_POSTFIX
     return _PREC_ATOM
 
@@ -136,8 +136,14 @@ def _fmt_expr(e, cfg: FormatConfig, *, indent: int = 0) -> str:
         return e.value
     if isinstance(e, WildcardPattern):
         return "_"
+    if isinstance(e, OrPattern):
+        return " | ".join(_fmt_expr(p, cfg, indent=indent) for p in e.patterns)
+    if isinstance(e, GuardedPattern):
+        return f"{_fmt_expr(e.pattern, cfg, indent=indent)} if {_fmt_expr(e.guard, cfg, indent=indent)}"
     if isinstance(e, AwaitExpr):
         return f"await {_fmt_expr_with_prec(e.expr, cfg, _PREC_UNARY)}"
+    if isinstance(e, TryExpr):
+        return f"{_fmt_expr_with_prec(e.expr, cfg, _PREC_POSTFIX)}!"
     if isinstance(e, Unary):
         return f"{e.op}{_fmt_expr_with_prec(e.expr, cfg, _PREC_UNARY)}"
     if isinstance(e, CastExpr):
@@ -185,6 +191,10 @@ def _fmt_expr(e, cfg: FormatConfig, *, indent: int = 0) -> str:
     raise ValueError(f"formatter: unsupported expression node {type(e).__name__}")
 
 
+def _fmt_match_pattern(pat, cfg: FormatConfig, *, indent: int = 0) -> str:
+    return _fmt_expr(pat, cfg, indent=indent)
+
+
 def _fmt_block(prefix: str, body: list, ind: int, cfg: FormatConfig) -> list[str]:
     p = _indent(ind, cfg)
     if not body:
@@ -199,12 +209,12 @@ def _fmt_block(prefix: str, body: list, ind: int, cfg: FormatConfig) -> list[str
 def _fmt_stmt(st, ind: int, cfg: FormatConfig) -> list[str]:
     p = _indent(ind, cfg)
     if isinstance(st, LetStmt):
-        kw = "fixed" if st.fixed else "let"
-        mut = "mut " if st.mut and not st.fixed else ""
+        mut = "mut " if st.mut else ""
         ann = f": {type_text(st.type_name)}" if st.type_name else ""
-        return [f"{p}{kw} {mut}{st.name}{ann} = {_fmt_expr(st.expr, cfg, indent=ind)};"]
+        return [f"{p}{mut}{st.name}{ann} = {_fmt_expr(st.expr, cfg, indent=ind)};"]
     if isinstance(st, AssignStmt):
-        return [f"{p}{_fmt_expr(st.target, cfg, indent=ind)} {st.op} {_fmt_expr(st.expr, cfg, indent=ind)};"]
+        set_kw = "set " if getattr(st, "explicit_set", False) else ""
+        return [f"{p}{set_kw}{_fmt_expr(st.target, cfg, indent=ind)} {st.op} {_fmt_expr(st.expr, cfg, indent=ind)};"]
     if isinstance(st, ReturnStmt):
         if st.expr is None:
             return [f"{p}return;"]
@@ -235,7 +245,7 @@ def _fmt_stmt(st, ind: int, cfg: FormatConfig) -> list[str]:
     if isinstance(st, MatchStmt):
         out = [f"{p}match {_fmt_expr(st.expr, cfg, indent=ind)} {{"]
         for pat, body in st.arms:
-            head = f"{_indent(ind + 1, cfg)}{_fmt_expr(pat, cfg, indent=ind + 1)} =>"
+            head = f"{_indent(ind + 1, cfg)}{_fmt_match_pattern(pat, cfg, indent=ind + 1)} =>"
             if not body:
                 out.append(f"{head} {{}}")
                 continue
@@ -249,6 +259,21 @@ def _fmt_stmt(st, ind: int, cfg: FormatConfig) -> list[str]:
 
 
 def _fmt_item(item, cfg: FormatConfig) -> list[str]:
+    def _fmt_generics(generics: list[str], where_bounds: list[tuple[str, str]] | None = None) -> str:
+        if not generics:
+            return ""
+        grouped: dict[str, list[str]] = {}
+        for tv, tr in list(where_bounds or []):
+            grouped.setdefault(tv, []).append(tr)
+        parts: list[str] = []
+        for g in generics:
+            bounds = grouped.get(g, [])
+            if bounds:
+                parts.append(f"{g} {' + '.join(bounds)}")
+            else:
+                parts.append(g)
+        return f"<{', '.join(parts)}>"
+
     if isinstance(item, ImportDecl):
         alias = f" as {item.alias}" if item.alias else ""
         if item.source is not None:
@@ -256,16 +281,23 @@ def _fmt_item(item, cfg: FormatConfig) -> list[str]:
         return [f"import {'.'.join(item.path)}{alias};"]
     if isinstance(item, TypeAliasDecl):
         return [f"type {item.name} = {type_text(item.target)};"]
+    if isinstance(item, LetStmt):
+        mut = "mut " if item.mut else ""
+        ann = f": {type_text(item.type_name)}" if item.type_name else ""
+        return [f"{mut}{item.name}{ann} = {_fmt_expr(item.expr, cfg)};"]
     if isinstance(item, StructDecl):
         out = []
         if item.doc:
             out.extend([f"/// {line}" for line in item.doc.splitlines()])
+        if getattr(item, "derives", None):
+            out.append(f"@derive({', '.join(getattr(item, 'derives'))})")
         pub = "pub " if item.pub else ""
         packed = "@packed " if item.packed else ""
+        gen = _fmt_generics(item.generics)
         if not item.fields:
-            out.append(f"{pub}{packed}struct {item.name} {{}}")
+            out.append(f"{pub}{packed}struct {item.name}{gen} {{}}")
             return out
-        out.append(f"{pub}{packed}struct {item.name} {{")
+        out.append(f"{pub}{packed}struct {item.name}{gen} {{")
         for name, typ in item.fields:
             out.append(f"{_indent(1, cfg)}{name} {type_text(typ)},")
         out.append("}")
@@ -274,11 +306,14 @@ def _fmt_item(item, cfg: FormatConfig) -> list[str]:
         out = []
         if item.doc:
             out.extend([f"/// {line}" for line in item.doc.splitlines()])
+        if getattr(item, "derives", None):
+            out.append(f"@derive({', '.join(getattr(item, 'derives'))})")
         pub = "pub " if item.pub else ""
+        gen = _fmt_generics(item.generics)
         if not item.variants:
-            out.append(f"{pub}enum {item.name} {{}}")
+            out.append(f"{pub}enum {item.name}{gen} {{}}")
             return out
-        out.append(f"{pub}enum {item.name} {{")
+        out.append(f"{pub}enum {item.name}{gen} {{")
         for name, fields in item.variants:
             if fields:
                 out.append(f"{_indent(1, cfg)}{name}({', '.join(type_text(t) for t in fields)}),")
@@ -299,7 +334,8 @@ def _fmt_item(item, cfg: FormatConfig) -> list[str]:
         if item.is_variadic:
             sig_parts.append("...")
         sig = ", ".join(sig_parts)
-        line = f"{pub}{us}extern fn {item.name}({sig}) -> {type_text(item.ret)};"
+        ret_text = f" {type_text(item.ret)}" if type_text(item.ret) != "Void" else ""
+        line = f"{pub}{us}extern fn {item.name}({sig}){ret_text};"
         if len(line) <= cfg.line_width or not item.params:
             out.append(line)
             return out
@@ -308,29 +344,44 @@ def _fmt_item(item, cfg: FormatConfig) -> list[str]:
             out.append(f"{_indent(1, cfg)}{n} {type_text(t)},")
         if item.is_variadic:
             out.append(f"{_indent(1, cfg)}...,")
-        out.append(f") -> {type_text(item.ret)};")
+        ret_text = f" {type_text(item.ret)}" if type_text(item.ret) != "Void" else ""
+        out.append(f"){ret_text};")
         return out
     if isinstance(item, FnDecl):
         out = []
         if item.doc:
             out.extend([f"/// {line}" for line in item.doc.splitlines()])
         pub = "pub " if item.pub else ""
-        impl_kw = "impl " if item.is_impl else ""
         async_kw = "async " if item.async_fn else ""
         unsafe_kw = "unsafe " if item.unsafe else ""
+        gpu_kw = "gpu " if getattr(item, "gpu_kernel", False) else ""
+        gen = _fmt_generics(item.generics, item.where_bounds)
         sig = ", ".join(f"{n} {type_text(t)}" for n, t in item.params)
-        fn_head = f"{pub}{impl_kw}{async_kw}{unsafe_kw}fn {item.name}({sig}) -> {type_text(item.ret)}"
+        ret_text = f" {type_text(item.ret)}" if type_text(item.ret) != "Void" else ""
+        fn_head = f"{pub}{async_kw}{unsafe_kw}{gpu_kw}fn {item.name}{gen}({sig}){ret_text}"
         if len(fn_head) > cfg.line_width and item.params:
-            out.append(f"{pub}{impl_kw}{async_kw}{unsafe_kw}fn {item.name}(")
+            out.append(f"{pub}{async_kw}{unsafe_kw}{gpu_kw}fn {item.name}{gen}(")
             for n, t in item.params:
                 out.append(f"{_indent(1, cfg)}{n} {type_text(t)},")
-            fn_head = f") -> {type_text(item.ret)}"
+            fn_head = f"){ret_text}"
         if not item.body:
             out.append(f"{fn_head} {{}}")
             return out
         out.append(f"{fn_head} {{")
         for st in item.body:
             out.extend(_fmt_stmt(st, 1, cfg))
+        out.append("}")
+        return out
+    if isinstance(item, TraitDecl):
+        out = []
+        if item.doc:
+            out.extend([f"/// {line}" for line in item.doc.splitlines()])
+        pub = "pub " if item.pub else ""
+        out.append(f"{pub}trait {item.name} {{")
+        for mname, params, ret in item.methods:
+            sig = ", ".join(f"{n} {type_text(t)}" for n, t in params)
+            ret_text = f" {type_text(ret)}" if type_text(ret) != "Void" else ""
+            out.append(f"{_indent(1, cfg)}fn {mname}({sig}){ret_text};")
         out.append("}")
         return out
     raise ValueError(f"formatter: unsupported top-level node {type(item).__name__}")
