@@ -1,0 +1,587 @@
+/// std.debug - debugging utilities for freestanding environments.
+///
+/// This module provides debug printing, assertions, stack tracing, and performance monitoring.
+/// All operations are designed for freestanding environments and can be compiled out in release builds.
+
+import std.console;
+import std.interrupt;
+import std.hardware;
+import std.memory;
+
+/// Debug levels.
+type DebugLevel = Int;
+
+const DEBUG_LEVEL_NONE = 0;
+const DEBUG_LEVEL_ERROR = 1;
+const DEBUG_LEVEL_WARN = 2;
+const DEBUG_LEVEL_INFO = 3;
+const DEBUG_LEVEL_DEBUG = 4;
+const DEBUG_LEVEL_TRACE = 5;
+
+/// Debug output destinations.
+type DebugOutput = Int;
+
+const DEBUG_OUTPUT_UART = 0;
+const DEBUG_OUTPUT_SWV = 1;  // Serial Wire Viewer
+const DEBUG_OUTPUT_RTT = 2;  // Real-Time Transfer
+const DEBUG_OUTPUT_NONE = 3;
+
+/// Stack frame structure.
+struct StackFrame {
+    return_address UInt32,
+    function_name String,
+    file_name String,
+    line_number UInt32,
+}
+
+/// Performance counter structure.
+struct PerformanceCounter {
+    name String,
+    start_cycles UInt32,
+    total_cycles UInt64,
+    call_count UInt32,
+    min_cycles UInt32,
+    max_cycles UInt32,
+    enabled Bool,
+}
+
+/// Memory allocation record.
+struct AllocationRecord {
+    address UInt32,
+    size UInt32,
+    file_name String,
+    line_number UInt32,
+    timestamp UInt32,
+}
+
+/// Debug configuration.
+struct DebugConfig {
+    output DebugOutput,
+    level DebugLevel,
+    uart_number UInt8,
+    enable_stack_trace Bool,
+    enable_performance_counters Bool,
+    enable_memory_tracking Bool,
+    max_stack_frames UInt16,
+}
+
+// Debug Configuration
+
+/// Initialize debug system with default settings.
+fn debug_init() Bool {
+    config = DebugConfig {
+        output: DEBUG_OUTPUT_UART,
+        level: DEBUG_LEVEL_DEBUG,
+        uart_number: 0,
+        enable_stack_trace: true,
+        enable_performance_counters: true,
+        enable_memory_tracking: false,
+        max_stack_frames: 16,
+    };
+    return debug_init_with_config(config);
+}
+
+/// Initialize debug system with custom configuration.
+fn debug_init_with_config(config DebugConfig) Bool {
+    __debug_set_config_impl(config);
+    
+    // Initialize console if using UART output
+    if config.output == DEBUG_OUTPUT_UART {
+        if !console_is_initialized() {
+            console_init();
+        }
+        else {}
+    }
+    else {}
+    
+    return true;
+}
+
+/// Get current debug configuration.
+fn debug_get_config() DebugConfig {
+    return __debug_get_config_impl();
+}
+
+/// Set debug level.
+fn debug_set_level(level DebugLevel) Void {
+    config = debug_get_config();
+    config.level = level;
+    __debug_set_config_impl(config);
+}
+
+/// Set debug output destination.
+fn debug_set_output(output DebugOutput) Void {
+    config = debug_get_config();
+    config.output = output;
+    __debug_set_config_impl(config);
+}
+
+// Debug Output Functions
+
+/// Print debug message at specified level.
+fn debug_print(level DebugLevel, message String) Void {
+    config = debug_get_config();
+    
+    if level > config.level {
+        return;
+    }
+    else {}
+    
+    if config.output == DEBUG_OUTPUT_NONE {
+        return;
+    }
+    else {}
+    
+    // Add level prefix
+    mut prefix = "";
+    match level {
+        DEBUG_LEVEL_ERROR => prefix = "[ERROR] ",
+        DEBUG_LEVEL_WARN => prefix = "[WARN] ",
+        DEBUG_LEVEL_INFO => prefix = "[INFO] ",
+        DEBUG_LEVEL_DEBUG => prefix = "[DEBUG] ",
+        DEBUG_LEVEL_TRACE => prefix = "[TRACE] ",
+        _ => prefix = "[UNKNOWN] ",
+    }
+    
+    full_message = prefix + message;
+    
+    match config.output {
+        DEBUG_OUTPUT_UART => {
+            console_println(full_message);
+        }
+        DEBUG_OUTPUT_SWV => {
+            __debug_swv_print_impl(full_message);
+        }
+        DEBUG_OUTPUT_RTT => {
+            __debug_rtt_print_impl(full_message);
+        }
+        _ => {}
+    }
+}
+
+/// Print formatted debug message.
+fn debug_printf(level DebugLevel, format String, args Vec<UInt32>) Void {
+    config = debug_get_config();
+    
+    if level > config.level {
+        return;
+    }
+    else {}
+    
+    // Format message
+    mut formatted = "";
+    mut i = 0;
+    mut arg_index = 0;
+    
+    while i < len(format) {
+        if format[i] == '%' && i + 1 < len(format) {
+            i += 1;
+            specifier = format[i];
+            
+            match specifier {
+                'd' => {
+                    if arg_index < vec_len(args) {
+                        value = vec_get(args, arg_index);
+                        if value != none {
+                            formatted += str.to_string_int((value as UInt32?)?) as Int);
+                        }
+                        else {}
+                        arg_index += 1;
+                    }
+                    else {}
+                }
+                'x' => {
+                    if arg_index < vec_len(args) {
+                        value = vec_get(args, arg_index);
+                        if value != none {
+                            formatted += "0x" + uint32_to_hex_string((value as UInt32?)?));
+                        }
+                        else {}
+                        arg_index += 1;
+                    }
+                    else {}
+                }
+                's' => {
+                    formatted += "[string]";
+                    arg_index += 1;
+                }
+                'c' => {
+                    if arg_index < vec_len(args) {
+                        value = vec_get(args, arg_index);
+                        if value != none {
+                            formatted += str.from_char(((value as UInt32?)?) as Char);
+                        }
+                        else {}
+                        arg_index += 1;
+                    }
+                    else {}
+                }
+                '%' => {
+                    formatted += "%";
+                }
+                _ => {
+                    formatted += "%";
+                    formatted += str.from_char(specifier);
+                }
+            }
+        }
+        else {
+            formatted += str.from_char(format[i]);
+        }
+        i += 1;
+    }
+    
+    debug_print(level, formatted);
+}
+
+/// Convenience functions for different levels
+fn debug_error(message String) Void {
+    debug_print(DEBUG_LEVEL_ERROR, message);
+}
+
+fn debug_warn(message String) Void {
+    debug_print(DEBUG_LEVEL_WARN, message);
+}
+
+fn debug_info(message String) Void {
+    debug_print(DEBUG_LEVEL_INFO, message);
+}
+
+fn debug_trace(message String) Void {
+    debug_print(DEBUG_LEVEL_TRACE, message);
+}
+
+// Assertions
+
+/// Assert condition (always enabled).
+fn debug_assert(condition Bool, message String) Void {
+    if !condition {
+        debug_error("Assertion failed: " + message);
+        debug_print_stack_trace();
+        debug_break();
+    }
+    else {}
+}
+
+/// Assert condition (debug builds only).
+fn debug_assert_debug(condition Bool, message String) Void {
+    #ifdef DEBUG
+    debug_assert(condition, message);
+    #endif
+}
+
+/// Panic function (unrecoverable error).
+fn debug_panic(message String) Void {
+    debug_error("PANIC: " + message);
+    debug_print_stack_trace();
+    debug_break();
+    
+    // Reset system
+    __system_reset_impl();
+}
+
+// Stack Tracing
+
+/// Print current stack trace.
+fn debug_print_stack_trace() Void {
+    config = debug_get_config();
+    
+    if !config.enable_stack_trace {
+        return;
+    }
+    else {}
+    
+    debug_info("Stack trace:");
+    
+    frames = debug_get_stack_trace(config.max_stack_frames);
+    mut i = 0;
+    while i < vec_len(frames) {
+        frame = vec_get(frames, i);
+        if frame != none {
+            f = frame as StackFrame?;
+            debug_printf(DEBUG_LEVEL_INFO, "  #%d: 0x%08x %s (%s:%d)", 
+                vec_from([i as UInt32, f.return_address, 0, 0, 0]));
+        }
+        else {}
+        i += 1;
+    }
+}
+
+/// Get current stack trace.
+fn debug_get_stack_trace(max_frames UInt16) Vec<StackFrame> {
+    return __debug_get_stack_trace_impl(max_frames);
+}
+
+/// Get current function name.
+fn debug_get_function_name() String {
+    return __debug_get_function_name_impl();
+}
+
+/// Get current file name.
+fn debug_get_file_name() String {
+    return __debug_get_file_name_impl();
+}
+
+/// Get current line number.
+fn debug_get_line_number() UInt32 {
+    return __debug_get_line_number_impl();
+}
+
+// Performance Monitoring
+
+/// Start performance counter.
+fn debug_performance_start(name String) Void {
+    config = debug_get_config();
+    
+    if !config.enable_performance_counters {
+        return;
+    }
+    else {}
+    
+    __debug_performance_start_impl(name);
+}
+
+/// Stop performance counter.
+fn debug_performance_stop(name String) UInt64 {
+    config = debug_get_config();
+    
+    if !config.enable_performance_counters {
+        return 0;
+    }
+    else {}
+    
+    return __debug_performance_stop_impl(name);
+}
+
+/// Get performance counter statistics.
+fn debug_performance_get_stats(name String) PerformanceCounter? {
+    return __debug_performance_get_stats_impl(name);
+}
+
+/// Reset performance counter.
+fn debug_performance_reset(name String) Void {
+    __debug_performance_reset_impl(name);
+}
+
+/// Print all performance statistics.
+fn debug_performance_print_all() Void {
+    config = debug_get_config();
+    
+    if !config.enable_performance_counters {
+        return;
+    }
+    else {}
+    
+    debug_info("Performance counters:");
+    
+    counters = __debug_performance_get_all_impl();
+    mut i = 0;
+    while i < vec_len(counters) {
+        counter = vec_get(counters, i);
+        if counter != none {
+            c = counter as PerformanceCounter?;
+            if c.enabled {
+                avg_cycles = if c.call_count > 0 { c.total_cycles / (c.call_count as UInt64) } else { 0 };
+                debug_printf(DEBUG_LEVEL_INFO, "  %s: calls=%d, avg=%d, min=%d, max=%d, total=%d",
+                    vec_from([0, c.call_count, avg_cycles as UInt32, c.min_cycles, c.max_cycles, c.total_cycles as UInt32]));
+            }
+            else {}
+        }
+        else {}
+        i += 1;
+    }
+}
+
+// Memory Tracking
+
+/// Record memory allocation.
+fn debug_memory_alloc(address UInt32, size UInt32, file_name String, line_number UInt32) Void {
+    config = debug_get_config();
+    
+    if !config.enable_memory_tracking {
+        return;
+    }
+    else {}
+    
+    __debug_memory_alloc_impl(address, size, file_name, line_number);
+}
+
+/// Record memory deallocation.
+fn debug_memory_free(address UInt32, file_name String, line_number UInt32) Void {
+    config = debug_get_config();
+    
+    if !config.enable_memory_tracking {
+        return;
+    }
+    else {}
+    
+    __debug_memory_free_impl(address, file_name, line_number);
+}
+
+/// Get memory allocation statistics.
+fn debug_memory_get_stats() (UInt32, UInt32, UInt32) {
+    return __debug_memory_get_stats_impl();
+}
+
+/// Print memory allocation statistics.
+fn debug_memory_print_stats() Void {
+    config = debug_get_config();
+    
+    if !config.enable_memory_tracking {
+        return;
+    }
+    else {}
+    
+    (total_alloc, total_free, current_usage) = debug_memory_get_stats();
+    
+    debug_printf(DEBUG_LEVEL_INFO, "Memory stats: allocated=%d, freed=%d, current=%d",
+        vec_from([total_alloc, total_free, current_usage]));
+    
+    // Print allocation records
+    records = __debug_memory_get_records_impl();
+    mut i = 0;
+    while i < vec_len(records) {
+        record = vec_get(records, i);
+        if record != none {
+            r = record as AllocationRecord?;
+            debug_printf(DEBUG_LEVEL_DEBUG, "  0x%08x: %d bytes (%s:%d)",
+                vec_from([r.address, r.size, 0, 0]));
+        }
+        else {}
+        i += 1;
+    }
+}
+
+/// Check for memory leaks.
+fn debug_memory_check_leaks() Bool {
+    config = debug_get_config();
+    
+    if !config.enable_memory_tracking {
+        return false;
+    }
+    else {}
+    
+    (total_alloc, total_free, current_usage) = debug_memory_get_stats();
+    
+    if current_usage > 0 {
+        debug_error("Memory leaks detected!");
+        debug_memory_print_stats();
+        return true;
+    }
+    else {
+        debug_info("No memory leaks detected");
+        return false;
+    }
+}
+
+// Breakpoint and Debug Control
+
+/// Trigger breakpoint.
+fn debug_break() Void {
+    __debug_break_impl();
+}
+
+/// Check if debugger is attached.
+fn debug_is_debugger_attached() Bool {
+    return __debug_is_debugger_attached_impl();
+}
+
+/// Wait for debugger to attach.
+fn debug_wait_for_debugger() Void {
+    while !debug_is_debugger_attached() {
+        // Wait
+    }
+}
+
+/// Set breakpoint at address.
+fn debug_set_breakpoint(address UInt32) Bool {
+    return __debug_set_breakpoint_impl(address);
+}
+
+/// Remove breakpoint at address.
+fn debug_remove_breakpoint(address UInt32) Bool {
+    return __debug_remove_breakpoint_impl(address);
+}
+
+// Utility Functions
+
+/// Print hex dump of memory.
+fn debug_hex_dump(address UInt32, size UInt32) Void {
+    debug_info("Hex dump at 0x" + uint32_to_hex_string(address) + " (" + str.to_string_int(size) + " bytes):");
+    
+    mut i = 0;
+    while i < size {
+        if i % 16 == 0 {
+            debug_printf(DEBUG_LEVEL_INFO, "  %08x:", vec_from([address + i]));
+        }
+        else {}
+        
+        byte = __read_uint8_impl(address + i);
+        debug_printf(DEBUG_LEVEL_INFO, " %02x", vec_from([byte]));
+        
+        if i % 16 == 15 {
+            debug_print(DEBUG_LEVEL_INFO, "");
+        }
+        else {}
+        
+        i += 1;
+    }
+    
+    if size % 16 != 0 {
+        debug_print(DEBUG_LEVEL_INFO, "");
+    }
+    else {}
+}
+
+/// Measure function execution time.
+fn debug_measure_time[T](function fn() T, name String) T {
+    debug_performance_start(name);
+    result = function();
+    cycles = debug_performance_stop(name);
+    
+    debug_printf(DEBUG_LEVEL_DEBUG, "%s took %d cycles", vec_from([0, cycles as UInt32]));
+    
+    return result;
+}
+
+/// Convert UInt32 to hex string (helper).
+fn uint32_to_hex_string(value UInt32) String {
+    mut result = "";
+    mut i = 0;
+    while i < 8 {
+        nibble = (value >> (28 - i * 4)) & 0xF;
+        if nibble < 10 {
+            result += str.from_char((nibble + '0') as Char);
+        }
+        else {
+            result += str.from_char((nibble - 10 + 'A') as Char);
+        }
+        i += 1;
+    }
+    return result;
+}
+
+// Runtime implementation functions
+extern fn __debug_set_config_impl(config DebugConfig) Void;
+extern fn __debug_get_config_impl() DebugConfig;
+extern fn __debug_swv_print_impl(message String) Void;
+extern fn __debug_rtt_print_impl(message String) Void;
+extern fn __debug_get_stack_trace_impl(max_frames UInt16) Vec<StackFrame>;
+extern fn __debug_get_function_name_impl() String;
+extern fn __debug_get_file_name_impl() String;
+extern fn __debug_get_line_number_impl() UInt32;
+extern fn __debug_performance_start_impl(name String) Void;
+extern fn __debug_performance_stop_impl(name String) UInt64;
+extern fn __debug_performance_get_stats_impl(name String) PerformanceCounter?;
+extern fn __debug_performance_reset_impl(name String) Void;
+extern fn __debug_performance_get_all_impl() Vec<PerformanceCounter>;
+extern fn __debug_memory_alloc_impl(address UInt32, size UInt32, file_name String, line_number UInt32) Void;
+extern fn __debug_memory_free_impl(address UInt32, file_name String, line_number UInt32) Void;
+extern fn __debug_memory_get_stats_impl() (UInt32, UInt32, UInt32);
+extern fn __debug_memory_get_records_impl() Vec<AllocationRecord>;
+extern fn __debug_break_impl() Void;
+extern fn __debug_is_debugger_attached_impl() Bool;
+extern fn __debug_set_breakpoint_impl(address UInt32) Bool;
+extern fn __debug_remove_breakpoint_impl(address UInt32) Bool;
+extern fn __read_uint8_impl(address UInt32) UInt8;
+extern fn __system_reset_impl() Void;

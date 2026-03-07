@@ -12,14 +12,18 @@ Each module is either **freestanding-safe** (can be analyzed/used with
 | -----------------| ------------------------------------------------ | ------------- |
 | `algorithm.astra` | Pure algorithms (binary search, sorting, etc.) | ✅ |
 | `atomic.astra`   | Compatibility atomic API (`AtomicInt`, load/store/fetch_add/cas). | ✅ |
+| `boot.astra`      | Bootloader utilities and system initialization | ✅ |
 | `c.astra`         | C language bindings and FFI utilities | ❌ |
 | `channel.astra`  | Runtime-backed FIFO channel (`channel_new`, `channel_send`, `channel_recv`, `channel_close`). | ❌ |
 | `collections.astra` | Hosted list/map helpers with typed wrappers (`List<T>`, `Map<K,V>`) and nullable getters. | ❌ |
 | `compress.astra`  | Compression utilities (GZIP, DEFLATE, ZIP, TAR) | ❌ |
+| `console.astra`   | Console output and debugging for freestanding environments | ✅ |
 | `core.astra`     | Core types (`Option`, `Result`, `Bytes`) and checked integer helpers. | ✅ |
 | `crypto.astra`   | Hosted cryptographic helpers (`sha256`, `hmac_sha256`, `digest_pair`, `rand_bytes`). | ❌ |
 | `database.astra` | Database connectivity and SQLite bindings | ❌ |
 | `data.astra`      | Data structure primitives (Stack, Queue, RingBuffer) | ✅ |
+| `debug.astra`     | Debugging utilities (assertions, stack tracing, performance monitoring) | ✅ |
+| `embedded.astra`  | Embedded hardware interfaces (GPIO, SPI, I2C, UART, PWM, ADC, timers) | ✅ |
 | `encoding.astra` | Text encoding utilities (UTF-8, Base64, hex, URL) | ✅ |
 | `env.astra`       | Environment variable utilities (get, set, current directory) | ❌ |
 | `fs.astra`        | File system utilities (create, read, write, metadata) | ❌ |
@@ -28,10 +32,12 @@ Each module is either **freestanding-safe** (can be analyzed/used with
 | `hardware.astra`  | Low-level hardware interaction (memory barriers, bit manipulation, CPU intrinsics) | ✅ |
 | `heap.astra`      | Heap and priority queue implementations | ✅ |
 | `http.astra`      | HTTP client and server utilities | ❌ |
+| `interrupt.astra` | Interrupt handling and management (NVIC, handlers, critical sections) | ✅ |
 | `io.astra`        | Hosted file I/O (`read`, `write`, `read_or`, etc.) and printing helpers (`print_int`, `print_bool`, `print_float`, `print_str`, `print_any`). | ❌ |
 | `logging.astra`   | Structured logging with levels, formatting, and file output | ❌ |
 | `math.astra`      | Mathematical functions (trigonometry, statistics, constants) | ✅ |
 | `mem.astra`       | Simple helpers for filling/copying `Bytes` (`Vec<u8>`) using the freestanding vector API. | ✅ |
+| `memory.astra`    | Advanced memory management (pools, buddy allocator, stack allocation, MPU) | ✅ |
 | `net.astra`       | Hosted TCP helpers (`tcp_connect`, `tcp_send`, `tcp_send_line`, `tcp_recv`, `tcp_close`). | ❌ |
 | `path.astra`      | Cross-platform path manipulation utilities | ✅ |
 | `process.astra`   | Hosted process/environment helpers (`exit`, `env_or`, `cwd`, `run_ok`, `eprintln`). | ❌ |

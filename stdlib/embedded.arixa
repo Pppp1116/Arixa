@@ -1,0 +1,433 @@
+/// std.embedded - embedded systems hardware interfaces.
+///
+/// This module provides hardware abstraction for GPIO, SPI, I2C, UART, PWM, ADC, and timers.
+/// All operations are designed for freestanding environments and bare-metal development.
+
+import std.hardware;
+import std.math;
+
+/// GPIO pin modes.
+type GPIOMode = Int;
+
+const GPIO_MODE_INPUT = 0;
+const GPIO_MODE_OUTPUT = 1;
+const GPIO_MODE_ALTERNATE = 2;
+const GPIO_MODE_ANALOG = 3;
+
+/// GPIO pull-up/pull-down resistors.
+type GPIOPull = Int;
+
+const GPIO_PULL_NONE = 0;
+const GPIO_PULL_UP = 1;
+const GPIO_PULL_DOWN = 2;
+
+/// GPIO output types.
+type GPIOOutputType = Int;
+
+const GPIO_OUTPUT_PUSH_PULL = 0;
+const GPIO_OUTPUT_OPEN_DRAIN = 1;
+
+/// GPIO speed levels.
+type GPIOSpeed = Int;
+
+const GPIO_SPEED_LOW = 0;
+const GPIO_SPEED_MEDIUM = 1;
+const GPIO_SPEED_HIGH = 2;
+const GPIO_SPEED_VERY_HIGH = 3;
+
+/// GPIO pin structure.
+struct GPIOPin {
+    port UInt8,
+    pin UInt8,
+}
+
+/// SPI configuration.
+struct SPIConfig {
+    baud_rate UInt32,
+    mode UInt8,  // CPOL/CPHA
+    data_size UInt8,
+    bit_order UInt8,  // MSB_FIRST or LSB_FIRST
+}
+
+/// I2C configuration.
+struct I2CConfig {
+    clock_speed UInt32,
+    address_mode UInt8,  // 7-bit or 10-bit
+    dual_address_mode Bool,
+    general_call_mode Bool,
+    no_stretch_mode Bool,
+}
+
+/// UART configuration.
+struct UARTConfig {
+    baud_rate UInt32,
+    word_length UInt8,
+    stop_bits UInt8,
+    parity UInt8,
+    flow_control UInt8,
+}
+
+/// PWM configuration.
+struct PWMConfig {
+    frequency UInt32,
+    duty_cycle Float,
+    resolution UInt16,
+}
+
+/// ADC configuration.
+struct ADCConfig {
+    resolution UInt8,
+    sampling_time UInt8,
+    reference_voltage Float,
+}
+
+/// Timer configuration.
+struct TimerConfig {
+    prescaler UInt32,
+    period UInt32,
+    mode UInt8,  // ONE_SHOT, PERIODIC, PWM
+}
+
+// GPIO Operations
+
+/// Initialize GPIO pin with specified configuration.
+fn gpio_init(pin GPIOPin, mode GPIOMode, pull GPIOPull, output_type GPIOOutputType, speed GPIOSpeed) Bool {
+    return __gpio_init_impl(pin, mode, pull, output_type, speed);
+}
+
+/// Set GPIO pin output level.
+fn gpio_write(pin GPIOPin, level Bool) {
+    __gpio_write_impl(pin, level);
+}
+
+/// Read GPIO pin input level.
+fn gpio_read(pin GPIOPin) Bool {
+    return __gpio_read_impl(pin);
+}
+
+/// Toggle GPIO pin output level.
+fn gpio_toggle(pin GPIOPin) {
+    current = gpio_read(pin);
+    gpio_write(pin, !current);
+}
+
+/// Set multiple GPIO pins simultaneously.
+fn gpio_write_mask(port UInt8, mask UInt16, values UInt16) {
+    __gpio_write_mask_impl(port, mask, values);
+}
+
+/// Read multiple GPIO pins simultaneously.
+fn gpio_read_mask(port UInt8, mask UInt16) UInt16 {
+    return __gpio_read_mask_impl(port, mask);
+}
+
+/// Configure GPIO alternate function.
+fn gpio_set_alternate_function(pin GPIOPin, function UInt8) Bool {
+    return __gpio_set_alternate_function_impl(pin, function);
+}
+
+// SPI Operations
+
+/// Initialize SPI peripheral.
+fn spi_init(spi_num UInt8, config SPIConfig) Bool {
+    return __spi_init_impl(spi_num, config);
+}
+
+/// Transmit and receive data via SPI.
+fn spi_transfer(spi_num UInt8, data Vec<UInt8>) Vec<UInt8>? {
+    return __spi_transfer_impl(spi_num, data);
+}
+
+/// Transmit data via SPI (receive ignored).
+fn spi_write(spi_num UInt8, data Vec<UInt8>) Bool {
+    return __spi_write_impl(spi_num, data);
+}
+
+/// Receive data via SPI (transmit dummy byte).
+fn spi_read(spi_num UInt8, length Int) Vec<UInt8>? {
+    return __spi_read_impl(spi_num, length);
+}
+
+/// Enable/disable SPI chip select.
+fn spi_set_cs(spi_num UInt8, cs_pin GPIOPin, enable Bool) {
+    gpio_write(cs_pin, !enable);
+}
+
+// I2C Operations
+
+/// Initialize I2C peripheral.
+fn i2c_init(i2c_num UInt8, config I2CConfig) Bool {
+    return __i2c_init_impl(i2c_num, config);
+}
+
+/// Write data to I2C device.
+fn i2c_write(i2c_num UInt8, device_address UInt16, data Vec<UInt8>) Bool {
+    return __i2c_write_impl(i2c_num, device_address, data);
+}
+
+/// Read data from I2C device.
+fn i2c_read(i2c_num UInt8, device_address UInt16, length Int) Vec<UInt8>? {
+    return __i2c_read_impl(i2c_num, device_address, length);
+}
+
+/// Write data to I2C register.
+fn i2c_write_register(i2c_num UInt8, device_address UInt16, register_address UInt8, data Vec<UInt8>) Bool {
+    mut payload = vec_new() as Vec<UInt8>;
+    vec_push(payload, register_address);
+    
+    mut i = 0;
+    while i < vec_len(data) {
+        byte = vec_get(data, i);
+        if byte != none {
+            vec_push(payload, (byte as UInt8?));
+        }
+        else {}
+        i += 1;
+    }
+    
+    return i2c_write(i2c_num, device_address, payload);
+}
+
+/// Read data from I2C register.
+fn i2c_read_register(i2c_num UInt8, device_address UInt16, register_address UInt8, length Int) Vec<UInt8>? {
+    // Write register address first
+    mut addr_vec = vec_new() as Vec<UInt8>;
+    vec_push(addr_vec, register_address);
+    
+    if !i2c_write(i2c_num, device_address, addr_vec) {
+        return none;
+    }
+    else {}
+    
+    return i2c_read(i2c_num, device_address, length);
+}
+
+/// Check if I2C device responds to address.
+fn i2c_device_present(i2c_num UInt8, device_address UInt16) Bool {
+    return __i2c_device_present_impl(i2c_num, device_address);
+}
+
+// UART Operations
+
+/// Initialize UART peripheral.
+fn uart_init(uart_num UInt8, config UARTConfig) Bool {
+    return __uart_init_impl(uart_num, config);
+}
+
+/// Write data to UART.
+fn uart_write(uart_num UInt8, data Vec<UInt8>) Bool {
+    return __uart_write_impl(uart_num, data);
+}
+
+/// Write string to UART.
+fn uart_write_string(uart_num UInt8, text String) Bool {
+    mut data = vec_new() as Vec<UInt8>;
+    mut i = 0;
+    while i < len(text) {
+        vec_push(data, text[i] as UInt8);
+        i += 1;
+    }
+    return uart_write(uart_num, data);
+}
+
+/// Read data from UART (blocking).
+fn uart_read(uart_num UInt8, length Int) Vec<UInt8>? {
+    return __uart_read_impl(uart_num, length);
+}
+
+/// Read data from UART (non-blocking).
+fn uart_read_non_blocking(uart_num UInt8, length Int) Vec<UInt8>? {
+    return __uart_read_non_blocking_impl(uart_num, length);
+}
+
+/// Check if UART has data available.
+fn uart_data_available(uart_num UInt8) Int {
+    return __uart_data_available_impl(uart_num);
+}
+
+/// Flush UART transmit buffer.
+fn uart_flush(uart_num UInt8) {
+    __uart_flush_impl(uart_num);
+}
+
+// PWM Operations
+
+/// Initialize PWM channel.
+fn pwm_init(pwm_num UInt8, channel UInt8, config PWMConfig) Bool {
+    return __pwm_init_impl(pwm_num, channel, config);
+}
+
+/// Set PWM duty cycle.
+fn pwm_set_duty_cycle(pwm_num UInt8, channel UInt8, duty_cycle Float) Bool {
+    return __pwm_set_duty_cycle_impl(pwm_num, channel, duty_cycle);
+}
+
+/// Set PWM frequency.
+fn pwm_set_frequency(pwm_num UInt8, channel UInt8, frequency UInt32) Bool {
+    return __pwm_set_frequency_impl(pwm_num, channel, frequency);
+}
+
+/// Start PWM output.
+fn pwm_start(pwm_num UInt8, channel UInt8) Bool {
+    return __pwm_start_impl(pwm_num, channel);
+}
+
+/// Stop PWM output.
+fn pwm_stop(pwm_num UInt8, channel UInt8) Bool {
+    return __pwm_stop_impl(pwm_num, channel);
+}
+
+// ADC Operations
+
+/// Initialize ADC channel.
+fn adc_init(adc_num UInt8, channel UInt8, config ADCConfig) Bool {
+    return __adc_init_impl(adc_num, channel, config);
+}
+
+/// Read ADC value.
+fn adc_read(adc_num UInt8, channel UInt8) UInt16? {
+    return __adc_read_impl(adc_num, channel);
+}
+
+/// Read ADC voltage.
+fn adc_read_voltage(adc_num UInt8, channel UInt8, reference_voltage Float) Float? {
+    raw_value = adc_read(adc_num, channel);
+    if raw_value == none {
+        return none;
+    }
+    else {}
+    
+    resolution = 4096.0; // 12-bit ADC
+    return ((raw_value as UInt16?)?) as Float * reference_voltage / resolution;
+}
+
+/// Start ADC conversion (non-blocking).
+fn adc_start_conversion(adc_num UInt8, channel UInt8) Bool {
+    return __adc_start_conversion_impl(adc_num, channel);
+}
+
+/// Check if ADC conversion is complete.
+fn adc_conversion_complete(adc_num UInt8) Bool {
+    return __adc_conversion_complete_impl(adc_num);
+}
+
+// Timer Operations
+
+/// Initialize timer.
+fn timer_init(timer_num UInt8, config TimerConfig) Bool {
+    return __timer_init_impl(timer_num, config);
+}
+
+/// Start timer.
+fn timer_start(timer_num UInt8) Bool {
+    return __timer_start_impl(timer_num);
+}
+
+/// Stop timer.
+fn timer_stop(timer_num UInt8) Bool {
+    return __timer_stop_impl(timer_num);
+}
+
+/// Get timer count.
+fn timer_get_count(timer_num UInt8) UInt32? {
+    return __timer_get_count_impl(timer_num);
+}
+
+/// Set timer count.
+fn timer_set_count(timer_num UInt8, count UInt32) Bool {
+    return __timer_set_count_impl(timer_num, count);
+}
+
+/// Configure timer interrupt.
+fn timer_configure_interrupt(timer_num UInt8, enable Bool) Bool {
+    return __timer_configure_interrupt_impl(timer_num, enable);
+}
+
+/// Delay using timer (blocking).
+fn timer_delay_ms(timer_num UInt8, milliseconds UInt32) {
+    timer_start(timer_num);
+    while true {
+        count = timer_get_count(timer_num);
+        if count != none && (count as UInt32?)?) >= milliseconds {
+            break;
+        }
+        else {}
+    }
+    timer_stop(timer_num);
+}
+
+// Utility Functions
+
+/// Convert frequency to timer period.
+fn frequency_to_period(frequency UInt32, clock_frequency UInt32) UInt32 {
+    if frequency == 0 {
+        return 0;
+    }
+    else {}
+    return clock_frequency / frequency;
+}
+
+/// Convert duty cycle percentage to compare value.
+fn duty_cycle_to_compare(duty_cycle Float, period UInt32) UInt32 {
+    if duty_cycle < 0.0 {
+        return 0;
+    }
+    else if duty_cycle > 100.0 {
+        return period;
+    }
+    else {
+        return (period as Float * duty_cycle / 100.0) as UInt32;
+    }
+}
+
+/// Create GPIO pin from port and pin numbers.
+fn gpio_pin(port UInt8, pin UInt8) GPIOPin {
+    return GPIOPin { port: port, pin: pin };
+}
+
+/// Common GPIO pin definitions (platform-specific).
+const GPIO_PIN_LED = gpio_pin(0, 13);  // Typically PC13 on STM32
+const GPIO_PIN_BUTTON = gpio_pin(0, 0);  // Typically PA0 on STM32
+
+// Runtime implementation functions
+extern fn __gpio_init_impl(pin GPIOPin, mode GPIOMode, pull GPIOPull, output_type GPIOOutputType, speed GPIOSpeed) Bool;
+extern fn __gpio_write_impl(pin GPIOPin, level Bool) Void;
+extern fn __gpio_read_impl(pin GPIOPin) Bool;
+extern fn __gpio_write_mask_impl(port UInt8, mask UInt16, values UInt16) Void;
+extern fn __gpio_read_mask_impl(port UInt8, mask UInt16) UInt16;
+extern fn __gpio_set_alternate_function_impl(pin GPIOPin, function UInt8) Bool;
+
+extern fn __spi_init_impl(spi_num UInt8, config SPIConfig) Bool;
+extern fn __spi_transfer_impl(spi_num UInt8, data Vec<UInt8>) Vec<UInt8>?;
+extern fn __spi_write_impl(spi_num UInt8, data Vec<UInt8>) Bool;
+extern fn __spi_read_impl(spi_num UInt8, length Int) Vec<UInt8>?;
+
+extern fn __i2c_init_impl(i2c_num UInt8, config I2CConfig) Bool;
+extern fn __i2c_write_impl(i2c_num UInt8, device_address UInt16, data Vec<UInt8>) Bool;
+extern fn __i2c_read_impl(i2c_num UInt8, device_address UInt16, length Int) Vec<UInt8>?;
+extern fn __i2c_device_present_impl(i2c_num UInt8, device_address UInt16) Bool;
+
+extern fn __uart_init_impl(uart_num UInt8, config UARTConfig) Bool;
+extern fn __uart_write_impl(uart_num UInt8, data Vec<UInt8>) Bool;
+extern fn __uart_read_impl(uart_num UInt8, length Int) Vec<UInt8>?;
+extern fn __uart_read_non_blocking_impl(uart_num UInt8, length Int) Vec<UInt8>?;
+extern fn __uart_data_available_impl(uart_num UInt8) Int;
+extern fn __uart_flush_impl(uart_num UInt8) Void;
+
+extern fn __pwm_init_impl(pwm_num UInt8, channel UInt8, config PWMConfig) Bool;
+extern fn __pwm_set_duty_cycle_impl(pwm_num UInt8, channel UInt8, duty_cycle Float) Bool;
+extern fn __pwm_set_frequency_impl(pwm_num UInt8, channel UInt8, frequency UInt32) Bool;
+extern fn __pwm_start_impl(pwm_num UInt8, channel UInt8) Bool;
+extern fn __pwm_stop_impl(pwm_num UInt8, channel UInt8) Bool;
+
+extern fn __adc_init_impl(adc_num UInt8, channel UInt8, config ADCConfig) Bool;
+extern fn __adc_read_impl(adc_num UInt8, channel UInt8) UInt16?;
+extern fn __adc_start_conversion_impl(adc_num UInt8, channel UInt8) Bool;
+extern fn __adc_conversion_complete_impl(adc_num UInt8) Bool;
+
+extern fn __timer_init_impl(timer_num UInt8, config TimerConfig) Bool;
+extern fn __timer_start_impl(timer_num UInt8) Bool;
+extern fn __timer_stop_impl(timer_num UInt8) Bool;
+extern fn __timer_get_count_impl(timer_num UInt8) UInt32?;
+extern fn __timer_set_count_impl(timer_num UInt8, count UInt32) Bool;
+extern fn __timer_configure_interrupt_impl(timer_num UInt8, enable Bool) Bool;

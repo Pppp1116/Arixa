@@ -1,0 +1,360 @@
+import std.boot;
+import std.embedded;
+import std.interrupt;
+import std.console;
+import std.debug;
+import std.memory;
+import std.hardware;
+
+/// Main entry point for freestanding embedded application.
+fn _start() Void {
+    // Initialize system
+    if !system_init() {
+        debug_panic("System initialization failed");
+    }
+    else {}
+    
+    // Initialize debug system
+    debug_init();
+    debug_info("System initialized successfully");
+    
+    // Initialize console
+    console_init();
+    console_println("=== ASTRA Embedded Demo ===");
+    
+    // Initialize memory management
+    demo_memory_management();
+    
+    // Initialize hardware interfaces
+    demo_hardware_interfaces();
+    
+    // Initialize interrupt handling
+    demo_interrupt_handling();
+    
+    // Main application loop
+    main_loop();
+}
+
+/// Demonstrate memory management capabilities.
+fn demo_memory_management() Void {
+    debug_info("=== Memory Management Demo ===");
+    
+    // Initialize stack allocator
+    stack_allocator = stack_allocator_init(0x20000000, 4096);
+    debug_info("Stack allocator initialized");
+    
+    // Allocate some memory
+    buffer1 = stack_alloc(stack_allocator, 256, 4);
+    buffer2 = stack_alloc(stack_allocator, 512, 8);
+    
+    if buffer1 != none && buffer2 != none {
+        debug_printf("Allocated buffers: 0x%08x (%d bytes), 0x%08x (%d bytes)",
+            vec_from([buffer1 as UInt32?, 256, buffer2 as UInt32?, 512]));
+    }
+    else {}
+    
+    // Initialize memory pool
+    pool = memory_pool_init_fixed(0x20001000, 4096, 64);
+    block1 = memory_pool_alloc(pool);
+    block2 = memory_pool_alloc(pool);
+    
+    if block1 != none && block2 != none {
+        debug_printf("Pool blocks: 0x%08x, 0x%08x",
+            vec_from([block1 as UInt32?, block2 as UInt32?]));
+    }
+    else {}
+    
+    // Get statistics
+    (used, free, total) = stack_allocator_get_stats(stack_allocator);
+    debug_printf("Stack allocator: used=%d, free=%d, total=%d",
+        vec_from([used, free, total]));
+    
+    (pool_used, pool_free, pool_total) = memory_pool_get_stats(pool);
+    debug_printf("Memory pool: used=%d, free=%d, total=%d",
+        vec_from([pool_used, pool_free, pool_total]));
+    
+    debug_info("Memory management demo completed");
+}
+
+/// Demonstrate hardware interface capabilities.
+fn demo_hardware_interfaces() Void {
+    debug_info("=== Hardware Interfaces Demo ===");
+    
+    // Initialize GPIO
+    led_pin = gpio_pin(0, 13);  // PC13 on STM32
+    button_pin = gpio_pin(0, 0); // PA0 on STM32
+    
+    if gpio_init(led_pin, GPIO_MODE_OUTPUT, GPIO_PULL_NONE, GPIO_OUTPUT_PUSH_PULL, GPIO_SPEED_LOW) {
+        debug_info("LED GPIO initialized");
+    }
+    else {}
+    
+    if gpio_init(button_pin, GPIO_MODE_INPUT, GPIO_PULL_UP, GPIO_OUTPUT_PUSH_PULL, GPIO_SPEED_LOW) {
+        debug_info("Button GPIO initialized");
+    }
+    else {}
+    
+    // Initialize UART
+    uart_config = UARTConfig {
+        baud_rate: 115200,
+        word_length: 8,
+        stop_bits: 1,
+        parity: 0,
+        flow_control: 0,
+    };
+    
+    if uart_init(0, uart_config) {
+        debug_info("UART initialized");
+        uart_write_string(0, "UART test message\r\n");
+    }
+    else {}
+    
+    // Initialize SPI
+    spi_config = SPIConfig {
+        baud_rate: 1000000,
+        mode: 0,
+        data_size: 8,
+        bit_order: 0, // MSB_FIRST
+    };
+    
+    if spi_init(0, spi_config) {
+        debug_info("SPI initialized");
+        
+        mut test_data = vec_new() as Vec<UInt8>;
+        vec_push(test_data, 0xAA);
+        vec_push(test_data, 0x55);
+        vec_push(test_data, 0x00);
+        vec_push(test_data, 0xFF);
+        
+        result = spi_transfer(0, test_data);
+        if result != none {
+            debug_info("SPI transfer completed");
+        }
+        else {}
+    }
+    else {}
+    
+    // Initialize I2C
+    i2c_config = I2CConfig {
+        clock_speed: 100000,
+        address_mode: 0, // 7-bit
+        dual_address_mode: false,
+        general_call_mode: false,
+        no_stretch_mode: false,
+    };
+    
+    if i2c_init(0, i2c_config) {
+        debug_info("I2C initialized");
+        
+        // Scan for I2C devices
+        mut device_count = 0;
+        mut addr = 1;
+        while addr <= 127 {
+            if i2c_device_present(0, addr as UInt16) {
+                debug_printf("I2C device found at address 0x%02x", vec_from([addr]));
+                device_count += 1;
+            }
+            else {}
+            addr += 1;
+        }
+        
+        debug_printf("Found %d I2C devices", vec_from([device_count]));
+    }
+    else {}
+    
+    // Initialize PWM
+    pwm_config = PWMConfig {
+        frequency: 1000,
+        duty_cycle: 50.0,
+        resolution: 1000,
+    };
+    
+    if pwm_init(0, 0, pwm_config) {
+        debug_info("PWM initialized");
+        pwm_start(0, 0);
+        
+        // Vary duty cycle
+        mut duty = 0.0;
+        while duty <= 100.0 {
+            pwm_set_duty_cycle(0, 0, duty);
+            timer_delay_ms(0, 50);
+            duty += 10.0;
+        }
+        
+        duty = 100.0;
+        while duty >= 0.0 {
+            pwm_set_duty_cycle(0, 0, duty);
+            timer_delay_ms(0, 50);
+            duty -= 10.0;
+        }
+        
+        pwm_stop(0, 0);
+    }
+    else {}
+    
+    // Initialize ADC
+    adc_config = ADCConfig {
+        resolution: 12,
+        sampling_time: 3,
+        reference_voltage: 3.3,
+    };
+    
+    if adc_init(0, 0, adc_config) {
+        debug_info("ADC initialized");
+        
+        mut i = 0;
+        while i < 10 {
+            voltage = adc_read_voltage(0, 0, 3.3);
+            if voltage != none {
+                debug_printf("ADC reading %d: %.3f V", vec_from([i, voltage as Float?]));
+            }
+            else {}
+            timer_delay_ms(0, 100);
+            i += 1;
+        }
+    }
+    else {}
+    
+    debug_info("Hardware interfaces demo completed");
+}
+
+/// Demonstrate interrupt handling capabilities.
+fn demo_interrupt_handling() Void {
+    debug_info("=== Interrupt Handling Demo ===");
+    
+    // Initialize interrupt controller
+    if interrupt_controller_init() {
+        debug_info("Interrupt controller initialized");
+    }
+    else {}
+    
+    // Configure system tick
+    if systick_config(1000, true) {  // 1ms tick
+        debug_info("System tick configured");
+    }
+    else {}
+    
+    // Register interrupt handlers
+    if interrupt_register_handler(IRQ_SYSTICK, systick_handler, PRIORITY_MEDIUM) {
+        debug_info("SysTick handler registered");
+    }
+    else {}
+    
+    if interrupt_register_handler(IRQ_EXTERNAL_BASE + 0, external_interrupt_handler, PRIORITY_HIGH) {
+        debug_info("External interrupt handler registered");
+    }
+    else {}
+    
+    // Test critical sections
+    debug_info("Testing critical sections");
+    
+    state = enter_critical_section();
+    debug_info("Inside critical section");
+    
+    // Simulate some work
+    mut i = 0;
+    while i < 1000 {
+        i += 1;
+    }
+    
+    exit_critical_section(state);
+    debug_info("Critical section exited");
+    
+    debug_info("Interrupt handling demo completed");
+}
+
+/// Main application loop.
+fn main_loop() Void {
+    debug_info("=== Main Loop ===");
+    
+    mut counter = 0;
+    mut led_state = false;
+    
+    loop {
+        counter += 1;
+        
+        // Toggle LED every 1000 iterations
+        if counter % 1000 == 0 {
+            led_state = !led_state;
+            gpio_write(gpio_pin(0, 13), led_state);
+            
+            debug_printf("Loop iteration: %d, LED: %s", 
+                vec_from([counter, if led_state { "ON" } else { "OFF" }]));
+        }
+        else {}
+        
+        // Check button state
+        button_pressed = !gpio_read(gpio_pin(0, 0));
+        if button_pressed {
+            debug_info("Button pressed!");
+            console_println("Button pressed!");
+            
+            // Wait for button release
+            while !gpio_read(gpio_pin(0, 0)) {
+                // Wait
+            }
+        }
+        else {}
+        
+        // Performance monitoring
+        if counter % 5000 == 0 {
+            cycles = read_cycle_counter();
+            if cycles != none {
+                debug_printf("Cycle counter: %d", vec_from([cycles as Int?]));
+            }
+            else {}
+        }
+        else {}
+        
+        // Memory leak check (if enabled)
+        if counter % 10000 == 0 {
+            if debug_memory_check_leaks() {
+                debug_warn("Memory leaks detected!");
+            }
+            else {}
+        }
+        else {}
+        
+        // Small delay to prevent busy waiting
+        timer_delay_ms(0, 1);
+        
+        // Exit condition for demo
+        if counter >= 50000 {
+            break;
+        }
+        else {}
+    }
+    
+    debug_info("Main loop completed");
+    console_println("Demo completed!");
+    
+    // Final system reset
+    debug_info("Performing system reset...");
+    system_reset();
+}
+
+/// System tick interrupt handler.
+fn systick_handler() Void {
+    static mut tick_count = 0;
+    tick_count += 1;
+    
+    // Toggle status LED every 500ms
+    if tick_count % 500 == 0 {
+        gpio_toggle(gpio_pin(0, 13));
+    }
+    else {}
+}
+
+/// External interrupt handler (for button).
+fn external_interrupt_handler() Void {
+    debug_info("External interrupt triggered!");
+    
+    // Debounce
+    timer_delay_ms(0, 50);
+    
+    // Handle button press
+    if !gpio_read(gpio_pin(0, 0)) {
+        debug_info("Button interrupt handled");
+    }
+    else {}
+}
