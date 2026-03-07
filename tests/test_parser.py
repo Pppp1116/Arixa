@@ -173,6 +173,41 @@ fn wrap<T>(x T) T where T: Show{
     assert fn.where_bounds == [("T", "Show")]
 
 
+def test_parse_inline_generic_bounds_accepts_space_and_colon_forms():
+    src = """
+trait Show { fn show(x Self) String; }
+fn show(x Int) String { return "ok"; }
+fn a<T Show>(x T) T{ return x; }
+fn b<U: Show>(x U) U{ return x; }
+"""
+    prog = parse(src)
+    fa = prog.items[2]
+    fb = prog.items[3]
+    assert isinstance(fa, FnDecl)
+    assert isinstance(fb, FnDecl)
+    assert fa.generics == ["T"]
+    assert fb.generics == ["U"]
+    assert fa.where_bounds == [("T", "Show")]
+    assert fb.where_bounds == [("U", "Show")]
+
+
+def test_parse_derive_attribute_on_struct_and_enum():
+    src = """
+@derive(Serialize, Deserialize)
+struct User { name str, age i32 }
+@derive(Serialize)
+enum Mode { A, B }
+fn main() Int{ return 0; }
+"""
+    prog = parse(src)
+    st = prog.items[0]
+    en = prog.items[1]
+    assert isinstance(st, StructDecl)
+    assert isinstance(en, EnumDecl)
+    assert st.derives == ["Serialize", "Deserialize"]
+    assert en.derives == ["Serialize"]
+
+
 def test_import_supports_dotted_module_and_string_forms():
     src = """
 import std.io as io;

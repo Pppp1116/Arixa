@@ -259,6 +259,21 @@ def _fmt_stmt(st, ind: int, cfg: FormatConfig) -> list[str]:
 
 
 def _fmt_item(item, cfg: FormatConfig) -> list[str]:
+    def _fmt_generics(generics: list[str], where_bounds: list[tuple[str, str]] | None = None) -> str:
+        if not generics:
+            return ""
+        grouped: dict[str, list[str]] = {}
+        for tv, tr in list(where_bounds or []):
+            grouped.setdefault(tv, []).append(tr)
+        parts: list[str] = []
+        for g in generics:
+            bounds = grouped.get(g, [])
+            if bounds:
+                parts.append(f"{g} {' + '.join(bounds)}")
+            else:
+                parts.append(g)
+        return f"<{', '.join(parts)}>"
+
     if isinstance(item, ImportDecl):
         alias = f" as {item.alias}" if item.alias else ""
         if item.source is not None:
@@ -274,12 +289,15 @@ def _fmt_item(item, cfg: FormatConfig) -> list[str]:
         out = []
         if item.doc:
             out.extend([f"/// {line}" for line in item.doc.splitlines()])
+        if getattr(item, "derives", None):
+            out.append(f"@derive({', '.join(getattr(item, 'derives'))})")
         pub = "pub " if item.pub else ""
         packed = "@packed " if item.packed else ""
+        gen = _fmt_generics(item.generics)
         if not item.fields:
-            out.append(f"{pub}{packed}struct {item.name} {{}}")
+            out.append(f"{pub}{packed}struct {item.name}{gen} {{}}")
             return out
-        out.append(f"{pub}{packed}struct {item.name} {{")
+        out.append(f"{pub}{packed}struct {item.name}{gen} {{")
         for name, typ in item.fields:
             out.append(f"{_indent(1, cfg)}{name} {type_text(typ)},")
         out.append("}")
@@ -288,11 +306,14 @@ def _fmt_item(item, cfg: FormatConfig) -> list[str]:
         out = []
         if item.doc:
             out.extend([f"/// {line}" for line in item.doc.splitlines()])
+        if getattr(item, "derives", None):
+            out.append(f"@derive({', '.join(getattr(item, 'derives'))})")
         pub = "pub " if item.pub else ""
+        gen = _fmt_generics(item.generics)
         if not item.variants:
-            out.append(f"{pub}enum {item.name} {{}}")
+            out.append(f"{pub}enum {item.name}{gen} {{}}")
             return out
-        out.append(f"{pub}enum {item.name} {{")
+        out.append(f"{pub}enum {item.name}{gen} {{")
         for name, fields in item.variants:
             if fields:
                 out.append(f"{_indent(1, cfg)}{name}({', '.join(type_text(t) for t in fields)}),")
@@ -334,21 +355,15 @@ def _fmt_item(item, cfg: FormatConfig) -> list[str]:
         async_kw = "async " if item.async_fn else ""
         unsafe_kw = "unsafe " if item.unsafe else ""
         gpu_kw = "gpu " if getattr(item, "gpu_kernel", False) else ""
+        gen = _fmt_generics(item.generics, item.where_bounds)
         sig = ", ".join(f"{n} {type_text(t)}" for n, t in item.params)
-        where_text = ""
-        if item.where_bounds:
-            groups: dict[str, list[str]] = {}
-            for tvar, tr in item.where_bounds:
-                groups.setdefault(tvar, []).append(tr)
-            parts = [f"{tv}: {' + '.join(bounds)}" for tv, bounds in groups.items()]
-            where_text = f" where {', '.join(parts)}"
         ret_text = f" {type_text(item.ret)}" if type_text(item.ret) != "Void" else ""
-        fn_head = f"{pub}{async_kw}{unsafe_kw}{gpu_kw}fn {item.name}({sig}){ret_text}{where_text}"
+        fn_head = f"{pub}{async_kw}{unsafe_kw}{gpu_kw}fn {item.name}{gen}({sig}){ret_text}"
         if len(fn_head) > cfg.line_width and item.params:
-            out.append(f"{pub}{async_kw}{unsafe_kw}{gpu_kw}fn {item.name}(")
+            out.append(f"{pub}{async_kw}{unsafe_kw}{gpu_kw}fn {item.name}{gen}(")
             for n, t in item.params:
                 out.append(f"{_indent(1, cfg)}{n} {type_text(t)},")
-            fn_head = f"){ret_text}{where_text}"
+            fn_head = f"){ret_text}"
         if not item.body:
             out.append(f"{fn_head} {{}}")
             return out

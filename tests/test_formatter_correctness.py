@@ -74,3 +74,10 @@ def test_formatter_preserves_runtime_meaning_py_backend(tmp_path: Path, src: str
 
     assert cp_original.returncode == expected_rc
     assert cp_formatted.returncode == expected_rc
+
+
+def test_formatter_normalizes_generic_bounds_to_inline_space_form():
+    src = "fn pick<T>(x T) T where T: Show{ return x; }"
+    out = fmt(src)
+    assert "where" not in out
+    assert "fn pick<T Show>(x T) T" in out

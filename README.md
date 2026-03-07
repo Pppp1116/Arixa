@@ -32,9 +32,9 @@ Requirements:
 `examples/hello_world.astra`:
 
 ```astra
-fn main() -> Int {
-    print("hello, astra");
-    return 0;
+fn main() Int{
+    print("hello, astra")
+    return 0
 }
 ```
 

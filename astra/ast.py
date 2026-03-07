@@ -52,7 +52,6 @@ class FnDecl:
     params: list[tuple[str, str]]
     ret: str
     body: list[Any]
-    is_impl: bool = False
     pub: bool = False
     async_fn: bool = False
     unsafe: bool = False
@@ -218,6 +217,7 @@ class StructDecl:
     generics: list[str]
     fields: list[tuple[str, str]]
     methods: list[Any]
+    derives: list[str] = field(default_factory=list)
     pub: bool = False
     packed: bool = False
     doc: str = ""
@@ -235,6 +235,7 @@ class EnumDecl:
     name: str
     generics: list[str]
     variants: list[tuple[str, list[str]]]
+    derives: list[str] = field(default_factory=list)
     pub: bool = False
     doc: str = ""
     pos: int = 0
@@ -263,16 +264,6 @@ class TraitDecl:
     methods: list[tuple[str, list[tuple[str, str]], str]]
     pub: bool = False
     doc: str = ""
-    pos: int = 0
-    line: int = 0
-    col: int = 0
-
-
-@dataclass
-class TraitImplDecl:
-    """AST node representing `impl Trait for Type` declaration."""
-    trait_name: str
-    target_type: str
     pos: int = 0
     line: int = 0
     col: int = 0

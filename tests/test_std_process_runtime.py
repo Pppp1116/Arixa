@@ -1,12 +1,10 @@
 import sys
 
-import pytest
-
 from golden_helpers import assert_same_stdout_and_exit, compile_and_run_program
 
-
-@pytest.mark.skipif(sys.platform.startswith("win"), reason="process shell parity test uses POSIX `true`/`false` commands")
 def test_std_process_runtime_parity(tmp_path) -> None:
+    ok_cmd = "cmd /c exit 0" if sys.platform.startswith("win") else "true"
+    bad_cmd = "cmd /c exit 1" if sys.platform.startswith("win") else "false"
     src = """
 import "process";
 
@@ -21,8 +19,8 @@ fn main() Int{
     return 12;
   }
   else {}
-  ok = run("true");
-  bad = run("false");
+  ok = run("__OK_CMD__");
+  bad = run("__BAD_CMD__");
   print(ok);
   print(bad);
   if ok == 0 && bad == 1 {
@@ -32,6 +30,7 @@ fn main() Int{
   return 13;
 }
 """
+    src = src.replace("__OK_CMD__", ok_cmd).replace("__BAD_CMD__", bad_cmd)
     results = compile_and_run_program(
         tmp_path,
         name="std_process_runtime_parity",

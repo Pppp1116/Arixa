@@ -302,6 +302,7 @@ class Parser:
         is_async = False
         is_gpu = False
         is_packed = False
+        derives: list[str] = []
         link_libs: list[str] = []
         while True:
             if self.opt("pub"):
@@ -322,6 +323,16 @@ class Parser:
                 if attr == "packed":
                     is_packed = True
                     continue
+                if attr == "derive":
+                    self.eat("(")
+                    if self.cur().kind != "IDENT":
+                        self._err("@derive expects at least one identifier, for example @derive(Serialize)")
+                        raise ParseError(self.errors[-1])
+                    derives.append(self.eat("IDENT").text)
+                    while self.opt(","):
+                        derives.append(self.eat("IDENT").text)
+                    self.eat(")")
+                    continue
                 if attr == "link":
                     self.eat("(")
                     lib_tok = self.cur()
@@ -340,6 +351,9 @@ class Parser:
             if link_libs:
                 self._err("@link is only valid on extern function declarations")
                 raise ParseError(self.errors[-1])
+            if derives:
+                self._err("@derive is only valid on struct/enum declarations")
+                raise ParseError(self.errors[-1])
             if is_unsafe or is_async or is_gpu:
                 self._err("import cannot be prefixed with unsafe/async/gpu")
                 raise ParseError(self.errors[-1])
@@ -354,7 +368,7 @@ class Parser:
             if is_unsafe or is_async or is_gpu:
                 self._err("struct cannot be prefixed with unsafe/async/gpu")
                 raise ParseError(self.errors[-1])
-            return self.parse_struct(is_pub, doc, packed=is_packed)
+            return self.parse_struct(is_pub, doc, packed=is_packed, derives=derives)
         if self.cur().kind == "enum":
             if link_libs:
                 self._err("@link is only valid on extern function declarations")
@@ -365,7 +379,7 @@ class Parser:
             if is_packed:
                 self._err("@packed is only valid on struct declarations")
                 raise ParseError(self.errors[-1])
-            return self.parse_enum(is_pub, doc)
+            return self.parse_enum(is_pub, doc, derives=derives)
         if self.cur().kind == "trait":
             if link_libs:
                 self._err("@link is only valid on extern function declarations")
@@ -375,6 +389,9 @@ class Parser:
                 raise ParseError(self.errors[-1])
             if is_packed:
                 self._err("@packed is only valid on struct declarations")
+                raise ParseError(self.errors[-1])
+            if derives:
+                self._err("@derive is only valid on struct/enum declarations")
                 raise ParseError(self.errors[-1])
             return self.parse_trait(is_pub, doc)
         if self.cur().kind == "type":
@@ -387,6 +404,9 @@ class Parser:
             if is_packed:
                 self._err("@packed is only valid on struct declarations")
                 raise ParseError(self.errors[-1])
+            if derives:
+                self._err("@derive is only valid on struct/enum declarations")
+                raise ParseError(self.errors[-1])
             return self.parse_type_alias()
         if self.cur().kind == "extern":
             if is_gpu:
@@ -394,6 +414,9 @@ class Parser:
                 raise ParseError(self.errors[-1])
             if is_packed:
                 self._err("@packed is only valid on struct declarations")
+                raise ParseError(self.errors[-1])
+            if derives:
+                self._err("@derive is only valid on struct/enum declarations")
                 raise ParseError(self.errors[-1])
             return self.parse_extern_fn(is_pub, is_unsafe, doc, link_libs=link_libs)
         if self.cur().kind == "fn":
@@ -403,9 +426,12 @@ class Parser:
             if link_libs:
                 self._err("@link is only valid on extern function declarations")
                 raise ParseError(self.errors[-1])
+            if derives:
+                self._err("@derive is only valid on struct/enum declarations")
+                raise ParseError(self.errors[-1])
             return self.parse_fn(is_pub, is_async, doc, is_unsafe=is_unsafe, is_gpu=is_gpu)
         if self._looks_like_binding_start():
-            if link_libs or is_packed or is_pub or is_async or is_gpu:
+            if link_libs or is_packed or is_pub or is_async or is_gpu or derives:
                 self._err("top-level bindings cannot use declaration modifiers or attributes")
                 raise ParseError(self.errors[-1])
             return self.parse_global_binding(is_unsafe=is_unsafe)
@@ -445,18 +471,27 @@ class Parser:
         self.opt(";")
         return ImportDecl(path, alias, tok.pos, tok.line, tok.col, source=source)
 
-    def _parse_generics(self) -> list[str]:
+    def _parse_generics(self) -> tuple[list[str], list[tuple[str, str]]]:
         generics: list[str] = []
+        bounds: list[tuple[str, str]] = []
         if self.cur().kind != "<":
-            return generics
+            return generics, bounds
         if self.peek().kind != "IDENT":
-            return generics
+            return generics, bounds
         self.eat("<")
-        generics.append(self.eat("IDENT").text)
-        while self.opt(","):
-            generics.append(self.eat("IDENT").text)
+        while True:
+            tvar = self.eat("IDENT").text
+            generics.append(tvar)
+            # Accept both `<T Trait>` and `<T: Trait>` while normalizing formatter output.
+            if self.opt(":") or self.cur().kind == "IDENT":
+                if self.cur().kind == "IDENT":
+                    bounds.append((tvar, self.eat("IDENT").text))
+                    while self.opt("+"):
+                        bounds.append((tvar, self.eat("IDENT").text))
+            if not self.opt(","):
+                break
         self.eat(">")
-        return generics
+        return generics, bounds
 
     def _parse_where_bounds(self) -> list[tuple[str, str]]:
         bounds: list[tuple[str, str]] = []
@@ -589,13 +624,13 @@ class Parser:
         """
         fn_tok = self.eat("fn")
         name = self.eat("IDENT").text
-        generics = self._parse_generics()
+        generics, inline_bounds = self._parse_generics()
         params, _, param_mut = self._parse_params()
         if self.opt("->"):
             self._err("`->` is no longer valid in function signatures; place return type after `)`")
             raise ParseError(self.errors[-1])
         ret = self.parse_type() if self._starts_type() else "Void"
-        where_bounds = self._parse_where_bounds()
+        where_bounds = inline_bounds + self._parse_where_bounds()
         body = self.parse_block()
         if ret != "Void":
             body = self._rewrite_implicit_tail_return(body)
@@ -618,7 +653,7 @@ class Parser:
         setattr(out, "param_mut", param_mut)
         return out
 
-    def parse_struct(self, is_pub: bool = False, doc: str = "", packed: bool = False) -> StructDecl:
+    def parse_struct(self, is_pub: bool = False, doc: str = "", packed: bool = False, derives: list[str] | None = None) -> StructDecl:
         """Parse the `struct` grammar production from the token stream.
         
         Parameters:
@@ -631,16 +666,19 @@ class Parser:
         """
         tok = self.eat("struct")
         name = self.eat("IDENT").text
-        generics = self._parse_generics()
+        generics, bounds = self._parse_generics()
+        if bounds:
+            self._err("struct generics do not support trait bounds")
+            raise ParseError(self.errors[-1])
         self.eat("{")
         fields: list[tuple[str, str]] = []
         while self.cur().kind != "}":
             fields.append(self._parse_named_type())
             self.opt(",")
         self.eat("}")
-        return StructDecl(name, generics, fields, [], pub=is_pub, packed=packed, doc=doc, pos=tok.pos, line=tok.line, col=tok.col)
+        return StructDecl(name, generics, fields, [], derives=list(derives or []), pub=is_pub, packed=packed, doc=doc, pos=tok.pos, line=tok.line, col=tok.col)
 
-    def parse_enum(self, is_pub: bool = False, doc: str = "") -> EnumDecl:
+    def parse_enum(self, is_pub: bool = False, doc: str = "", derives: list[str] | None = None) -> EnumDecl:
         """Parse the `enum` grammar production from the token stream.
         
         Parameters:
@@ -652,7 +690,10 @@ class Parser:
         """
         tok = self.eat("enum")
         name = self.eat("IDENT").text
-        generics = self._parse_generics()
+        generics, bounds = self._parse_generics()
+        if bounds:
+            self._err("enum generics do not support trait bounds")
+            raise ParseError(self.errors[-1])
         self.eat("{")
         variants: list[tuple[str, list[str]]] = []
         while self.cur().kind != "}":
@@ -667,7 +708,7 @@ class Parser:
             variants.append((vname, vtypes))
             self.opt(",")
         self.eat("}")
-        return EnumDecl(name, generics, variants, pub=is_pub, doc=doc, pos=tok.pos, line=tok.line, col=tok.col)
+        return EnumDecl(name, generics, variants, derives=list(derives or []), pub=is_pub, doc=doc, pos=tok.pos, line=tok.line, col=tok.col)
 
     def parse_type_alias(self) -> TypeAliasDecl:
         """Parse the `type_alias` grammar production from the token stream.
@@ -680,7 +721,10 @@ class Parser:
         """
         tok = self.eat("type")
         name = self.eat("IDENT").text
-        generics = self._parse_generics()
+        generics, bounds = self._parse_generics()
+        if bounds:
+            self._err("type alias generics do not support trait bounds")
+            raise ParseError(self.errors[-1])
         self.eat("=")
         target = self.parse_type()
         self.opt(";")
@@ -694,7 +738,7 @@ class Parser:
         while self.cur().kind != "}":
             self.eat("fn")
             mname = self.eat("IDENT").text
-            _ = self._parse_generics()
+            _, _ = self._parse_generics()
             params, _, _ = self._parse_params()
             if self.opt("->"):
                 self._err("`->` is no longer valid in function signatures; place return type after `)`")

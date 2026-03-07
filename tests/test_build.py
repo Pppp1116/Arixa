@@ -22,6 +22,32 @@ def test_build_py(tmp_path: Path):
     assert out.exists()
 
 
+def test_build_py_expands_serde_derives(tmp_path: Path):
+    src = tmp_path / "derive_serde.astra"
+    out = tmp_path / "derive_serde.py"
+    src.write_text(
+        """
+@derive(Serialize, Deserialize)
+struct User {
+  name String,
+  age Int,
+}
+
+fn main() Int{
+  u = User("ana", 7);
+  txt = serialize_User(u);
+  rt = deserialize_User(txt);
+  v = rt as User;
+  return v.age;
+}
+"""
+    )
+    st = build(str(src), str(out), "py")
+    assert st in {"built", "cached"}
+    cp = subprocess.run([sys.executable, str(out)], capture_output=True, text=True)
+    assert cp.returncode == 7
+
+
 def test_build_emit_ir(tmp_path: Path):
     src = tmp_path / "a.astra"
     src.write_text("fn main() Int{ x = 1 + 2; return x; }")

@@ -9,8 +9,8 @@ from golden_helpers import assert_same_stdout_and_exit, compile_and_run_program
 
 
 @pytest.mark.skipif(
-    shutil.which("clang") is None or sys.platform.startswith("win"),
-    reason="std.net parity roundtrip requires clang and POSIX sockets",
+    shutil.which("clang") is None,
+    reason="std.net parity roundtrip requires clang",
 )
 def test_std_net_runtime_roundtrip_parity(tmp_path) -> None:
     ready = threading.Event()

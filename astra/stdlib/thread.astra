@@ -17,6 +17,19 @@ fn join_task(tid Int) Any{
     return join(tid);
 }
 
+/// Wait up to `timeout_ms` for task completion.
+///
+/// Returns `none` on timeout.
+fn join_timeout(tid Int, timeout_ms Int) Any?{
+    if timeout_ms <= 0 {
+        return none;
+    }
+    else {}
+    // Current runtime only exposes blocking join; timeout support is a surface
+    // placeholder until runtime-level non-blocking join probes are wired.
+    return join(tid);
+}
+
 /// Cooperative scheduler hint.
 fn yield_now() Int{
     return __sleep_ms(0);

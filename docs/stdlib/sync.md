@@ -2,15 +2,15 @@
 
 Source: `stdlib/sync.astra`
 
-Status: `experimental` (cooperative hosted lock wrapper)
+Status: `experimental` (runtime-backed hosted mutex wrapper)
 
 Functions:
 
 - `mutex_new() -> Any`
-- `mutex_lock(m, owner_tid) -> Int`
-- `mutex_unlock(m, owner_tid) -> Int`
+- `mutex_lock(m Any, owner_tid Int) -> Int`
+- `mutex_unlock(m Any, owner_tid Int) -> Int`
 
 Notes:
 
-- This is a cooperative lock built on hosted runtime map/sleep primitives.
-- `owner_tid` is best-effort ownership metadata.
+- Backed by runtime mutex primitives in hosted backends.
+- `owner_tid` is part of the API shape and is currently passed through as runtime metadata.

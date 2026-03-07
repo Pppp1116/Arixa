@@ -121,7 +121,12 @@ def _canonical_type(typ: Any) -> str:
 
 def _is_option_type(typ: str) -> bool:
     t = typ.strip()
-    return t.endswith("?") or (t.startswith("Option<") and t.endswith(">"))
+    if t.endswith("?") or (t.startswith("Option<") and t.endswith(">")):
+        return True
+    parts = [p.strip() for p in _split_top_level(t, "|")]
+    if len(parts) == 2 and "none" in parts:
+        return True
+    return False
 
 
 def _option_inner_type(typ: str) -> str:
@@ -130,6 +135,9 @@ def _option_inner_type(typ: str) -> str:
         return t[:-1].strip()
     if t.startswith("Option<") and t.endswith(">"):
         return t[7:-1].strip()
+    parts = [p.strip() for p in _split_top_level(t, "|")]
+    if len(parts) == 2 and "none" in parts:
+        return parts[0] if parts[1] == "none" else parts[1]
     return typ
 
 
@@ -824,6 +832,8 @@ def _declare_runtime(ctx: _ModuleCtx, name: str) -> ir.Function:
         fnty = ir.FunctionType(i8p, [i64])
     elif name == "astra_any_to_ptr":
         fnty = ir.FunctionType(i64, [i64])
+    elif name == "astra_any_is_none":
+        fnty = ir.FunctionType(i1, [i64])
     elif name == "astra_len_any":
         fnty = ir.FunctionType(i64, [i64])
     elif name == "astra_len_str":
@@ -854,6 +864,22 @@ def _declare_runtime(ctx: _ModuleCtx, name: str) -> ir.Function:
         fnty = ir.FunctionType(i64, [i64, i64])
     elif name == "astra_atomic_compare_exchange":
         fnty = ir.FunctionType(i1, [i64, i64, i64])
+    elif name == "astra_mutex_new":
+        fnty = ir.FunctionType(i64, [])
+    elif name == "astra_mutex_lock":
+        fnty = ir.FunctionType(i64, [i64, i64])
+    elif name == "astra_mutex_unlock":
+        fnty = ir.FunctionType(i64, [i64, i64])
+    elif name == "astra_chan_new":
+        fnty = ir.FunctionType(i64, [])
+    elif name == "astra_chan_send":
+        fnty = ir.FunctionType(i64, [i64, i64])
+    elif name == "astra_chan_recv_try":
+        fnty = ir.FunctionType(i64, [i64])
+    elif name == "astra_chan_recv_blocking":
+        fnty = ir.FunctionType(i64, [i64])
+    elif name == "astra_chan_close":
+        fnty = ir.FunctionType(i64, [i64])
     elif name == "astra_list_new":
         fnty = ir.FunctionType(i64, [])
     elif name == "astra_list_push":
@@ -892,6 +918,8 @@ def _declare_runtime(ctx: _ModuleCtx, name: str) -> ir.Function:
         fnty = ir.FunctionType(i8p, [i8p])
     elif name == "astra_hmac_sha256":
         fnty = ir.FunctionType(i8p, [i8p, i8p])
+    elif name == "astra_rand_bytes":
+        fnty = ir.FunctionType(i64, [i64])
     elif name == "astra_env_get":
         fnty = ir.FunctionType(i8p, [i8p])
     elif name == "astra_cwd":
@@ -1682,6 +1710,95 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
         )
         return _Value(out, "Int")
 
+    if base == "mutex_new":
+        if len(call.args) != 0:
+            raise CodegenError(_diag(call, "mutex_new expects 0 arguments"))
+        fn = _declare_runtime(ctx, "astra_mutex_new")
+        return _Value(b.call(fn, []), "Int")
+
+    if base == "mutex_lock":
+        if len(call.args) != 2:
+            raise CodegenError(_diag(call, "mutex_lock expects 2 arguments"))
+        m = _compile_expr(ctx, state, call.args[0])
+        tid = _compile_expr(ctx, state, call.args[1])
+        fn = _declare_runtime(ctx, "astra_mutex_lock")
+        out = b.call(fn, [_as_i64(m, call.args[0]), _as_i64(tid, call.args[1])])
+        return _Value(out, "Int")
+
+    if base == "mutex_unlock":
+        if len(call.args) != 2:
+            raise CodegenError(_diag(call, "mutex_unlock expects 2 arguments"))
+        m = _compile_expr(ctx, state, call.args[0])
+        tid = _compile_expr(ctx, state, call.args[1])
+        fn = _declare_runtime(ctx, "astra_mutex_unlock")
+        out = b.call(fn, [_as_i64(m, call.args[0]), _as_i64(tid, call.args[1])])
+        return _Value(out, "Int")
+
+    if base == "chan_new":
+        if len(call.args) != 0:
+            raise CodegenError(_diag(call, "chan_new expects 0 arguments"))
+        fn = _declare_runtime(ctx, "astra_chan_new")
+        return _Value(b.call(fn, []), "Int")
+
+    if base == "chan_send":
+        if len(call.args) != 2:
+            raise CodegenError(_diag(call, "chan_send expects 2 arguments"))
+        cid = _compile_expr(ctx, state, call.args[0])
+        v = _compile_expr(ctx, state, call.args[1])
+        fn = _declare_runtime(ctx, "astra_chan_send")
+        out = b.call(fn, [_as_i64(cid, call.args[0]), _as_any_i64(v, call.args[1])])
+        return _Value(out, "Int")
+
+    if base == "chan_recv_try":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "chan_recv_try expects 1 argument"))
+        cid = _compile_expr(ctx, state, call.args[0])
+        fn = _declare_runtime(ctx, "astra_chan_recv_try")
+        out_any = b.call(fn, [_as_i64(cid, call.args[0])])
+        is_none_fn = _declare_runtime(ctx, "astra_any_is_none")
+        is_none = b.call(is_none_fn, [out_any])
+        fn_ir = state.fn_ir
+        none_block = fn_ir.append_basic_block("chan_try_none")
+        some_block = fn_ir.append_basic_block("chan_try_some")
+        end_block = fn_ir.append_basic_block("chan_try_end")
+        b.cbranch(is_none, none_block, some_block)
+
+        i64 = ir.IntType(64)
+        b.position_at_end(none_block)
+        none_val = ir.Constant(ir.IntType(8).as_pointer(), None)
+        b.branch(end_block)
+        none_block = b.block
+
+        b.position_at_end(some_block)
+        mem = _alloc_bytes(ctx, state, ir.Constant(i64, 8), ir.Constant(i64, 8), call)
+        any_ptr = b.bitcast(mem, i64.as_pointer())
+        b.store(out_any, any_ptr)
+        some_val = mem if mem.type == ir.IntType(8).as_pointer() else b.bitcast(mem, ir.IntType(8).as_pointer())
+        b.branch(end_block)
+        some_block = b.block
+
+        b.position_at_end(end_block)
+        out = b.phi(ir.IntType(8).as_pointer())
+        out.add_incoming(none_val, none_block)
+        out.add_incoming(some_val, some_block)
+        return _Value(out, "Any?")
+
+    if base == "chan_recv_blocking":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "chan_recv_blocking expects 1 argument"))
+        cid = _compile_expr(ctx, state, call.args[0])
+        fn = _declare_runtime(ctx, "astra_chan_recv_blocking")
+        out = b.call(fn, [_as_i64(cid, call.args[0])])
+        return _Value(out, "Any")
+
+    if base == "chan_close":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "chan_close expects 1 argument"))
+        cid = _compile_expr(ctx, state, call.args[0])
+        fn = _declare_runtime(ctx, "astra_chan_close")
+        out = b.call(fn, [_as_i64(cid, call.args[0])])
+        return _Value(out, "Int")
+
     if base == "file_exists":
         if len(call.args) != 1:
             raise CodegenError(_diag(call, "file_exists expects 1 argument"))
@@ -1764,6 +1881,14 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
         fn = _declare_runtime(ctx, "astra_hmac_sha256")
         out = b.call(fn, [_as_string_ptr(k, call.args[0]), _as_string_ptr(s, call.args[1])])
         return _Value(out, "String")
+
+    if base == "rand_bytes":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "rand_bytes expects 1 argument"))
+        n = _compile_expr(ctx, state, call.args[0])
+        fn = _declare_runtime(ctx, "astra_rand_bytes")
+        out = b.call(fn, [_as_i64(n, call.args[0])])
+        return _Value(out, "Any")
 
     if base == "env_get":
         if len(call.args) != 1:
@@ -2040,6 +2165,15 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
             "from_json",
             "sha256",
             "hmac_sha256",
+            "rand_bytes",
+            "mutex_new",
+            "mutex_lock",
+            "mutex_unlock",
+            "chan_new",
+            "chan_send",
+            "chan_recv_try",
+            "chan_recv_blocking",
+            "chan_close",
             "proc_exit",
             "env_get",
             "cwd",
@@ -2096,6 +2230,15 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
             "__from_json",
             "__sha256",
             "__hmac_sha256",
+            "__rand_bytes",
+            "__mutex_new",
+            "__mutex_lock",
+            "__mutex_unlock",
+            "__chan_new",
+            "__chan_send",
+            "__chan_recv_try",
+            "__chan_recv_blocking",
+            "__chan_close",
             "__proc_exit",
             "__env_get",
             "__cwd",

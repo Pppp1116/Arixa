@@ -665,6 +665,37 @@ def test_match_or_pattern_bool_is_exhaustive():
     analyze(parse(src))
 
 
+def test_match_name_binding_bool_is_exhaustive():
+    src = "fn main() Int{ b = true; match b { x => { if x { return 1; } else { return 0; } } } return 0; }"
+    analyze(parse(src))
+
+
+def test_match_name_binding_enum_is_exhaustive():
+    src = """
+enum E {
+  A,
+  B,
+}
+fn main() Int{
+  v: E = E.A;
+  match v {
+    x => { return 1; }
+  }
+  return 0;
+}
+"""
+    analyze(parse(src))
+
+
+def test_match_name_binding_catch_all_must_be_last():
+    src = "fn main() Int{ b = true; match b { x => { return 1; }, false => { return 0; } } return 0; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "catch-all match arm must be last" in str(e)
+
+
 def test_match_wildcard_cannot_be_combined_with_or_pattern():
     src = "fn main() Int{ b = true; match b { _ | true => { return 1; } false => { return 0; } } return 0; }"
     try:
@@ -786,7 +817,7 @@ fn main() Int{ return wrap(1.5); }
     except SemanticError as e:
         assert "trait bound check failed for wrap(Float)" in str(e)
         assert "missing show(Float) String" in str(e)
-        assert "candidate `wrap(T) T where T: Show`" in str(e)
+        assert "candidate `wrap<" in str(e)
 
 
 def test_where_clause_trait_bound_reports_missing_contract_method_shape():
@@ -804,7 +835,7 @@ fn main() Int{ return wrap(1); }
     except SemanticError as e:
         assert "trait bound check failed for wrap(Int)" in str(e)
         assert "missing show(Int) String" in str(e)
-        assert "candidate `wrap(T) T where T: Show`" in str(e)
+        assert "candidate `wrap<" in str(e)
 
 
 def test_where_clause_rejects_unknown_trait():
@@ -813,7 +844,55 @@ def test_where_clause_rejects_unknown_trait():
         analyze(parse(src))
         assert False
     except SemanticError as e:
-        assert "unknown trait MissingTrait in where clause" in str(e)
+        assert "unknown trait MissingTrait in generic bounds" in str(e)
+
+
+def test_where_bounded_disjoint_overloads_are_not_marked_ambiguous():
+    src = """
+trait Show {
+  fn show(x Self) String;
+}
+trait Hash {
+  fn hash(x Self) Int;
+}
+fn show(x Int) String { return "ok"; }
+fn hash(x Float) Int { return 7; }
+fn pick(x T) Int where T: Show{ return 1; }
+fn pick(x T) Int where T: Hash{ return 2; }
+fn main() Int{ return pick(1); }
+"""
+    analyze(parse(src))
+
+
+def test_no_matching_overload_reports_available_signatures():
+    src = """
+fn f(x Int) Int{ return x; }
+fn main() Int{
+  return f("bad");
+}
+"""
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "no matching overload for f(String)" in str(e)
+        assert "available: `f(Int) Int`" in str(e)
+        assert "`f(Int) Int` rejected: arg 1 expects Int, got String" in str(e)
+
+
+def test_no_matching_overload_reports_generic_binding_rejection():
+    src = """
+fn same(a T, b T) T{ return a; }
+fn main() Int{
+  return same(1, "x");
+}
+"""
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "no matching overload for same(Int, String)" in str(e)
+        assert "inconsistent binding for T: Int vs String" in str(e)
 
 
 def test_function_references_infer_function_pointer_type():

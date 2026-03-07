@@ -1,35 +1,16 @@
-/// std.sync - hosted synchronization primitives.
-///
-/// This implementation is cooperative and host-runtime based.
+/// std.sync - hosted synchronization primitives backed by runtime mutexes.
 
-/// Opaque lock state shape:
-/// - `locked` -> Bool
-/// - `owner` -> Int task id (best-effort)
+/// Create a mutex handle.
 fn mutex_new() Any{
-    m = __map_new();
-    __map_set(m, "locked", false);
-    __map_set(m, "owner", -1);
-    return m;
+    return __mutex_new();
 }
 
-/// Acquire lock with a simple cooperative spin loop.
+/// Acquire lock for current owner task id.
 fn mutex_lock(m Any, owner_tid Int) Int{
-    while (__map_get(m, "locked") as Bool) {
-        __sleep_ms(1);
-    }
-    __map_set(m, "locked", true);
-    __map_set(m, "owner", owner_tid);
-    return 0;
+    return __mutex_lock(m as Int, owner_tid);
 }
 
-/// Release lock.
+/// Release lock for current owner task id.
 fn mutex_unlock(m Any, owner_tid Int) Int{
-    owner = __map_get(m, "owner") as Int;
-    if owner != owner_tid {
-        return 1;
-    }
-    else {}
-    __map_set(m, "locked", false);
-    __map_set(m, "owner", -1);
-    return 0;
+    return __mutex_unlock(m as Int, owner_tid);
 }

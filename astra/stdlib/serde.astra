@@ -1,11 +1,23 @@
-/// std.serde - serialization helpers for dynamic values.
+/// std.serde - serialization helpers.
 
-/// Serialize any value to JSON text.
-fn to_json(v Any) String{
+struct ParseError {
+    message String,
+    line i32,
+}
+
+/// Serialize a value to JSON text.
+fn to_json<T>(v T) String{
     return __to_json(v);
 }
 
-/// Parse JSON text into a dynamic value.
-fn from_json(v String) Any{
-    return __from_json(v);
+/// Parse JSON text into a typed value.
+///
+/// Current MVP behavior attempts direct cast from dynamic JSON payload into `T`.
+fn from_json(s String) Any{
+    return __from_json(s);
+}
+
+fn from_json_t<T>(s String) T | ParseError{
+    raw = __from_json(s);
+    return raw as T;
 }

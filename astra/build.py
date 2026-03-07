@@ -58,7 +58,6 @@ from astra.ast import (
     StructDecl,
     StructLit,
     TraitDecl,
-    TraitImplDecl,
     TryExpr,
     TypeAliasDecl,
     TypeAnnotated,
@@ -244,6 +243,187 @@ def _collect_imported_items(src_file: Path) -> list[tuple[Any, Path]]:
     return out
 
 
+def _expand_serde_derives(prog: Program) -> None:
+    """Synthesize serde helper functions for @derive(Serialize, Deserialize)."""
+    existing_fn_keys = {
+        (item.name, tuple(str(t) for _, t in item.params))
+        for item in prog.items
+        if isinstance(item, FnDecl)
+    }
+    known_type_names = {
+        item.name
+        for item in prog.items
+        if isinstance(item, (StructDecl, EnumDecl, TypeAliasDecl))
+    }
+    parse_error_available = "ParseError" in known_type_names
+    generated: list[FnDecl] = []
+
+    for item in list(prog.items):
+        if not isinstance(item, (StructDecl, EnumDecl)):
+            continue
+        derives = list(getattr(item, "derives", []))
+        if not derives:
+            continue
+        if isinstance(item, StructDecl) and item.generics:
+            # Keep v1 derive synthesis concrete-only to avoid generic monomorphization in build pass.
+            continue
+        type_name = item.name
+        if "Serialize" in derives:
+            fn_name = f"serialize_{type_name}"
+            key = (fn_name, (type_name,))
+            if key not in existing_fn_keys:
+                if isinstance(item, StructDecl):
+                    body: list[Any] = [
+                        LetStmt(
+                            "m",
+                            Call(Name("map_new", 0, 0, 0), [], 0, 0, 0),
+                            False,
+                            None,
+                            0,
+                            0,
+                            0,
+                        )
+                    ]
+                    for fname, _ in item.fields:
+                        body.append(
+                            ExprStmt(
+                                Call(
+                                    Name("map_set", 0, 0, 0),
+                                    [
+                                        Name("m", 0, 0, 0),
+                                        Literal(fname, 0, 0, 0),
+                                        FieldExpr(Name("v", 0, 0, 0), fname, 0, 0, 0),
+                                    ],
+                                    0,
+                                    0,
+                                    0,
+                                ),
+                                0,
+                                0,
+                                0,
+                            )
+                        )
+                    body.append(
+                        ReturnStmt(
+                            Call(
+                                Name("to_json", 0, 0, 0),
+                                [Name("m", 0, 0, 0)],
+                                0,
+                                0,
+                                0,
+                            ),
+                            0,
+                            0,
+                            0,
+                        )
+                    )
+                else:
+                    body = [
+                        ReturnStmt(
+                            Call(
+                                Name("to_json", 0, 0, 0),
+                                [Name("v", 0, 0, 0)],
+                                0,
+                                0,
+                                0,
+                            ),
+                            0,
+                            0,
+                            0,
+                        )
+                    ]
+                serialize_fn = FnDecl(
+                    name=fn_name,
+                    generics=[],
+                    params=[("v", type_name)],
+                    ret="String",
+                    body=body,
+                    symbol=fn_name,
+                )
+                setattr(serialize_fn, "_generated_derive", True)
+                generated.append(serialize_fn)
+                existing_fn_keys.add(key)
+        if "Deserialize" in derives:
+            fn_name = f"deserialize_{type_name}"
+            key = (fn_name, ("String",))
+            if key not in existing_fn_keys:
+                err_ty = "ParseError" if parse_error_available else "Any"
+                if isinstance(item, StructDecl):
+                    ctor_args: list[Any] = []
+                    for fname, fty in item.fields:
+                        ctor_args.append(
+                            CastExpr(
+                                Call(
+                                    Name("map_get", 0, 0, 0),
+                                    [Name("raw", 0, 0, 0), Literal(fname, 0, 0, 0)],
+                                    0,
+                                    0,
+                                    0,
+                                ),
+                                fty,
+                                0,
+                                0,
+                                0,
+                            )
+                        )
+                    deserialize_body = [
+                        LetStmt(
+                            "raw",
+                            Call(
+                                Name("from_json", 0, 0, 0),
+                                [Name("s", 0, 0, 0)],
+                                0,
+                                0,
+                                0,
+                            ),
+                            False,
+                            None,
+                            0,
+                            0,
+                            0,
+                        ),
+                        ReturnStmt(
+                            Call(Name(type_name, 0, 0, 0), ctor_args, 0, 0, 0),
+                            0,
+                            0,
+                            0,
+                        ),
+                    ]
+                else:
+                    deserialize_body = [
+                        ReturnStmt(
+                            CastExpr(
+                                Call(
+                                    Name("from_json", 0, 0, 0),
+                                    [Name("s", 0, 0, 0)],
+                                    0,
+                                    0,
+                                    0,
+                                ),
+                                type_name,
+                                0,
+                                0,
+                                0,
+                            ),
+                            0,
+                            0,
+                            0,
+                        )
+                    ]
+                deserialize_fn = FnDecl(
+                    name=fn_name,
+                    generics=[],
+                    params=[("s", "String")],
+                    ret=f"{type_name} | {err_ty}",
+                    body=deserialize_body,
+                    symbol=fn_name,
+                )
+                setattr(deserialize_fn, "_generated_derive", True)
+                generated.append(deserialize_fn)
+                existing_fn_keys.add(key)
+    prog.items.extend(generated)
+
+
 def _build_fingerprint(
     src_file: Path,
     target: str,
@@ -408,7 +588,7 @@ def _dependency_native_link_data(src_file: Path) -> tuple[set[str], list[str]]:
     return libs, link_args
 
 
-_STRICT_TOP_LEVEL = {FnDecl, StructDecl, EnumDecl, TraitDecl, TraitImplDecl, TypeAliasDecl, ImportDecl, ExternFnDecl, LetStmt}
+_STRICT_TOP_LEVEL = {FnDecl, StructDecl, EnumDecl, TraitDecl, TypeAliasDecl, ImportDecl, ExternFnDecl, LetStmt}
 _STRICT_STMTS = {LetStmt, AssignStmt, ReturnStmt, ExprStmt, DropStmt, IfStmt, MatchStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, ComptimeStmt, DeferStmt, UnsafeStmt}
 _STRICT_EXPRS = {
     Literal,
@@ -626,6 +806,7 @@ def _build_native_llvm(
     with tempfile.TemporaryDirectory(prefix="astra-native-") as td:
         ll_path = Path(td) / "module.ll"
         ll_path.write_text(ir_text)
+        is_windows = sys.platform.startswith("win")
         if kind == "lib":
             cmd = [clang, opt_flag, "-shared", "-fPIC", str(ll_path), "-o", str(out)]
             if not freestanding:
@@ -635,7 +816,11 @@ def _build_native_llvm(
                         f"CODEGEN {src_file}:1:1: missing runtime source; set ASTRA_RUNTIME_C_PATH or install bundled runtime"
                     )
                 cmd.insert(-2, str(runtime_c))
-                cmd.insert(-2, "-lm")
+                if is_windows:
+                    cmd.insert(-2, "-lbcrypt")
+                    cmd.insert(-2, "-lws2_32")
+                else:
+                    cmd.insert(-2, "-lm")
         elif freestanding:
             cmd = [
                 clang,
@@ -653,7 +838,11 @@ def _build_native_llvm(
                 raise RuntimeError(
                     f"CODEGEN {src_file}:1:1: missing runtime source; set ASTRA_RUNTIME_C_PATH or install bundled runtime"
                 )
-            cmd = [clang, opt_flag, str(ll_path), str(runtime_c), "-lm", "-pthread", "-o", str(out)]
+            cmd = [clang, opt_flag, str(ll_path), str(runtime_c), "-o", str(out)]
+            if is_windows:
+                cmd.extend(["-lbcrypt", "-lws2_32"])
+            else:
+                cmd.extend(["-lm", "-pthread"])
         if link_libs:
             for lib in sorted(set(link_libs)):
                 if lib:
@@ -772,7 +961,6 @@ def build(
                 bool(getattr(item, "is_variadic", False)),
                 bool(getattr(item, "unsafe", False)),
                 isinstance(item, ExternFnDecl),
-                bool(getattr(item, "is_impl", False)),
             )
             for item in prog.items
             if isinstance(item, (FnDecl, ExternFnDecl))
@@ -795,7 +983,6 @@ def build(
                     bool(getattr(item, "is_variadic", False)),
                     bool(getattr(item, "unsafe", False)),
                     isinstance(item, ExternFnDecl),
-                    bool(getattr(item, "is_impl", False)),
                 )
                 if key in fn_keys:
                     continue
@@ -813,6 +1000,7 @@ def build(
                 if any(isinstance(existing, LetStmt) and existing.name == item.name for existing in prog.items):
                     continue
                 prog.items.append(item)
+    _expand_serde_derives(prog)
     required_entrypoint = None if kind == "lib" else ("_start" if freestanding else "main")
     run_comptime(prog, filename=str(src_file), overflow_mode=overflow_mode)
     analyze(

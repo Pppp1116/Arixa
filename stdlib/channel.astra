@@ -1,20 +1,17 @@
-/// std.channel - simple MPSC-style queue channel (cooperative hosted runtime).
+/// std.channel - hosted FIFO channel backed by runtime primitives.
 
 struct Channel {
-    queue Any,
-    head Int,
-    closed Bool,
+    id Int,
 }
 
 /// Create a new channel.
 fn channel_new() Channel{
-    return Channel(__list_new(), 0, false);
+    return Channel(__chan_new());
 }
 
 /// Close channel; subsequent sends fail.
 fn channel_close(ch &mut Channel) Int{
-    ch.closed = true;
-    return 0;
+    return __chan_close(ch.id);
 }
 
 /// Send one value into the channel.
@@ -23,23 +20,22 @@ fn channel_close(ch &mut Channel) Int{
 /// - `0` on success
 /// - `1` when channel is closed
 fn channel_send(ch &mut Channel, value Any) Int{
-    if ch.closed {
-        return 1;
-    }
-    else {}
-    return __list_push(ch.queue, value);
+    return __chan_send(ch.id, value);
 }
 
 /// Receive one value from channel.
 ///
 /// Returns `none` when queue is currently empty.
-fn channel_recv(ch &mut Channel) Option<Any>{
-    n = __list_len(ch.queue);
-    if ch.head < n {
-        out = __list_get(ch.queue, ch.head);
-        ch.head += 1;
-        return out;
-    }
-    else {}
-    return none;
+fn channel_recv(ch &mut Channel) Any?{
+    return __chan_recv_try(ch.id);
+}
+
+/// Non-blocking receive; returns `none` when queue is empty.
+fn channel_try_recv(ch &mut Channel) Any?{
+    return __chan_recv_try(ch.id);
+}
+
+/// Blocking receive until one value is available or channel is closed.
+fn channel_recv_blocking(ch &mut Channel) Any{
+    return __chan_recv_blocking(ch.id);
 }

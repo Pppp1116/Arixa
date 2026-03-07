@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import re
 from pathlib import Path
 from itertools import product
 
@@ -412,6 +413,14 @@ BUILTIN_SIGS: dict[str, BuiltinSig] = {
     "__atomic_store": BuiltinSig(["Int", "Int"], "Int"),
     "__atomic_fetch_add": BuiltinSig(["Int", "Int"], "Int"),
     "__atomic_compare_exchange": BuiltinSig(["Int", "Int", "Int"], "Bool"),
+    "mutex_new": BuiltinSig([], "Int"),
+    "mutex_lock": BuiltinSig(["Int", "Int"], "Int"),
+    "mutex_unlock": BuiltinSig(["Int", "Int"], "Int"),
+    "chan_new": BuiltinSig([], "Int"),
+    "chan_send": BuiltinSig(["Int", "Any"], "Int"),
+    "chan_recv_try": BuiltinSig(["Int"], "Any?"),
+    "chan_recv_blocking": BuiltinSig(["Int"], "Any"),
+    "chan_close": BuiltinSig(["Int"], "Int"),
     "alloc": BuiltinSig(["Int"], "Int"),
     "free": BuiltinSig(["Int"], "Void"),
     "await_result": BuiltinSig(["Any"], "Any"),
@@ -434,6 +443,7 @@ BUILTIN_SIGS: dict[str, BuiltinSig] = {
     "from_json": BuiltinSig(["String"], "Any"),
     "sha256": BuiltinSig(["String"], "String"),
     "hmac_sha256": BuiltinSig(["String", "String"], "String"),
+    "rand_bytes": BuiltinSig(["Int"], "Any"),
     "proc_exit": BuiltinSig(["Int"], "Never"),
     "env_get": BuiltinSig(["String"], "String"),
     "cwd": BuiltinSig([], "String"),
@@ -496,6 +506,15 @@ _FREESTANDING_FORBIDDEN_BUILTINS: set[str] = {
     "from_json",
     "sha256",
     "hmac_sha256",
+    "rand_bytes",
+    "mutex_new",
+    "mutex_lock",
+    "mutex_unlock",
+    "chan_new",
+    "chan_send",
+    "chan_recv_try",
+    "chan_recv_blocking",
+    "chan_close",
     "env_get",
     "cwd",
     "proc_run",
@@ -879,6 +898,10 @@ def _require_strict_int_operands(filename: str, line: int, col: int, op: str, le
 def _cast_supported(src: str, dst: str) -> bool:
     src_c = _canonical_type(src)
     dst_c = _canonical_type(dst)
+    if _same_type(src_c, dst_c):
+        return True
+    def _is_generic_symbol_name(t: str) -> bool:
+        return bool(re.fullmatch(r"[A-Z][A-Za-z0-9_]*", t)) and t not in PRIMITIVES
     if _is_numeric_scalar_type(src_c) and _is_numeric_scalar_type(dst_c):
         return True
     if src_c == "Bool" and (_is_numeric_scalar_type(dst_c) or dst_c == "Bool"):
@@ -886,14 +909,20 @@ def _cast_supported(src: str, dst: str) -> bool:
     if dst_c == "Bool" and (_is_numeric_scalar_type(src_c) or src_c == "Bool"):
         return True
     if src_c == "Any":
+        if _is_generic_symbol_name(dst_c):
+            return True
         return _is_any_dynamic_cast_target(dst_c)
     if dst_c == "Any":
+        if _is_generic_symbol_name(src_c):
+            return True
         return _is_any_dynamic_cast_target(src_c) or _is_ref_type(src_c) or src_c.startswith("fn(")
     return False
 
 
 def _is_any_dynamic_cast_target(typ: str) -> bool:
     c = _canonical_type(typ)
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(<.*>)?", c):
+        return True
     return (
         c in {"Bool", "String", "str"}
         or _is_numeric_scalar_type(c)
@@ -1309,13 +1338,17 @@ def _trait_satisfied_by_type(trait_name: str, concrete: str) -> bool:
     return len(_trait_missing_methods(trait_name, concrete)) == 0
 
 
-def _trait_missing_methods(trait_name: str, concrete: str) -> list[str]:
+def _trait_missing_methods_in_context(
+    trait_name: str,
+    concrete: str,
+    *,
+    traits: dict[str, TraitDecl],
+    fn_groups: dict[str, list[FnDecl | ExternFnDecl]],
+    explicit_impls: dict[str, set[str]],
+) -> list[str]:
     concrete_c = _canonical_type(concrete)
-    explicit = _current_trait_impls()
-    if concrete_c in explicit.get(trait_name, set()):
+    if concrete_c in explicit_impls.get(trait_name, set()):
         return []
-    traits = _current_traits()
-    fn_groups = _current_fn_groups()
     decl = traits.get(trait_name)
     if decl is None:
         return [f"unknown trait {trait_name}"]
@@ -1341,6 +1374,45 @@ def _trait_missing_methods(trait_name: str, concrete: str) -> list[str]:
             sig = f"{mname}({', '.join(type_text(t) for _, t in target_params)}) {target_ret}"
             missing.append(sig)
     return missing
+
+
+def _trait_missing_methods(trait_name: str, concrete: str) -> list[str]:
+    return _trait_missing_methods_in_context(
+        trait_name,
+        concrete,
+        traits=_current_traits(),
+        fn_groups=_current_fn_groups(),
+        explicit_impls=_current_trait_impls(),
+    )
+
+
+def _where_bounds_satisfied_for_args(
+    decl: FnDecl | ExternFnDecl,
+    arg_types: list[str],
+    known_types: set[str],
+    *,
+    traits: dict[str, TraitDecl],
+    fn_groups: dict[str, list[FnDecl | ExternFnDecl]],
+    trait_impls: dict[str, set[str]],
+) -> bool:
+    matched = _match_decl_bindings(decl, arg_types, known_types)
+    if matched is None:
+        return False
+    _, _, _, bindings = matched
+    for tvar, trait_name in list(getattr(decl, "where_bounds", [])):
+        concrete = bindings.get(tvar)
+        if concrete is None:
+            return False
+        missing = _trait_missing_methods_in_context(
+            trait_name,
+            concrete,
+            traits=traits,
+            fn_groups=fn_groups,
+            explicit_impls=trait_impls,
+        )
+        if missing:
+            return False
+    return True
 
 
 def _match_decl_bindings(
@@ -1397,6 +1469,59 @@ def _match_decl_bindings(
     return (exact, constrained, wildcards, bindings)
 
 
+def _decl_rejection_reason(
+    decl: FnDecl | ExternFnDecl,
+    arg_types: list[str],
+    known_types: set[str],
+) -> tuple[str, str]:
+    is_variadic = bool(getattr(decl, "is_variadic", False))
+    if is_variadic:
+        if len(arg_types) < len(decl.params):
+            return ("arity", f"expects at least {len(decl.params)} args, got {len(arg_types)}")
+    elif len(decl.params) != len(arg_types):
+        return ("arity", f"expects {len(decl.params)} args, got {len(arg_types)}")
+
+    type_vars = set(getattr(decl, "generics", []))
+    for _, pty in decl.params:
+        if _is_typevar(pty, known_types):
+            type_vars.add(pty)
+
+    bindings: dict[str, str] = {}
+    for i, ((_, pty), aty) in enumerate(zip(decl.params, arg_types), start=1):
+        if i == 1 and _is_ref_type(pty):
+            inner = _strip_ref(pty)
+            if _is_typevar(inner, known_types):
+                prev = bindings.get(inner)
+                if prev is not None and not _same_type(prev, aty):
+                    return ("generic", f"arg {i} gives inconsistent binding for {inner}: {prev} vs {aty}")
+                bindings[inner] = aty
+                continue
+            if _same_type(inner, aty):
+                continue
+        if pty in type_vars:
+            prev = bindings.get(pty)
+            if prev is not None and not _same_type(prev, aty):
+                return ("generic", f"arg {i} gives inconsistent binding for {pty}: {prev} vs {aty}")
+            bindings[pty] = aty
+            continue
+        if pty == "Any":
+            continue
+        if not _same_type(pty, aty):
+            return ("type", f"arg {i} expects {type_text(pty)}, got {aty}")
+
+    for tvar, trait_name in list(getattr(decl, "where_bounds", [])):
+        concrete = bindings.get(tvar)
+        if concrete is None:
+            return ("generic", f"could not bind type variable {tvar} for bound {tvar}: {trait_name}")
+        missing = _trait_missing_methods(trait_name, concrete)
+        if missing:
+            return (
+                "bound",
+                f"{tvar}: {trait_name} not satisfied for {concrete}; missing {', '.join(missing)}",
+            )
+    return ("unknown", "not viable")
+
+
 def _specialization_score(
     decl: FnDecl | ExternFnDecl,
     arg_types: list[str],
@@ -1419,11 +1544,29 @@ def _specialization_score(
 
 def _decl_signature_text(decl: FnDecl | ExternFnDecl) -> str:
     params = ", ".join(type_text(t) for _, t in decl.params)
-    where = ""
     bounds = list(getattr(decl, "where_bounds", []))
-    if bounds:
-        where = " where " + ", ".join(f"{tv}: {tr}" for tv, tr in bounds)
-    return f"{decl.name}({params}) {type_text(decl.ret)}{where}"
+    generics = list(getattr(decl, "generics", []))
+    if not generics and bounds:
+        seen_tvars: set[str] = set()
+        for tv, _ in bounds:
+            if tv not in seen_tvars:
+                generics.append(tv)
+                seen_tvars.add(tv)
+    if bounds and generics:
+        grouped: dict[str, list[str]] = {}
+        for tv, tr in bounds:
+            grouped.setdefault(tv, []).append(tr)
+        gtext: list[str] = []
+        for g in generics:
+            cons = grouped.get(g, [])
+            if cons:
+                gtext.append(f"{g} {' + '.join(cons)}")
+            else:
+                gtext.append(g)
+        return f"{decl.name}<{', '.join(gtext)}>({params}) {type_text(decl.ret)}"
+    if generics:
+        return f"{decl.name}<{', '.join(generics)}>({params}) {type_text(decl.ret)}"
+    return f"{decl.name}({params}) {type_text(decl.ret)}"
 
 
 def _decl_more_specific(a: FnDecl | ExternFnDecl, b: FnDecl | ExternFnDecl, known_types: set[str]) -> bool:
@@ -1540,27 +1683,17 @@ def _choose_impl(
         if sc is not None:
             ranked.append((sc, d))
     if not ranked:
-        where_misses: list[tuple[str, str]] = []
+        bound_rejections: list[tuple[str, str]] = []
+        other_rejections: list[tuple[str, str]] = []
         for d in decls:
-            matched = _match_decl_bindings(d, arg_types, known_types)
-            if matched is None:
-                continue
-            _, _, _, bindings = matched
-            for tvar, trait_name in list(getattr(d, "where_bounds", [])):
-                concrete = bindings.get(tvar)
-                if concrete is None:
-                    continue
-                missing = _trait_missing_methods(trait_name, concrete)
-                if not missing:
-                    continue
-                where_misses.append(
-                    (
-                        _decl_signature_text(d),
-                        f"{tvar}: {trait_name} not satisfied for {concrete}; missing {', '.join(missing)}",
-                    )
-                )
-        if where_misses:
-            sig, reason = where_misses[0]
+            sig = _decl_signature_text(d)
+            kind, reason = _decl_rejection_reason(d, arg_types, known_types)
+            if kind == "bound":
+                bound_rejections.append((sig, reason))
+            else:
+                other_rejections.append((sig, reason))
+        if bound_rejections:
+            sig, reason = bound_rejections[0]
             raise SemanticError(
                 _diag(
                     filename,
@@ -1572,6 +1705,12 @@ def _choose_impl(
                     ),
                 )
             )
+        rejection_text = ""
+        if other_rejections:
+            details = "; ".join(
+                f"`{sig}` rejected: {reason}" for sig, reason in other_rejections[:3]
+            )
+            rejection_text = f"; rejected: {details}"
         available = ", ".join(f"`{_decl_signature_text(d)}`" for d in decls)
         if available:
             raise SemanticError(
@@ -1579,7 +1718,7 @@ def _choose_impl(
                     filename,
                     line,
                     col,
-                    f"no matching overload for {name}({', '.join(arg_types)}); available: {available}",
+                    f"no matching overload for {name}({', '.join(arg_types)}); available: {available}{rejection_text}",
                 )
             )
         raise SemanticError(_diag(filename, line, col, f"no matching overload for {name}({', '.join(arg_types)})"))
@@ -1819,7 +1958,7 @@ def analyze(
                     if fn.where_bounds:
                         _record(
                             SemanticError(
-                                _diag(fn_filename, fn.line, fn.col, "gpu kernels do not support where clauses")
+                                _diag(fn_filename, fn.line, fn.col, "gpu kernels do not support trait bounds on generics")
                             )
                         )
                     if _canonical_type(fn.ret) != "Void":
@@ -1855,7 +1994,7 @@ def analyze(
                                     getattr(fn, "_source_filename", filename),
                                     fn.line,
                                     fn.col,
-                                    f"where-clause type variable {tvar} is not declared in function generics",
+                                    f"generic bound type variable {tvar} is not declared in function generics",
                                 )
                             )
                         )
@@ -1866,7 +2005,7 @@ def analyze(
                                     getattr(fn, "_source_filename", filename),
                                     fn.line,
                                     fn.col,
-                                    f"unknown trait {trait_name} in where clause",
+                                    f"unknown trait {trait_name} in generic bounds",
                                 )
                             )
                         )
@@ -1878,6 +2017,24 @@ def analyze(
                 for b in fn_decls[i + 1 :]:
                     probe = _decl_overlap_probe(a, b, known_types)
                     if probe is None:
+                        continue
+                    if not _where_bounds_satisfied_for_args(
+                        a,
+                        probe,
+                        known_types,
+                        traits=traits,
+                        fn_groups=fn_groups,
+                        trait_impls=trait_impls,
+                    ):
+                        continue
+                    if not _where_bounds_satisfied_for_args(
+                        b,
+                        probe,
+                        known_types,
+                        traits=traits,
+                        fn_groups=fn_groups,
+                        trait_impls=trait_impls,
+                    ):
                         continue
                     if _decl_more_specific(a, b, known_types) or _decl_more_specific(b, a, known_types):
                         continue
@@ -2854,7 +3011,7 @@ def _check_stmt(
             parsed_subject = _parse_parametric_type(subject_canon)
             if parsed_subject is not None and parsed_subject[0] in enums:
                 subject_enum_decl = enums[parsed_subject[0]]
-        seen_wildcard = False
+        seen_catch_all = False
         for idx, (pat, body) in enumerate(st.arms):
             patterns, guard_expr = _split_match_pattern(pat)
             if guard_expr is not None:
@@ -2882,11 +3039,27 @@ def _check_stmt(
                 )
             has_unconditional_wildcard = wildcard_count == 1 and guard_expr is None
             if has_unconditional_wildcard:
-                if seen_wildcard:
+                if seen_catch_all:
                     raise SemanticError(_diag(filename, pat.line, pat.col, "duplicate wildcard match arm"))
                 if idx != len(st.arms) - 1:
                     raise SemanticError(_diag(filename, pat.line, pat.col, "wildcard match arm must be last"))
-                seen_wildcard = True
+                seen_catch_all = True
+
+            total_alt_count = 0
+            for alt_pat in patterns:
+                if guard_expr is None and _pattern_is_total_for_type(alt_pat, subject_ty, structs, enums):
+                    total_alt_count += 1
+            if total_alt_count > 0 and len(patterns) > 1:
+                raise SemanticError(
+                    _diag(filename, pat.line, pat.col, "catch-all pattern cannot be combined with `|` alternatives")
+                )
+            has_unconditional_catch_all = total_alt_count > 0 and guard_expr is None and not has_unconditional_wildcard
+            if has_unconditional_catch_all:
+                if seen_catch_all:
+                    raise SemanticError(_diag(filename, pat.line, pat.col, "duplicate catch-all match arm"))
+                if idx != len(st.arms) - 1:
+                    raise SemanticError(_diag(filename, pat.line, pat.col, "catch-all match arm must be last"))
+                seen_catch_all = True
 
             for alt_pat in patterns:
                 if isinstance(alt_pat, WildcardPattern):
@@ -3031,9 +3204,9 @@ def _check_stmt(
                 unsafe_ok,
                 gpu_kernel,
             )
-        if subject_ty == "Bool" and not seen_wildcard and seen_bool != {True, False}:
+        if subject_ty == "Bool" and not seen_catch_all and seen_bool != {True, False}:
             raise SemanticError(_diag(filename, st.line, st.col, "non-exhaustive match for Bool"))
-        if subject_enum_decl is not None and not seen_wildcard:
+        if subject_enum_decl is not None and not seen_catch_all:
             all_variants = {name for name, _ in subject_enum_decl.variants}
             if seen_enum_variants != all_variants:
                 missing = ", ".join(sorted(all_variants - seen_enum_variants))
@@ -3779,6 +3952,10 @@ def _infer_call(
             if gpu_kernel and base not in GPU_ALLOWED_IN_KERNEL_BUILTINS:
                 raise SemanticError(_diag(filename, e.line, e.col, f"builtin {base} is not available in gpu kernels"))
             _require_freestanding_builtin_allowed(name, filename, e.line, e.col)
+            if base == "to_json":
+                if len(e.args) != 1:
+                    raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects 1 args, got {len(e.args)}"))
+                return "String"
             if sig.args is not None and len(e.args) != len(sig.args):
                 raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects {len(sig.args)} args, got {len(e.args)}"))
             if sig.args is not None:

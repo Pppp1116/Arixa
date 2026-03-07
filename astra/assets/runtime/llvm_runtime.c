@@ -12,7 +12,9 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <bcrypt.h>
 #include <io.h>
+#include <malloc.h>
 #else
 #include <unistd.h>
 #include <pthread.h>
@@ -158,9 +160,16 @@ uintptr_t astra_alloc(uintptr_t size, uintptr_t align) {
     a = p2;
   }
   void *p = NULL;
+#if defined(_WIN32)
+  p = _aligned_malloc(n, a);
+  if (p == NULL) {
+    return 0;
+  }
+#else
   if (posix_memalign(&p, a, n) != 0) {
     return 0;
   }
+#endif
   astra_track_ptr(p);
   return (uintptr_t)p;
 }
@@ -171,7 +180,11 @@ void astra_free(uintptr_t ptr, uintptr_t size, uintptr_t align) {
   if (ptr != 0) {
     void *p = (void *)ptr;
     astra_untrack_ptr(p);
+#if defined(_WIN32)
+    _aligned_free(p);
+#else
     free(p);
+#endif
   }
 }
 
@@ -406,6 +419,11 @@ _Bool astra_any_to_bool(uintptr_t value) {
   }
   astra_trap();
   return 0;
+}
+
+_Bool astra_any_is_none(uintptr_t value) {
+  AstraAnyEntry *entry = astra_any_expect(value);
+  return entry->tag == ASTRA_ANY_NONE ? 1 : 0;
 }
 
 double astra_any_to_f64(uintptr_t value) {
@@ -1124,6 +1142,285 @@ _Bool astra_atomic_compare_exchange(uintptr_t handle, int64_t expected, int64_t 
   int64_t want = expected;
   return atomic_compare_exchange_strong_explicit(
       &cell->value, &want, desired, memory_order_seq_cst, memory_order_seq_cst);
+}
+
+typedef struct {
+  bool used;
+#if defined(_WIN32)
+  SRWLOCK lock;
+#else
+  pthread_mutex_t lock;
+#endif
+} AstraMutexEntry;
+
+static AstraMutexEntry *g_mutexes = NULL;
+static size_t g_mutexes_cap = 0;
+static uintptr_t g_next_mutex = 1;
+
+static bool astra_mutex_reserve(size_t want) {
+  if (g_mutexes_cap >= want) {
+    return true;
+  }
+  size_t next = g_mutexes_cap == 0 ? 8 : g_mutexes_cap * 2;
+  while (next < want) {
+    next *= 2;
+  }
+  AstraMutexEntry *p = (AstraMutexEntry *)realloc(g_mutexes, next * sizeof(AstraMutexEntry));
+  if (p == NULL) {
+    return false;
+  }
+  for (size_t i = g_mutexes_cap; i < next; i++) {
+    p[i].used = false;
+  }
+  g_mutexes = p;
+  g_mutexes_cap = next;
+  return true;
+}
+
+uintptr_t astra_mutex_new(void) {
+  uintptr_t mid = g_next_mutex++;
+  size_t idx = (size_t)mid;
+  if (!astra_mutex_reserve(idx + 1)) {
+    return 0;
+  }
+  g_mutexes[idx].used = true;
+#if defined(_WIN32)
+  InitializeSRWLock(&g_mutexes[idx].lock);
+#else
+  if (pthread_mutex_init(&g_mutexes[idx].lock, NULL) != 0) {
+    g_mutexes[idx].used = false;
+    return 0;
+  }
+#endif
+  return mid;
+}
+
+uintptr_t astra_mutex_lock(uintptr_t mid, uintptr_t owner_tid) {
+  (void)owner_tid;
+  size_t idx = (size_t)mid;
+  if (idx >= g_mutexes_cap || !g_mutexes[idx].used) {
+    return (uintptr_t)-1;
+  }
+#if defined(_WIN32)
+  AcquireSRWLockExclusive(&g_mutexes[idx].lock);
+  return 0;
+#else
+  return pthread_mutex_lock(&g_mutexes[idx].lock) == 0 ? 0 : (uintptr_t)-1;
+#endif
+}
+
+uintptr_t astra_mutex_unlock(uintptr_t mid, uintptr_t owner_tid) {
+  (void)owner_tid;
+  size_t idx = (size_t)mid;
+  if (idx >= g_mutexes_cap || !g_mutexes[idx].used) {
+    return (uintptr_t)-1;
+  }
+#if defined(_WIN32)
+  ReleaseSRWLockExclusive(&g_mutexes[idx].lock);
+  return 0;
+#else
+  return pthread_mutex_unlock(&g_mutexes[idx].lock) == 0 ? 0 : (uintptr_t)-1;
+#endif
+}
+
+typedef struct {
+  bool used;
+  bool closed;
+  size_t head;
+  size_t len;
+  size_t cap;
+  uintptr_t *items;
+#if defined(_WIN32)
+  SRWLOCK lock;
+  CONDITION_VARIABLE cv;
+#else
+  pthread_mutex_t lock;
+  pthread_cond_t cv;
+#endif
+} AstraChanEntry;
+
+static AstraChanEntry *g_chans = NULL;
+static size_t g_chans_cap = 0;
+static uintptr_t g_next_chan = 1;
+
+static bool astra_chan_reserve(size_t want) {
+  if (g_chans_cap >= want) {
+    return true;
+  }
+  size_t next = g_chans_cap == 0 ? 8 : g_chans_cap * 2;
+  while (next < want) {
+    next *= 2;
+  }
+  AstraChanEntry *p = (AstraChanEntry *)realloc(g_chans, next * sizeof(AstraChanEntry));
+  if (p == NULL) {
+    return false;
+  }
+  for (size_t i = g_chans_cap; i < next; i++) {
+    p[i].used = false;
+    p[i].closed = false;
+    p[i].head = 0;
+    p[i].len = 0;
+    p[i].cap = 0;
+    p[i].items = NULL;
+  }
+  g_chans = p;
+  g_chans_cap = next;
+  return true;
+}
+
+static bool astra_chan_push(AstraChanEntry *ch, uintptr_t v) {
+  if (ch->len >= ch->cap) {
+    size_t next = ch->cap == 0 ? 8 : ch->cap * 2;
+    uintptr_t *p = (uintptr_t *)realloc(ch->items, next * sizeof(uintptr_t));
+    if (p == NULL) {
+      return false;
+    }
+    ch->items = p;
+    ch->cap = next;
+  }
+  ch->items[ch->len++] = v;
+  return true;
+}
+
+static uintptr_t astra_chan_pop(AstraChanEntry *ch) {
+  if (ch->head >= ch->len) {
+    return astra_any_box_none();
+  }
+  uintptr_t out = ch->items[ch->head++];
+  if (ch->head >= ch->len) {
+    ch->head = 0;
+    ch->len = 0;
+  }
+  return out;
+}
+
+uintptr_t astra_chan_new(void) {
+  uintptr_t cid = g_next_chan++;
+  size_t idx = (size_t)cid;
+  if (!astra_chan_reserve(idx + 1)) {
+    return 0;
+  }
+  AstraChanEntry *ch = &g_chans[idx];
+  ch->used = true;
+  ch->closed = false;
+  ch->head = 0;
+  ch->len = 0;
+#if defined(_WIN32)
+  InitializeSRWLock(&ch->lock);
+  InitializeConditionVariable(&ch->cv);
+#else
+  if (pthread_mutex_init(&ch->lock, NULL) != 0) {
+    ch->used = false;
+    return 0;
+  }
+  if (pthread_cond_init(&ch->cv, NULL) != 0) {
+    ch->used = false;
+    return 0;
+  }
+#endif
+  return cid;
+}
+
+uintptr_t astra_chan_send(uintptr_t cid, uintptr_t value) {
+  size_t idx = (size_t)cid;
+  if (idx >= g_chans_cap || !g_chans[idx].used) {
+    return 1;
+  }
+  AstraChanEntry *ch = &g_chans[idx];
+#if defined(_WIN32)
+  AcquireSRWLockExclusive(&ch->lock);
+  if (ch->closed) {
+    ReleaseSRWLockExclusive(&ch->lock);
+    return 1;
+  }
+  bool ok = astra_chan_push(ch, value);
+  WakeConditionVariable(&ch->cv);
+  ReleaseSRWLockExclusive(&ch->lock);
+  return ok ? 0 : 1;
+#else
+  if (pthread_mutex_lock(&ch->lock) != 0) {
+    return 1;
+  }
+  if (ch->closed) {
+    (void)pthread_mutex_unlock(&ch->lock);
+    return 1;
+  }
+  bool ok = astra_chan_push(ch, value);
+  (void)pthread_cond_signal(&ch->cv);
+  (void)pthread_mutex_unlock(&ch->lock);
+  return ok ? 0 : 1;
+#endif
+}
+
+uintptr_t astra_chan_recv_try(uintptr_t cid) {
+  size_t idx = (size_t)cid;
+  if (idx >= g_chans_cap || !g_chans[idx].used) {
+    return astra_any_box_none();
+  }
+  AstraChanEntry *ch = &g_chans[idx];
+#if defined(_WIN32)
+  AcquireSRWLockExclusive(&ch->lock);
+  uintptr_t out = astra_chan_pop(ch);
+  ReleaseSRWLockExclusive(&ch->lock);
+  return out;
+#else
+  if (pthread_mutex_lock(&ch->lock) != 0) {
+    return astra_any_box_none();
+  }
+  uintptr_t out = astra_chan_pop(ch);
+  (void)pthread_mutex_unlock(&ch->lock);
+  return out;
+#endif
+}
+
+uintptr_t astra_chan_recv_blocking(uintptr_t cid) {
+  size_t idx = (size_t)cid;
+  if (idx >= g_chans_cap || !g_chans[idx].used) {
+    return astra_any_box_none();
+  }
+  AstraChanEntry *ch = &g_chans[idx];
+#if defined(_WIN32)
+  AcquireSRWLockExclusive(&ch->lock);
+  while (ch->head >= ch->len && !ch->closed) {
+    SleepConditionVariableSRW(&ch->cv, &ch->lock, INFINITE, 0);
+  }
+  uintptr_t out = astra_chan_pop(ch);
+  ReleaseSRWLockExclusive(&ch->lock);
+  return out;
+#else
+  if (pthread_mutex_lock(&ch->lock) != 0) {
+    return astra_any_box_none();
+  }
+  while (ch->head >= ch->len && !ch->closed) {
+    (void)pthread_cond_wait(&ch->cv, &ch->lock);
+  }
+  uintptr_t out = astra_chan_pop(ch);
+  (void)pthread_mutex_unlock(&ch->lock);
+  return out;
+#endif
+}
+
+uintptr_t astra_chan_close(uintptr_t cid) {
+  size_t idx = (size_t)cid;
+  if (idx >= g_chans_cap || !g_chans[idx].used) {
+    return 1;
+  }
+  AstraChanEntry *ch = &g_chans[idx];
+#if defined(_WIN32)
+  AcquireSRWLockExclusive(&ch->lock);
+  ch->closed = true;
+  WakeAllConditionVariable(&ch->cv);
+  ReleaseSRWLockExclusive(&ch->lock);
+  return 0;
+#else
+  if (pthread_mutex_lock(&ch->lock) != 0) {
+    return 1;
+  }
+  ch->closed = true;
+  (void)pthread_cond_broadcast(&ch->cv);
+  (void)pthread_mutex_unlock(&ch->lock);
+  return 0;
+#endif
 }
 
 _Bool astra_file_exists(uintptr_t path_ptr) {
@@ -2027,6 +2324,48 @@ uintptr_t astra_hmac_sha256(uintptr_t k_ptr, uintptr_t s_ptr) {
   uint64_t hs = astra_fnv1a(s);
   uint64_t x = hk ^ (hs + 0x9e3779b97f4a7c15ULL + (hk << 6) + (hk >> 2));
   return (uintptr_t)astra_hex64x4(x, hk, hs, x ^ hk ^ hs);
+}
+
+uintptr_t astra_rand_bytes(uintptr_t n) {
+  if ((int64_t)n < 0) {
+    return astra_any_box_none();
+  }
+  size_t len = (size_t)n;
+  uintptr_t out = astra_list_new();
+  if (out == 0) {
+    return astra_any_box_none();
+  }
+  if (len == 0) {
+    return out;
+  }
+  unsigned char *buf = (unsigned char *)malloc(len);
+  if (buf == NULL) {
+    return astra_any_box_none();
+  }
+#if defined(_WIN32)
+  NTSTATUS st = BCryptGenRandom(NULL, buf, (ULONG)len, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+  if (st < 0) {
+    free(buf);
+    return astra_any_box_none();
+  }
+#else
+  FILE *rng = fopen("/dev/urandom", "rb");
+  if (rng == NULL) {
+    free(buf);
+    return astra_any_box_none();
+  }
+  size_t got = fread(buf, 1, len, rng);
+  fclose(rng);
+  if (got != len) {
+    free(buf);
+    return astra_any_box_none();
+  }
+#endif
+  for (size_t i = 0; i < len; i++) {
+    (void)astra_list_push(out, astra_any_box_i64((int64_t)buf[i]));
+  }
+  free(buf);
+  return out;
 }
 
 uintptr_t astra_env_get(uintptr_t key_ptr) {
