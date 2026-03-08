@@ -1,0 +1,6 @@
+import std.bytes_simple as bytes;
+
+fn main() Int {
+    data = vec_from([0x48, 0x65]) as Bytes;
+    return bytes.len(data) as Int;
+}

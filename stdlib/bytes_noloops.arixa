@@ -1,0 +1,28 @@
+/// std.bytes - Raw binary data operations
+
+import std.vec;
+
+/// Get the length of a Bytes array.
+fn len(b Bytes) Int {
+    return vec_len(b);
+}
+
+/// Check if a Bytes array is empty.
+fn is_empty(b Bytes) Bool {
+    return vec_len(b) == 0;
+}
+
+/// Concatenate two Bytes arrays.
+fn concat(a Bytes, b Bytes) Bytes {
+    mut result = vec_new() as Bytes;
+
+    for byte in a {
+        vec_push(result, byte);
+    }
+
+    for byte in b {
+        vec_push(result, byte);
+    }
+
+    return result;
+}

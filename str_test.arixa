@@ -1,0 +1,6 @@
+import std.str as str;
+
+fn main() Int {
+    text = "Hello";
+    return str.length(text) as Int;
+}

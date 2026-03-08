@@ -101,6 +101,46 @@ fn replace(s String, pattern String, replacement String) String {
     return __str_replace_impl(s, pattern, replacement);
 }
 
+/// Check if string contains substring.
+fn contains(s String, pattern String) Bool {
+    return find(s, pattern) != -1;
+}
+
+/// Split string by delimiter into vector of strings.
+fn split(s String, delimiter String) Vec<String> {
+    return __str_split_impl(s, delimiter);
+}
+
+/// Trim whitespace from start of string.
+fn trim_start(s String) String {
+    return __str_trim_start_impl(s);
+}
+
+/// Trim whitespace from end of string.
+fn trim_end(s String) String {
+    return __str_trim_end_impl(s);
+}
+
+/// Join vector of strings with delimiter.
+fn join(parts Vec<String>, delimiter String) String {
+    return __str_join_impl(parts, delimiter);
+}
+
+/// Parse a decimal float from a String.
+/// 
+/// This will panic at runtime if input is not a valid float literal.
+fn parse_float(s String) Float {
+    return __from_json(s) as Float;
+}
+
+/// Parse a Bool from a String.
+/// 
+/// Accepts "true", "false" (case insensitive) or JSON boolean literals.
+/// This will panic at runtime if input is not a valid boolean.
+fn parse_bool(s String) Bool {
+    return __from_json(s) as Bool;
+}
+
 extern fn __str_char_at_impl(s String, index Int) Char;
 
 extern fn __str_from_char_impl(c Char) String;
@@ -116,3 +156,11 @@ extern fn __str_trim_impl(s String) String;
 extern fn __str_find_impl(s String, pattern String) Int;
 
 extern fn __str_replace_impl(s String, pattern String, replacement String) String;
+
+extern fn __str_split_impl(s String, delimiter String) Vec<String>;
+
+extern fn __str_trim_start_impl(s String) String;
+
+extern fn __str_trim_end_impl(s String) String;
+
+extern fn __str_join_impl(parts Vec<String>, delimiter String) String;

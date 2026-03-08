@@ -1,6 +1,13 @@
 {
+  "/home/pedro/rust-projects/language/ASTRA/debug_test.arixa::py::exe::0::0::0::debug::trap::::::": "c4d92b21f96efcd2b9ecd2af998d15880256afa5d9ed8835848eee53e18bf1b6",
+  "/home/pedro/rust-projects/language/ASTRA/direct_test.arixa::py::exe::0::0::0::debug::trap::::::": "bb1f60939a22894905d6904eb2391aaa6c936e875965a6eea7baced5b2a7ad39",
+  "/home/pedro/rust-projects/language/ASTRA/direct_test_simple.arixa::py::exe::0::0::0::debug::trap::::::": "ebf581e401268f1b093bb8f8224b7126fd4464dd3f915b68cb2497c853ed3fdd",
   "/home/pedro/rust-projects/language/ASTRA/examples/gpu/vector_add.arixa::py::exe::0::0::0::debug::trap::::::": "ff4e805e13d1729c6d2f84816571b5ef721fda90d1901529e2d574ebc653950f",
+  "/home/pedro/rust-projects/language/ASTRA/examples/vector_usage.arixa::py::exe::0::0::0::debug::trap::::::": "4fba56139e7fc93f036a878d34dda89f45bad494f72ea173b143c9eec45f2c8d",
   "/home/pedro/rust-projects/language/ASTRA/selfhost/compiler.arixa::py::exe::0::0::0::debug::trap::::::": "eedc6a1af25e3f7ab806c2bda367cfd2ac5f3a29a23f04b43ed0f2a900f0a216",
+  "/home/pedro/rust-projects/language/ASTRA/simple_hosted_test.arixa::py::exe::0::0::0::debug::trap::::::": "4f52c4caaa9c76dd6bd28e7949f4faf7d7fe86470a8cb5113474d5f57650d771",
+  "/home/pedro/rust-projects/language/ASTRA/simple_test.arixa::py::exe::0::0::0::debug::trap::::::": "5a5c282d64953c6e77af38a4d489e38c70ac0e3ddab3cc2c423f03fd1c5db496",
+  "/home/pedro/rust-projects/language/ASTRA/str_test.arixa::py::exe::0::0::0::debug::trap::::::": "674431d8e64e6570e15e80792e4c48f212a6b24cad29041266622b94c8241e2b",
   "/tmp/pytest-of-pedro/pytest-56/test_coalesce_short_circuits_w0/coalesce_some.arixa::native::exe::0::0::0::debug::trap::::::": "d9f251520333c808f52cb20cc291d3afd0cf6574ac9094273a9526a46447f50b",
   "/tmp/pytest-of-pedro/pytest-56/test_coalesce_short_circuits_w0/coalesce_some.arixa::py::exe::0::0::0::debug::trap::::::": "755b9762e332557045b82637139326aa9d8b76b9e68968d27030cbf1b8bfdfbc",
   "/tmp/pytest-of-pedro/pytest-57/test_coalesce_evaluates_rhs_wh0/coalesce_none.arixa::native::exe::0::0::0::debug::trap::::::": "b4e1c95dbdb9d95584df9376d3bf0cba50f9785426514cf578612d744e930121",

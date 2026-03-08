@@ -1,0 +1,13 @@
+/// std.bytes - Raw binary data operations
+
+import std.vec;
+
+/// Get the length of a Bytes array.
+fn len(b Bytes) Int {
+    return vec_len(b);
+}
+
+/// Check if a Bytes array is empty.
+fn is_empty(b Bytes) Bool {
+    return vec_len(b) == 0;
+}

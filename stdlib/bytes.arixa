@@ -1,0 +1,188 @@
+/// std.bytes - Raw binary data operations for freestanding and hosted environments.
+///
+/// This module provides essential byte manipulation operations that work with the
+/// Bytes type (alias for Vec<u8>). All core operations here are freestanding-safe.
+
+import std.vec;
+
+// Core Operations (Freestanding-Safe)
+
+/// Get the length of a Bytes array.
+fn len(b Bytes) Int {
+    return vec_len(b);
+}
+
+/// Check if a Bytes array is empty.
+fn is_empty(b Bytes) Bool {
+    return vec_len(b) == 0;
+}
+
+/// Get byte at index.
+/// Returns none if index is out of bounds.
+fn get(b Bytes, index Int) u8? {
+    if index < 0 || index >= vec_len(b) {
+        return none;
+    }
+    else {}
+    return vec_get(b, index);
+}
+
+/// Extract a slice from a Bytes array.
+///
+/// Returns empty Bytes if start or length are invalid.
+/// Clamps the end position to the available length.
+fn slice(b Bytes, start Int, length Int) Bytes {
+    if start < 0 || length < 0 || start >= vec_len(b) {
+        return vec_new() as Bytes;
+    }
+    else {}
+
+    mut end = start + length;
+    if end > vec_len(b) {
+        end = vec_len(b);
+    }
+    else {}
+
+    mut result = vec_new() as Bytes;
+    mut i = start;
+    while i < end {
+        byte_opt = vec_get(b, i);
+        if byte_opt != none {
+            drop vec_push(result, byte_opt as u8);
+        }
+        else {}
+        i += 1;
+    }
+
+    return result;
+}
+
+/// Find the first occurrence of pattern in Bytes.
+///
+/// Returns -1 if pattern is not found.
+fn find(b Bytes, pattern Bytes) Int {
+    if vec_len(pattern) == 0 {
+        return 0;
+    }
+    else {}
+
+    if vec_len(pattern) > vec_len(b) {
+        return -1;
+    }
+    else {}
+
+    mut i = 0;
+    max_start = vec_len(b) - vec_len(pattern);
+
+    while i <= max_start {
+        mut j = 0;
+        mut found = true;
+
+        while j < vec_len(pattern) {
+            b_opt = vec_get(b, i + j);
+            p_opt = vec_get(pattern, j);
+
+            if b_opt == none || p_opt == none || (b_opt as u8) != (p_opt as u8) {
+                found = false;
+                break;
+            }
+            else {}
+
+            j += 1;
+        }
+
+        if found {
+            return i;
+        }
+        else {}
+
+        i += 1;
+    }
+
+    return -1;
+}
+
+/// Check if Bytes contains a pattern.
+fn contains(b Bytes, pattern Bytes) Bool {
+    return find(b, pattern) != -1;
+}
+
+/// Check if Bytes starts with prefix.
+fn starts_with(b Bytes, prefix Bytes) Bool {
+    if vec_len(prefix) > vec_len(b) {
+        return false;
+    }
+    else {}
+
+    return find(slice(b, 0, vec_len(prefix)), prefix) == 0;
+}
+
+/// Check if Bytes ends with suffix.
+fn ends_with(b Bytes, suffix Bytes) Bool {
+    if vec_len(suffix) > vec_len(b) {
+        return false;
+    }
+    else {}
+
+    start = vec_len(b) - vec_len(suffix);
+    return find(slice(b, start, vec_len(suffix)), suffix) == 0;
+}
+
+/// Compare two Bytes arrays for equality.
+fn eq(a Bytes, b Bytes) Bool {
+    if vec_len(a) != vec_len(b) {
+        return false;
+    }
+    else {}
+
+    mut i = 0;
+    while i < vec_len(a) {
+        a_opt = vec_get(a, i);
+        b_opt = vec_get(b, i);
+
+        if a_opt == none || b_opt == none || (a_opt as u8) != (b_opt as u8) {
+            return false;
+        }
+        else {}
+
+        i += 1;
+    }
+
+    return true;
+}
+
+/// Concatenate two Bytes arrays.
+fn concat(a Bytes, b Bytes) Bytes {
+    mut result = vec_new() as Bytes;
+
+    for byte in a {
+        drop vec_push(result, byte);
+    }
+
+    for byte in b {
+        drop vec_push(result, byte);
+    }
+
+    return result;
+}
+
+/// Repeat a Bytes array n times.
+/// Returns empty Bytes if n <= 0.
+fn repeat(b Bytes, n Int) Bytes {
+    if n <= 0 {
+        return vec_new() as Bytes;
+    }
+    else {}
+
+    mut result = vec_new() as Bytes;
+    mut i = 0;
+
+    while i < n {
+        for byte in b {
+            drop vec_push(result, byte);
+        }
+        i += 1;
+    }
+
+    return result;
+}

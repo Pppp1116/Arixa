@@ -252,6 +252,17 @@ def to_python(
     if gpu_ir_payload.get('kernels'):
         lines.append("from astra.gpu.runtime import get_runtime as _astra_gpu_get_runtime")
     
+    # Generate import statements for modules
+    module_objects = {}
+    for item in prog.items:
+        if isinstance(item, ImportDecl):
+            alias = item.alias or ".".join(item.path)
+            module_objects[alias] = {}
+            # Store the import info for potential module object creation
+            if hasattr(item, 'module_functions'):
+                module_objects[alias] = item.module_functions
+                print(f"DEBUG: Found module functions for {alias}: {item.module_functions}")
+    
     lines += [
         "_astra_gpu_runtime = _astra_gpu_get_runtime() if '_astra_gpu_get_runtime' in globals() else None",
         "_astra_heap = {}",
@@ -762,21 +773,54 @@ def to_python(
         if not isinstance(item, FnDecl):
             continue
         fn_name = item.symbol or item.name
+        
+        # Check if this function belongs to a module
+        module_name = None
+        for import_item in prog.items:
+            if isinstance(import_item, ImportDecl):
+                alias = import_item.alias or ".".join(import_item.path)
+                # Check if this function is from the imported module
+                if hasattr(import_item, 'module_functions') and fn_name in import_item.module_functions:
+                    module_name = alias
+                    break
+        
         params = ", ".join(n for n, _ in item.params)
         param_types = [typ for _, typ in item.params]
-        if item.async_fn:
-            lines.append(f"async def {fn_name}({params}):")
+        if module_name:
+            # Generate as method on module object
+            lines.append(f"_astra_module_{module_name}.{fn_name} = lambda {params}:")
         else:
-            lines.append(f"def {fn_name}({params}):")
+            # Generate as regular function
+            if item.async_fn:
+                lines.append(f"async def {fn_name}({params}):")
+            else:
+                lines.append(f"def {fn_name}({params}):")
         lines.append("    try:")
         if not item.body:
-            lines.append("        pass")
+            if module_name:
+                lines.append("        pass")
+            else:
+                lines.append("        pass")
         for st in item.body:
-            lines.extend(_stmt_py(st, 2))
+            if module_name:
+                # For module functions, generate body as lambda return
+                body_lines = []
+                for stmt in st:
+                    body_lines.extend(_stmt_py(stmt, 2))
+                body_str = "\n".join(["        " + line for line in body_lines])
+                lines.append(f"        return {body_str.strip()}")
+            else:
+                lines.extend(_stmt_py(st, 2))
         lines.append("    except _AstraTryNone:")
-        lines.append("        return None")
+        if module_name:
+            lines.append("        return None")
+        else:
+            lines.append("        return None")
         lines.append("    except _AstraTryResultErr as __astra_err:")
-        lines.append("        return __astra_result_err(__astra_err.value)")
+        if module_name:
+            lines.append("        return __astra_result_err(__astra_err.value)")
+        else:
+            lines.append("        return __astra_result_err(__astra_err.value)")
         # Automatic cleanup handled by ownership system
         cuda_source, cuda_kernel_name = _emit_cuda_kernel_source(item, fn_name)
         if cuda_kernel_name and cuda_source:
@@ -797,6 +841,18 @@ def to_python(
         lines.append("    if inspect.isawaitable(_main_out):")
         lines.append("        _main_out = asyncio.run(_main_out)")
         lines.append("    raise SystemExit(_main_out if isinstance(_main_out, int) else 0)")
+    
+    # Create module objects to support module function calls
+    for alias, obj in module_objects.items():
+        lines.append(f"# Create module object for {alias}")
+        lines.append(f"_astra_module_{alias} = type('obj')")
+        if hasattr(obj, '__dict__'):
+            for fn_name, fn_obj in obj.__dict__.items():
+                if callable(fn_obj):
+                    lines.append(f"_astra_module_{alias}.{fn_name} = {fn_obj}")
+        else:
+            lines.append(f"# Module {alias} has no functions to expose")
+    
     return "\n".join(lines) + "\n"
 
 
@@ -1065,8 +1121,8 @@ def _expr(e: Any) -> str:
                     if isinstance(arg, Literal):
                         if isinstance(arg.value, (int, float, bool)):
                             exprs[i] = f"str({expr})"
-                    elif arg_type in {'Int', 'isize', 'usize', 'Float', 'f64', 'Bool'}:
-                        exprs[i] = f"str({expr})"
+                        elif arg_type in {'Int', 'isize', 'usize', 'Float', 'f64', 'Bool'}:
+                            exprs[i] = f"str({expr})"
                     # Handle boolean literals that might have lost type info
                     elif expr == "True" or expr == "False":
                         exprs[i] = f"str({expr})"
@@ -1077,7 +1133,6 @@ def _expr(e: Any) -> str:
             "leadingZeros",
             "__leadingZeros",
             "trailingZeros",
-            "__trailingZeros",
             "popcnt",
             "__popcnt",
             "clz",
@@ -1092,10 +1147,26 @@ def _expr(e: Any) -> str:
             return f"{name}({_expr(args[0])}, {_expr(args[1])}, {bits})"
         name = {"print": "print_", "format": "format_", "len": "len_"}.get(name, name)
         return f"{name}({', '.join(_expr(a) for a in args)})"
-    if isinstance(e, IndexExpr):
-        return f"({_expr(e.obj)})[{_expr(e.index)}]"
     if isinstance(e, FieldExpr):
-        return f"({_expr(e.obj)}).{e.field}"
+        # Handle module function calls like bytes.len(data)
+        obj_name = _expr(e.obj)
+        field_name = e.field
+        args_str = ', '.join(_expr(a) for a in e.args)
+        # Avoid conflicts with Python built-ins
+        safe_obj_name = obj_name
+        if obj_name in ('bytes', 'str', 'list', 'dict', 'int', 'float', 'bool'):
+            safe_obj_name = f"_astra_module_{obj_name}"
+        return f"{safe_obj_name}.{field_name}({args_str})"
+    if isinstance(e, MethodCall):
+        # Handle module function calls with arguments like bytes.len(data)
+        obj_name = _expr(e.obj)
+        method_name = e.method
+        args_str = ', '.join(_expr(a) for a in e.args)
+        # Avoid conflicts with Python built-ins
+        safe_obj_name = obj_name
+        if obj_name in ('bytes', 'str', 'list', 'dict', 'int', 'float', 'bool'):
+            safe_obj_name = f"_astra_module_{obj_name}"
+        return f"{safe_obj_name}.{method_name}({args_str})"
     if isinstance(e, ArrayLit):
         return f"[{', '.join(_expr(x) for x in e.elements)}]"
     if isinstance(e, StructLit):

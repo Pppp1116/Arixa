@@ -2421,6 +2421,18 @@ def _load_imported_program_items(
             continue
         sub_items, _ = _load_imported_program_items(str(resolved_path), sub, seen=seen)
         items.extend(sub_items)
+    
+    # Store module function information for codegen inlining
+    for item in imported_prog.items:
+        if isinstance(item, ImportDecl):
+            alias = item.alias or ".".join(item.path)
+            # Store module functions for codegen to use
+            if not hasattr(import_decl, 'module_functions'):
+                import_decl.module_functions = {}
+            for sub_item in imported_prog.items:
+                if isinstance(sub_item, FnDecl):
+                    import_decl.module_functions[sub_item.name] = sub_item
+    
     return items, resolved_path
 
 

@@ -1,14 +1,15 @@
 /// std.io - basic file I/O and printing helpers (hosted only).
-/// 
+///
 /// This module is only valid in hosted mode; freestanding builds must use the
 /// freestanding container and runtime-free APIs instead.
+
 /// Read text from `path`.
 fn read(path String) String {
     return read_file(path);
 }
 
 /// Write `data` to `path`.
-/// 
+///
 /// Returns a runtime status code.
 fn write(path String, data String) Int {
     return write_file(path, data);
@@ -20,20 +21,28 @@ fn exists(path String) Bool {
 }
 
 /// Remove file at `path`.
-/// 
+///
 /// Returns a runtime status code.
 fn remove(path String) Int {
     return __file_remove(path);
 }
 
-/// Read a file or return a fallback value if the file is empty or missing.
-fn read_or(path String, fallback String) String {
-    text = read(path);
-    if len(text) == 0 {
-        return fallback;
+/// Read a file only if it exists.
+/// Returns none when the path is missing.
+fn read_if_exists(path String) String? {
+    if !exists(path) {
+        return none;
     }
     else {}
-    return text;
+    return read(path);
+}
+
+/// Read a file or return a fallback value if the file is missing.
+///
+/// Note: an empty file is returned as an empty string, not as the fallback.
+fn read_or(path String, fallback String) String {
+    text = read_if_exists(path);
+    return text ?? fallback;
 }
 
 /// Print an Int value.
@@ -60,8 +69,7 @@ fn print_str(x String) {
     return;
 }
 
-/// Print any value using its JSON representation (including nullable and
-/// container types).
+/// Print any value using its JSON representation.
 fn print_any(v Any) {
     print(__to_json(v));
     return;

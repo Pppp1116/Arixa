@@ -1,0 +1,8 @@
+fn len_test(data Bytes) Int {
+    return vec_len(data);
+}
+
+fn main() Int {
+    data = vec_from([0x48, 0x65]) as Bytes;
+    return len_test(data);
+}
