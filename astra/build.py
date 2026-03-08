@@ -1127,7 +1127,8 @@ def build(
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         Path(out_path).write_text(out)
     elif target == "native":
-        assert llvm_ir is not None
+        if llvm_ir is None:
+            raise AssertionError
         _build_native_llvm(
             llvm_ir,
             out_path,

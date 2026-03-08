@@ -43,10 +43,13 @@ def assert_valid_llvm_ir(ir_text: str, *, triple: str | None = None, workdir: Pa
         Value described by the function return annotation.
     """
     text = ir_text.strip()
-    assert text, "LLVM IR output is empty"
-    assert "TODO" not in text
+    if not text:
+        raise AssertionError("LLVM IR output is empty")
+    if "TODO" in text:
+        raise AssertionError()
     if triple:
-        assert triple in text, f"missing module triple {triple!r}"
+        if triple not in text:
+            raise AssertionError(f"missing module triple {triple!r}")
 
     if binding is not None:
         _init_llvm_once()
@@ -64,4 +67,4 @@ def assert_valid_llvm_ir(ir_text: str, *, triple: str | None = None, workdir: Pa
         obj = Path(td) / "module.o"
         ll.write_text(ir_text)
         cp = subprocess.run([clang, "-c", str(ll), "-o", str(obj)], capture_output=True, text=True)
-        assert cp.returncode == 0, f"clang failed to compile LLVM IR: {cp.stderr or cp.stdout}"
+        if cp.returncode != 0: raise AssertionError(f"clang failed to compile LLVM IR: {cp.stderr or cp.stdout}")
