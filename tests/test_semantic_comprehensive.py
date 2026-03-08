@@ -458,11 +458,11 @@ class TestGenericAnalysis:
         """Test trait bounds analysis."""
         src = """
         trait Display {
-            fn display(self) String;
+            fn display(self: Self) String;
         }
         
-        fn print_value<T>(x: T) where T: Display {
-            return x.display();
+        fn print_value<T>(x: T) Void where T: Display {
+            x.display();
         }
         """
         prog = parse(src)

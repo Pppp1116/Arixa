@@ -897,16 +897,11 @@ class Parser:
                                 typ = str(ArbitraryIntType(signed=signed, width=bits))
                         else:
                             typ = name
-                if self.opt("<"):
-                    args = [type_text(self.parse_type())]
-                    while self.opt(","):
-                        args.append(type_text(self.parse_type()))
-                    self.eat(">")
-                    typ = f"{name}<{', '.join(args)}>"
-            while self.opt("?"):
-                typ = _normalize_union([typ, "none"])
+                else:
+                    self._err(f"expected type, got {self.cur().kind}")
+                    raise ParseError(self.errors[-1])
             return typ
-
+        
         parts = [type_text(parse_atom_type())]
         while self.opt("|"):
             parts.append(type_text(parse_atom_type()))

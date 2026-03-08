@@ -1158,15 +1158,14 @@ def _expr(e: Any) -> str:
         name = {"print": "print_", "format": "format_", "len": "len_"}.get(name, name)
         return f"{name}({', '.join(_expr(a) for a in args)})"
     if isinstance(e, FieldExpr):
-        # Handle module function calls like bytes.len(data)
+        # Handle field access like obj.field
         obj_name = _expr(e.obj)
         field_name = e.field
-        args_str = ', '.join(_expr(a) for a in e.args)
         # Avoid conflicts with Python built-ins
         safe_obj_name = obj_name
         if obj_name in ('bytes', 'str', 'list', 'dict', 'int', 'float', 'bool'):
             safe_obj_name = f"_astra_module_{obj_name}"
-        return f"{safe_obj_name}.{field_name}({args_str})"
+        return f"{safe_obj_name}.{field_name}"
     if isinstance(e, MethodCall):
         # Handle module function calls with arguments like bytes.len(data)
         obj_name = _expr(e.obj)

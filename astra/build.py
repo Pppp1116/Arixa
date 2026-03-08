@@ -666,6 +666,14 @@ _STRICT_BINARY_OPS = {
 }
 _STRICT_ASSIGN_OPS = {"=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="}
 
+_STRICT_EXPRS = {
+    Literal, BoolLit, NilLit, Name, Binary, Unary, Call, IndexExpr, FieldExpr, 
+    CastExpr, ArrayLit, StringInterpolation, WildcardPattern, OrPattern, 
+    GuardedPattern, EnhancedPattern, RangeExpr, TryExpr, AwaitExpr
+}
+
+_STRICT_STMTS = {LetStmt, AssignStmt, ReturnStmt, ExprStmt, IfStmt, WhileStmt, IteratorForStmt, MatchStmt}
+
 _STRICT_TOP_LEVEL = {FnDecl, StructDecl, EnumDecl, TraitDecl, TypeAliasDecl, ImportDecl, ExternFnDecl, LetStmt}
 
 
