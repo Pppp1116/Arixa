@@ -1,0 +1,32 @@
+/// std.atomic - runtime-backed atomic integer API.
+/// 
+/// Backed by the native runtime using sequentially consistent operations.
+struct AtomicInt {
+    handle Int,
+}
+
+/// Create an atomic integer wrapper.
+fn atomic_int_new(v Int) AtomicInt {
+    return AtomicInt(__atomic_int_new(v));
+}
+
+/// Load current value.
+fn atomic_load(a &AtomicInt) Int {
+    return __atomic_load(a.handle as Int);
+}
+
+/// Store value.
+fn atomic_store(a &mut AtomicInt, v Int) Int {
+    return __atomic_store(a.handle as Int, v);
+}
+
+/// Add `delta`, returning previous value.
+fn atomic_fetch_add(a &mut AtomicInt, delta Int) Int {
+    return __atomic_fetch_add(a.handle as Int, delta);
+}
+
+/// Compare-and-swap.
+/// Returns true when swap occurred.
+fn atomic_compare_exchange(a &mut AtomicInt, expected Int, desired Int) Bool {
+    return __atomic_compare_exchange(a.handle as Int, expected, desired);
+}

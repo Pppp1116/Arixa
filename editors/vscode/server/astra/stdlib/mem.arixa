@@ -1,0 +1,29 @@
+type Bytes = Vec<u8>;
+
+/// Fill a `Bytes` vector with a repeated byte value.
+/// 
+/// Returns the number of elements written.
+fn fill_bytes(buf Bytes, value u8) Int {
+    n = vec_len(buf);
+    mut i = 0;
+    while i < n {
+        vec_set(buf, i, value);
+        i += 1;
+    }
+    return n;
+}
+
+/// Copy from `src` into `dst` up to the shorter length.
+/// 
+/// Returns the number of elements copied.
+fn copy_bytes(dst Bytes, src Bytes) Int {
+    n_src = vec_len(src);
+    n_dst = vec_len(dst);
+    mut i = 0;
+    while i < n_src && i < n_dst {
+        b: Any = vec_get(src, i);
+        vec_set(dst, i, b as u8 | none ?? 0 as u8);
+        i += 1;
+    }
+    return i;
+}

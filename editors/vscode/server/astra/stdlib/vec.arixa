@@ -1,0 +1,22 @@
+/// std.vec - typed wrappers around the vector container API.
+/// 
+/// These helpers work in both hosted and freestanding builds.
+/// Create a new `Vec<T>`.
+fn vec_new_typed() Vec<T> {
+    return vec_new() as Vec<T>;
+}
+
+/// Return vector length.
+fn vec_len_typed(v Vec<T>) Int {
+    return vec_len(v);
+}
+
+/// Append one element to vector.
+fn vec_push_typed(v Vec<T>, value T) Int {
+    return vec_push(v, value);
+}
+
+/// Get an element by index as nullable.
+fn vec_get_typed(v Vec<T>, index Int) Any {
+    return vec_get(v, index);
+}

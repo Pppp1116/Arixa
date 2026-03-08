@@ -1,0 +1,51 @@
+@link("SDL2")
+extern fn SDL_Init(flags u32) i32;
+
+@link("SDL2")
+extern fn SDL_Quit();
+
+@link("SDL2")
+extern fn SDL_CreateWindow(title *u8, x i32, y i32, w i32, h i32, flags u32) *Void;
+
+@link("SDL2")
+extern fn SDL_DestroyWindow(win *Void);
+
+@link("SDL2")
+extern fn SDL_CreateRenderer(win *Void, index i32, flags u32) *Void;
+
+@link("SDL2")
+extern fn SDL_DestroyRenderer(renderer *Void);
+
+@link("SDL2")
+extern fn SDL_RenderClear(renderer *Void) i32;
+
+@link("SDL2")
+extern fn SDL_RenderPresent(renderer *Void);
+
+@link("SDL2")
+extern fn SDL_SetRenderDrawColor(renderer *Void, r u8, g u8, b u8, a u8) i32;
+
+@link("SDL2")
+extern fn SDL_Delay(ms u32);
+
+@link("SDL2")
+extern fn SDL_GetError() *u8;
+
+@link("SDL2")
+extern fn SDL_PollEvent(event *Void) i32;
+
+SDL_INIT_VIDEO: u32 = 32 as u32;
+
+SDL_INIT_AUDIO: u32 = 16 as u32;
+
+SDL_INIT_EVERYTHING: u32 = 65535 as u32;
+
+SDL_WINDOWPOS_CENTERED: i32 = 805240832 as i32;
+
+SDL_WINDOWPOS_UNDEFINED: i32 = 536805376 as i32;
+
+SDL_WINDOW_SHOWN: u32 = 4 as u32;
+
+SDL_WINDOW_RESIZABLE: u32 = 32 as u32;
+
+SDL_QUIT: u32 = 256 as u32;

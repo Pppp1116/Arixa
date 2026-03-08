@@ -2,7 +2,7 @@
   "name": "arixa-language",
   "displayName": "Astra Language",
   "description": "Complete VS Code support for Astra with enhanced syntax highlighting, IntelliSense, package management, and GPU development tools.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "icon": "images/arixa.png",
   "publisher": "arixa-lang",
   "engines": {

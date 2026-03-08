@@ -1,0 +1,101 @@
+type MemoryBarrier = Int;
+
+const MEMORY_BARRIER_FULL = 0;
+
+const MEMORY_BARRIER_READ = 1;
+
+const MEMORY_BARRIER_WRITE = 2;
+
+/// Memory barrier to ensure memory operation ordering.
+/// 
+/// This is a compiler intrinsic that prevents reordering of memory operations.
+fn memory_barrier(barrier_type MemoryBarrier) {}
+
+/// Atomic memory operations without runtime dependencies.
+/// Note: For full atomic operations, use std.atomic instead.
+/// CPU pause instruction to yield in spin loops.
+fn cpu_pause() {}
+
+/// Read CPU cycle counter (if available).
+/// 
+/// Returns `none` if cycle counter not supported.
+fn read_cycle_counter() Int | none {
+    return none;
+}
+
+/// Read timestamp counter in nanoseconds (if available).
+/// 
+/// Returns `none` if not supported.
+fn read_timestamp() Int | none {
+    return none;
+}
+
+/// Bit manipulation utilities for hardware registers.
+/// Set bit `n` in `value`.
+fn bit_set(value Int, n Int) Int {
+    return value | 1 << n;
+}
+
+/// Clear bit `n` in `value`.
+fn bit_clear(value Int, n Int) Int {
+    return value & ~(1 << n);
+}
+
+/// Toggle bit `n` in `value`.
+fn bit_toggle(value Int, n Int) Int {
+    return value ^ 1 << n;
+}
+
+/// Check if bit `n` is set in `value`.
+fn bit_is_set(value Int, n Int) Bool {
+    return (value & 1 << n) != 0;
+}
+
+/// Extract bits `hi:lo` from `value`.
+fn bit_extract(value Int, hi Int, lo Int) Int {
+    mask = (1 << hi - lo + 1) - 1;
+    return value >> lo & mask;
+}
+
+/// Insert `field` into bits `hi:lo` of `value`.
+fn bit_insert(value Int, field Int, hi Int, lo Int) Int {
+    mask = (1 << hi - lo + 1) - 1 << lo;
+    return value & ~mask | field << lo & mask;
+}
+
+/// Common hardware register field operations.
+/// Read a memory-mapped register.
+fn read_reg(addr &Int) Int {
+    return *addr;
+}
+
+/// Write to a memory-mapped register with memory barrier.
+fn write_reg(addr &mut Int, value Int) {
+    *addr = value;
+    memory_barrier(MEMORY_BARRIER_FULL);
+}
+
+/// Read-modify-write a register with memory barriers.
+fn modify_reg(addr &mut Int, mask Int, value Int) {
+    old = read_reg(addr);
+    new = old & ~mask | value & mask;
+    write_reg(addr, new);
+}
+
+/// Wait for a register field to match `expected` with timeout.
+fn wait_for_reg_field(addr &Int, mask Int, expected Int, timeout Int) Bool {
+    start = __monotonic_ms();
+    while __monotonic_ms() - start < timeout {
+        current = read_reg(addr);
+        if (current & mask) == expected {
+            return true;
+        }
+        else {}
+        __sleep_ms(1);
+    }
+    return false;
+}
+
+extern fn __monotonic_ms() Int;
+
+extern fn __sleep_ms(ms Int);

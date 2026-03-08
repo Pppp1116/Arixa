@@ -1,0 +1,13 @@
+type c_int = i32;
+
+type c_uint = u32;
+
+type c_char = i8;
+
+type c_void = Void;
+
+type size_t = usize;
+
+type intptr_t = isize;
+
+type uintptr_t = usize;
