@@ -254,10 +254,12 @@ def to_python(
     
     # Generate import statements for modules
     module_objects = {}
+    module_function_attachments = {}  # Track which functions to attach to which modules
     for item in prog.items:
         if isinstance(item, ImportDecl):
             alias = item.alias or ".".join(item.path)
             module_objects[alias] = {}
+            module_function_attachments[alias] = []
             # Store the import info for potential module object creation
             if hasattr(item, 'module_functions'):
                 module_objects[alias] = item.module_functions
@@ -784,11 +786,28 @@ def to_python(
                     module_name = alias
                     break
         
+        
+        # Check if this function belongs to a module
+        module_name = None
+        for import_item in prog.items:
+            if isinstance(import_item, ImportDecl):
+                alias = import_item.alias or ".".join(import_item.path)
+                # Check if this function is from the imported module
+                if hasattr(import_item, 'module_functions') and fn_name in import_item.module_functions:
+                    module_name = alias
+                    break
+        
         params = ", ".join(n for n, _ in item.params)
         param_types = [typ for _, typ in item.params]
         if module_name:
-            # Generate as method on module object
-            lines.append(f"_astra_module_{module_name}.{fn_name} = lambda {params}:")
+            # Generate as standalone function for module
+            safe_fn_name = f"__astra_mod_{module_name}_{fn_name}"
+            if item.async_fn:
+                lines.append(f"async def {safe_fn_name}({params}):")
+            else:
+                lines.append(f"def {safe_fn_name}({params}):")
+            # Track this function for attachment
+            module_function_attachments[module_name].append((fn_name, safe_fn_name))
         else:
             # Generate as regular function
             if item.async_fn:
@@ -797,18 +816,11 @@ def to_python(
                 lines.append(f"def {fn_name}({params}):")
         lines.append("    try:")
         if not item.body:
-            if module_name:
-                lines.append("        pass")
-            else:
-                lines.append("        pass")
+            lines.append("        pass")
         for st in item.body:
             if module_name:
-                # For module functions, generate body as lambda return
-                body_lines = []
-                for stmt in st:
-                    body_lines.extend(_stmt_py(stmt, 2))
-                body_str = "\n".join(["        " + line for line in body_lines])
-                lines.append(f"        return {body_str.strip()}")
+                # For module functions, just generate the body directly
+                lines.extend(_stmt_py(st, 2))
             else:
                 lines.extend(_stmt_py(st, 2))
         lines.append("    except _AstraTryNone:")
@@ -835,23 +847,21 @@ def to_python(
             lines.append(
                 f"else: setattr({cuda_kernel_name}, '__astra_gpu_kernel__', True); setattr({cuda_kernel_name}, '__astra_gpu_name__', {item.name!r}); setattr({cuda_kernel_name}, '__astra_gpu_symbol__', {fn_name!r})"
             )
+    # Create module namespace objects and attach functions BEFORE main execution
+    lines.append("from types import SimpleNamespace")
+    for alias, functions in module_function_attachments.items():
+        if functions:  # Only create if there are functions to attach
+            lines.append(f"# Create module namespace for {alias}")
+            lines.append(f"_astra_module_{alias} = SimpleNamespace()")
+            for fn_name, safe_fn_name in functions:
+                lines.append(f"_astra_module_{alias}.{fn_name} = {safe_fn_name}")
+    
     if emit_entrypoint and not freestanding:
         lines.append("if __name__ == '__main__':")
         lines.append(f"    _main_out = {main_entry}()")
         lines.append("    if inspect.isawaitable(_main_out):")
         lines.append("        _main_out = asyncio.run(_main_out)")
         lines.append("    raise SystemExit(_main_out if isinstance(_main_out, int) else 0)")
-    
-    # Create module objects to support module function calls
-    for alias, obj in module_objects.items():
-        lines.append(f"# Create module object for {alias}")
-        lines.append(f"_astra_module_{alias} = type('obj')")
-        if hasattr(obj, '__dict__'):
-            for fn_name, fn_obj in obj.__dict__.items():
-                if callable(fn_obj):
-                    lines.append(f"_astra_module_{alias}.{fn_name} = {fn_obj}")
-        else:
-            lines.append(f"# Module {alias} has no functions to expose")
     
     return "\n".join(lines) + "\n"
 

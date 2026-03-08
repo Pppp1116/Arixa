@@ -25,6 +25,7 @@ ASTRA is a modern, statically-typed programming language with a full compiler pi
 - Coalesce operator: `value ?? default`
 - Automatic type conversions (Int ↔ i64)
 - Standalone functions (impl blocks removed)
+- **Optimized Any Type**: Zero-overhead dynamic typing when not used
 
 ### Type System
 - **Integers**: `Int` (default), `i8/i16/i32/i64/i128`, `u8/u16/u32/u64/u128`
@@ -32,6 +33,7 @@ ASTRA is a modern, statically-typed programming language with a full compiler pi
 - **Collections**: `Vec<T>`, `[T; N]`, `&[T]`, `&mut [T]`
 - **Union Types**: `A | B | C`, nullable `T?`
 - **References**: `&T`, `&mut T`
+- **Dynamic**: `Any` - opt-in runtime feature with zero overhead for typed code
 
 ## Installation
 
@@ -162,9 +164,11 @@ For more information, see the [Error Reporting Guide](docs/error_reporting.md).
 - **Error Reporting**: `docs/error_reporting.md`
 - **Language Specification**: `docs/language/specification.md`
 - **Language Reference**: `docs/language/`
+  - **Any Type Optimization**: `docs/language/any_type_optimization.md`
 - **Standard Library**: `docs/stdlib/`
 - **Compiler Internals**: `docs/compiler/`
 - **GPU Development**: `docs/gpu/`
+- **Performance Analysis**: `docs/performance-analysis.md`
 - **Tooling & VS Code**: `docs/tools/`
 - **Development Guide**: `docs/development/`
 - **Reference Materials**: `docs/reference/`

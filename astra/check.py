@@ -1101,7 +1101,7 @@ def _collect_stmt_decl_names(body: list, out: set[str]) -> None:
         if isinstance(st, LetStmt):
             out.add(st.name)
         if isinstance(st, IteratorForStmt):
-            out.add(st.var)
+            out.add(st.var_name)
             _collect_stmt_decl_names(st.body, out)
         elif isinstance(st, IfStmt):
             _collect_stmt_decl_names(st.then_body, out)
@@ -1420,8 +1420,8 @@ def _performance_warnings(body: list, filename: str, source_text: str) -> list[D
                     # Check for nested for loops that might be accessing 2D arrays
                     # This is a simplified detection - a full implementation would need
                     # more sophisticated analysis of array access patterns
-                    outer_var = st.var
-                    inner_var = next_st.var
+                    outer_var = st.var_name
+                    inner_var = next_st.var_name
                     
                     # Look for array access patterns in the inner loop body
                     for inner_stmt in next_st.body:

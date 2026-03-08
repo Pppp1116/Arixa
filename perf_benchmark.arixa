@@ -1,0 +1,18 @@
+fn fib(n Int) Int {
+    if n <= 1 {
+        return n;
+    }
+    else {}
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn main() Int {
+    print("Starting performance benchmark");
+    
+    // Use larger input for more meaningful timing
+    result = fib(40);
+    print("Fibonacci(40) = ");
+    print(result);
+    
+    return 0;
+}

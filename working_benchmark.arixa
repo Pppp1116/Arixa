@@ -1,0 +1,69 @@
+fn fib(n Int) Int {
+    if n <= 1 {
+        return n;
+    }
+    else {}
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn matrix_multiply(size Int) Int {
+    mut sum = 0;
+    mut i = 0;
+    while i < size {
+        mut j = 0;
+        while j < size {
+            mut k = 0;
+            while k < size {
+                sum = sum + (i * j * k);
+                k = k + 1;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return sum;
+}
+
+fn prime_count(limit Int) Int {
+    mut count = 0;
+    mut num = 2;
+    while num < limit {
+        mut is_prime = true;
+        mut i = 2;
+        while i * i <= num {
+            if num % i == 0 {
+                is_prime = false;
+                break;
+            }
+            i = i + 1;
+        }
+        if is_prime {
+            count = count + 1;
+        }
+        num = num + 1;
+    }
+    return count;
+}
+
+fn main() Int {
+    print("Starting ASTRA Performance Benchmarks");
+    
+    // Benchmark 1: Fibonacci (recursive)
+    fib_result = fib(35);
+    print("Fibonacci(35) = ");
+    print(fib_result);
+    
+    // Benchmark 2: Matrix operations
+    matrix_result = matrix_multiply(30);
+    print("Matrix multiply 30x30 = ");
+    print(matrix_result);
+    
+    // Benchmark 3: Prime counting
+    prime_result = prime_count(1000);
+    print("Prime count up to 1000 = ");
+    print(prime_result);
+    
+    print("Benchmarks completed");
+    
+    return 0;
+}

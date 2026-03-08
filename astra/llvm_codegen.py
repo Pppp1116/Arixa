@@ -745,7 +745,7 @@ def _explicit_cast_value(ctx: _ModuleCtx, state: _FnState, v: ir.Value, from_ty:
         if lf.width > lt.width:
             return b.trunc(v, lt)
         if lf.width < lt.width:
-            if _is_signed_int(to_c):
+            if _is_signed_int(from_c):
                 return b.sext(v, lt)
             return b.zext(v, lt)
         return v
@@ -1031,11 +1031,29 @@ def _get_string_global(ctx: _ModuleCtx, text: str) -> ir.GlobalVariable:
     return g
 
 
+def _needs_any_runtime(prog: Program) -> bool:
+    """Check if Any runtime support is needed."""
+    any_usage = getattr(prog, "any_usage", None)
+    if any_usage is None:
+        return False
+    return any_usage.needs_any_runtime()
+
+
 def _declare_runtime(ctx: _ModuleCtx, name: str) -> ir.Function:
     if name in ctx.fn_map:
         fn = ctx.fn_map[name]
         if isinstance(fn, ir.Function):
             return fn
+    
+    # Check if Any runtime is needed
+    prog = getattr(ctx, 'prog', None)
+    if prog and _needs_any_runtime(prog):
+        # Any runtime is available
+        pass
+    elif name.startswith("astra_any_") or name in {"astra_list_new", "astra_map_new", "astra_list_push", "astra_list_get", "astra_list_set", "astra_list_len", "astra_map_has", "astra_map_get", "astra_map_set"}:
+        # Any runtime not needed, raise error for Any functions
+        raise CodegenError(f"Any runtime function '{name}' used but Any support not required. Use typed containers instead.")
+    
     i64 = ir.IntType(64)
     i128 = ir.IntType(128)
     i8p = ir.IntType(8).as_pointer()
@@ -2841,6 +2859,34 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
             if not isinstance(llty, ir.IntType):
                 llty = ir.IntType(64)
                 t = "Int"
+            
+            # For arbitrary integer types, mask the value to the correct bit width
+            if isinstance(llty, ir.IntType) and llty.width < 64:
+                bits = llty.width
+                # Get type info to determine signedness
+                int_info = _int_info(t)
+                if int_info:
+                    _, signed = int_info
+                    if not signed:
+                        # For unsigned types, mask to the bit width
+                        masked_value = e.value & ((1 << bits) - 1)
+                        return _Value(ir.Constant(llty, masked_value), t)
+                    else:
+                        # For signed types, ensure proper sign extension
+                        # Convert to signed integer with proper range
+                        min_val = -(1 << (bits - 1))
+                        max_val = (1 << (bits - 1)) - 1
+                        if e.value > max_val:
+                            # Handle case where positive value exceeds signed range
+                            # This can happen with literals like 5u3 that get treated as signed
+                            # Convert to two's complement representation
+                            masked_value = e.value & ((1 << bits) - 1)
+                            if masked_value >= (1 << (bits - 1)):
+                                # Convert to negative value for LLVM signed constant
+                                signed_value = masked_value - (1 << bits)
+                                return _Value(ir.Constant(llty, signed_value), t)
+                        return _Value(ir.Constant(llty, int(e.value)), t)
+            
             return _Value(ir.Constant(llty, int(e.value)), t)
         if isinstance(e.value, float):
             t = _expr_type(state, e)
@@ -2988,7 +3034,28 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
                 bits, signed = int_info
                 # Create constant with target type directly, avoiding i64->target truncation
                 target_llty = ir.IntType(bits)
-                return _Value(ir.Constant(target_llty, int(e.expr.value)), dst_ty)
+                literal_value = e.expr.value
+                
+                
+                if not signed:
+                    # For unsigned types, mask to the bit width
+                    masked_value = literal_value & ((1 << bits) - 1)
+                    print(f"  -> creating unsigned constant: ir.Constant({target_llty}, {masked_value})")
+                    result = _Value(ir.Constant(target_llty, masked_value), dst_ty)
+                    print(f"  -> result constant: {result.value}")
+                    return result
+                else:
+                    # For signed types, check range and handle overflow
+                    min_val = -(1 << (bits - 1))
+                    max_val = (1 << (bits - 1)) - 1
+                    if literal_value > max_val:
+                        # Convert to two's complement representation
+                        masked_value = literal_value & ((1 << bits) - 1)
+                        if masked_value >= (1 << (bits - 1)):
+                            # Convert to negative value for LLVM signed constant
+                            signed_value = masked_value - (1 << bits)
+                            return _Value(ir.Constant(target_llty, signed_value), dst_ty)
+                    return _Value(ir.Constant(target_llty, literal_value), dst_ty)
         
         if isinstance(e.expr, Call) and isinstance(e.expr.fn, Name):
             base = e.expr.fn.value[2:] if e.expr.fn.value.startswith("__") else e.expr.fn.value
@@ -4765,6 +4832,9 @@ def to_llvm_ir(
         string_globals={},
         ffi_libs=set(getattr(prog, "ffi_libs", set())),
     )
+    
+    # Store program reference for Any runtime checking
+    ctx.prog = prog
 
     _build_structs(ctx, prog)
     user_fns, user_main_key = _declare_functions(ctx, prog, freestanding=freestanding)

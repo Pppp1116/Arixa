@@ -34,6 +34,10 @@ typedef unsigned __int128 u128;
 #error "Astra LLVM runtime requires compiler support for __int128"
 #endif
 
+#if !defined(NDEBUG) || defined(ASTRA_ENABLE_ANY_RUNTIME)
+// Forward declaration
+static void astra_trap(void);
+
 typedef struct AllocNode {
   void *ptr;
   struct AllocNode *next;
@@ -95,11 +99,193 @@ static void astra_untrack_ptr(void *p) {
     cur = cur->next;
   }
 }
+#else
+// In release builds (NDEBUG defined), disable allocation tracking
+#define astra_track_ptr(p) ((void)0)
+#define astra_untrack_ptr(p) ((void)0)
+#endif
+
+#if defined(ASTRA_ENABLE_ANY_RUNTIME)
+typedef enum {
+  ASTRA_ANY_NONE = 0,
+  ASTRA_ANY_INT = 1,
+  ASTRA_ANY_BOOL = 2,
+  ASTRA_ANY_FLOAT = 3,
+  ASTRA_ANY_STR = 4,
+  ASTRA_ANY_PTR = 5,
+  ASTRA_ANY_LIST = 6,
+  ASTRA_ANY_MAP = 7,
+} AstraAnyTag;
+
+typedef struct {
+  AstraAnyTag tag;
+  union {
+    int64_t i64;
+    double f64;
+    uintptr_t ptr;
+    _Bool b;
+  } value;
+  uint32_t generation;  // Generation counter for handle validation
+  bool live;            // Whether this slot is in use
+} AstraAnySlot;
+
+typedef struct {
+  AstraAnySlot *slots;
+  size_t capacity;
+  size_t next_free;     // Index of next free slot to try
+  uint32_t next_generation;
+} AstraAnySlotTable;
+
+static AstraAnySlotTable g_any_table = {NULL, 0, 0, 1};
+
+static bool astra_any_table_reserve(size_t min_capacity) {
+  if (g_any_table.capacity >= min_capacity) {
+    return true;
+  }
+  size_t next = g_any_table.capacity == 0 ? 16 : g_any_table.capacity * 2;
+  while (next < min_capacity) {
+    next *= 2;
+  }
+  AstraAnySlot *p = (AstraAnySlot *)realloc(g_any_table.slots, next * sizeof(AstraAnySlot));
+  if (p == NULL) {
+    return false;
+  }
+  // Initialize new slots
+  for (size_t i = g_any_table.capacity; i < next; i++) {
+    p[i].live = false;
+    p[i].generation = 0;
+  }
+  g_any_table.slots = p;
+  g_any_table.capacity = next;
+  return true;
+}
+
+static uintptr_t astra_any_alloc_slot(AstraAnyTag tag) {
+  if (!astra_any_table_reserve(g_any_table.next_free + 1)) {
+    return 0;
+  }
+  
+  // Find the next available slot
+  size_t start = g_any_table.next_free;
+  for (size_t i = start; i < g_any_table.capacity; i++) {
+    if (!g_any_table.slots[i].live) {
+      g_any_table.slots[i].live = true;
+      g_any_table.slots[i].tag = tag;
+      g_any_table.slots[i].generation = g_any_table.next_generation++;
+      g_any_table.slots[i].value.ptr = 0;
+      g_any_table.next_free = i + 1;
+      
+      // Pack slot index and generation into handle
+      uintptr_t handle = ((uintptr_t)g_any_table.slots[i].generation << 32) | (uintptr_t)i;
+      return handle;
+    }
+  }
+  
+  // If we didn't find one, wrap around and check from beginning
+  for (size_t i = 0; i < start; i++) {
+    if (!g_any_table.slots[i].live) {
+      g_any_table.slots[i].live = true;
+      g_any_table.slots[i].tag = tag;
+      g_any_table.slots[i].generation = g_any_table.next_generation++;
+      g_any_table.slots[i].value.ptr = 0;
+      g_any_table.next_free = i + 1;
+      
+      uintptr_t handle = ((uintptr_t)g_any_table.slots[i].generation << 32) | (uintptr_t)i;
+      return handle;
+    }
+  }
+  
+  // No free slots available
+  return 0;
+}
+
+static AstraAnySlot *astra_any_find_slot(uintptr_t handle) {
+  size_t slot_index = (size_t)(handle & 0xFFFFFFFF);
+  uint32_t generation = (uint32_t)(handle >> 32);
+  
+  if (slot_index >= g_any_table.capacity) {
+    return NULL;
+  }
+  
+  AstraAnySlot *slot = &g_any_table.slots[slot_index];
+  if (!slot->live || slot->generation != generation) {
+    return NULL;
+  }
+  
+  return slot;
+}
+
+static void astra_any_free_slot(uintptr_t handle) {
+  size_t slot_index = (size_t)(handle & 0xFFFFFFFF);
+  uint32_t generation = (uint32_t)(handle >> 32);
+  
+  if (slot_index >= g_any_table.capacity) {
+    return;
+  }
+  
+  AstraAnySlot *slot = &g_any_table.slots[slot_index];
+  if (slot->live && slot->generation == generation) {
+    slot->live = false;
+    slot->generation = 0;
+    if (slot_index < g_any_table.next_free) {
+      g_any_table.next_free = slot_index;
+    }
+  }
+}
+
+static AstraAnySlot *astra_any_expect(uintptr_t handle) {
+  AstraAnySlot *slot = astra_any_find_slot(handle);
+  if (slot == NULL) {
+    astra_trap();
+  }
+  return slot;
+}
+
+// Hash function for Any values (for dynamic maps)
+static uint64_t astra_hash_any(uintptr_t any_value) {
+  AstraAnySlot *slot = astra_any_find_slot(any_value);
+  if (slot == NULL) return 0;
+  
+  uint64_t hash = 14695981039346656037ULL;
+  
+  switch (slot->tag) {
+  case ASTRA_ANY_INT:
+    // Hash the int64 value directly
+    for (int i = 0; i < 8; i++) {
+      hash ^= ((uint8_t *)&slot->value.i64)[i];
+      hash *= 1099511628211ULL;
+    }
+    break;
+  case ASTRA_ANY_STR: {
+    // Hash the string content
+    const char *str = (const char *)slot->value.ptr;
+    if (str) {
+      for (size_t i = 0; str[i]; i++) {
+        hash ^= (uint8_t)str[i];
+        hash *= 1099511628211ULL;
+      }
+    }
+    break;
+  }
+  default:
+    // For other types, hash the handle value
+    for (int i = 0; i < 8; i++) {
+      hash ^= ((uint8_t *)&any_value)[i];
+      hash *= 1099511628211ULL;
+    }
+    break;
+  }
+  
+  return hash;
+}
+#endif
 
 static void *astra_heap_alloc(size_t n) {
   size_t want = n == 0 ? 1 : n;
   void *p = malloc(want);
+#if !defined(NDEBUG) || defined(ASTRA_ENABLE_ANY_RUNTIME)
   astra_track_ptr(p);
+#endif
   return p;
 }
 
@@ -170,7 +356,9 @@ uintptr_t astra_alloc(uintptr_t size, uintptr_t align) {
     return 0;
   }
 #endif
+#if !defined(NDEBUG) || defined(ASTRA_ENABLE_ANY_RUNTIME)
   astra_track_ptr(p);
+#endif
   return (uintptr_t)p;
 }
 
@@ -179,7 +367,9 @@ void astra_free(uintptr_t ptr, uintptr_t size, uintptr_t align) {
   (void)align;
   if (ptr != 0) {
     void *p = (void *)ptr;
+#if !defined(NDEBUG) || defined(ASTRA_ENABLE_ANY_RUNTIME)
     astra_untrack_ptr(p);
+#endif
 #if defined(_WIN32)
     _aligned_free(p);
 #else
@@ -215,94 +405,194 @@ typedef struct {
   uintptr_t *vals;
 } AstraMap;
 
+// Hash table entry for dynamic Any maps
 typedef struct {
-  uintptr_t handle;
+  uint64_t hash;
+  uintptr_t key;
+  uintptr_t value;
+  bool occupied;
+} AnyMapEntry;
+
+typedef struct {
+  AnyMapEntry *entries;
+  size_t capacity;
+  size_t size;
+  size_t mask;  // capacity - 1, for fast modulo
+} AstraAnyMap;
+
+// Typed collections for fast native operations
+typedef struct {
+  size_t len;
+  size_t cap;
+  int64_t *items;  // Direct storage for Int vectors
+} AstraIntVector;
+
+typedef struct {
+  size_t len;
+  size_t cap;
+  double *items;  // Direct storage for Float vectors
+} AstraFloatVector;
+
+typedef struct {
+  size_t len;
+  size_t cap;
+  char **items;  // Direct storage for String vectors
+} AstraStringVector;
+
+// Hash table entry for typed maps
+typedef struct {
+  uint64_t hash;
+  int64_t key;
+  int64_t value;
+  bool occupied;
+} IntMapEntry;
+
+typedef struct {
+  IntMapEntry *entries;
+  size_t capacity;
+  size_t size;
+  size_t mask;  // capacity - 1, for fast modulo
+} AstraIntMap;
+
+// Simple hash function for int64_t keys
+static uint64_t astra_hash_int64(int64_t key) {
+  // Use FNV-1a hash on the bytes of the int64_t
+  uint64_t hash = 14695981039346656037ULL;
+  uint8_t *bytes = (uint8_t *)&key;
+  for (int i = 0; i < 8; i++) {
+    hash ^= bytes[i];
+    hash *= 1099511628211ULL;
+  }
+  return hash;
+}
+
+// Find next power of 2 for hash table sizing
+static size_t astra_next_pow2(size_t n) {
+  if (n <= 1) return 2;
+  n--;
+  n |= n >> 1;
+  n |= n >> 2;
+  n |= n >> 4;
+  n |= n >> 8;
+  n |= n >> 16;
+  n |= n >> 32;
+  return n + 1;
+}
+
+typedef struct {
   int kind;
   void *ptr;
-} ObjEntry;
+  uint32_t generation;  // Generation counter for handle validation
+  bool live;            // Whether this slot is in use
+} ObjSlot;
 
-static ObjEntry *g_objs = NULL;
-static size_t g_objs_len = 0;
-static size_t g_objs_cap = 0;
-static uintptr_t g_next_handle = 0x7000000000000001ULL;
+typedef struct {
+  ObjSlot *slots;
+  size_t capacity;
+  size_t next_free;     // Index of next free slot to try
+  uint32_t next_generation;
+} ObjSlotTable;
+
+static ObjSlotTable g_obj_table = {NULL, 0, 0, 1};
 
 enum {
   OBJ_KIND_LIST = 1,
   OBJ_KIND_MAP = 2,
 };
 
-typedef enum {
-  ASTRA_ANY_NONE = 0,
-  ASTRA_ANY_INT = 1,
-  ASTRA_ANY_BOOL = 2,
-  ASTRA_ANY_FLOAT = 3,
-  ASTRA_ANY_STR = 4,
-  ASTRA_ANY_PTR = 5,
-  ASTRA_ANY_LIST = 6,
-  ASTRA_ANY_MAP = 7,
-} AstraAnyTag;
-
-typedef struct {
-  uintptr_t handle;
-  AstraAnyTag tag;
-  union {
-    int64_t i64;
-    double f64;
-    uintptr_t ptr;
-    _Bool b;
-  } value;
-} AstraAnyEntry;
-
-static AstraAnyEntry *g_any = NULL;
-static size_t g_any_len = 0;
-static size_t g_any_cap = 0;
-static uintptr_t g_next_any_handle = 0x5000000000000001ULL;
-
-static bool astra_any_reserve(size_t want) {
-  if (g_any_cap >= want) {
+static bool astra_obj_table_reserve(size_t min_capacity) {
+  if (g_obj_table.capacity >= min_capacity) {
     return true;
   }
-  size_t next = g_any_cap == 0 ? 16 : g_any_cap * 2;
-  while (next < want) {
+  size_t next = g_obj_table.capacity == 0 ? 8 : g_obj_table.capacity * 2;
+  while (next < min_capacity) {
     next *= 2;
   }
-  AstraAnyEntry *p = (AstraAnyEntry *)realloc(g_any, next * sizeof(AstraAnyEntry));
+  ObjSlot *p = (ObjSlot *)realloc(g_obj_table.slots, next * sizeof(ObjSlot));
   if (p == NULL) {
     return false;
   }
-  g_any = p;
-  g_any_cap = next;
+  // Initialize new slots
+  for (size_t i = g_obj_table.capacity; i < next; i++) {
+    p[i].live = false;
+    p[i].generation = 0;
+  }
+  g_obj_table.slots = p;
+  g_obj_table.capacity = next;
   return true;
 }
 
-static AstraAnyEntry *astra_any_find(uintptr_t handle) {
-  for (size_t i = 0; i < g_any_len; i++) {
-    if (g_any[i].handle == handle) {
-      return &g_any[i];
-    }
-  }
-  return NULL;
-}
-
-static uintptr_t astra_any_alloc(AstraAnyTag tag) {
-  if (!astra_any_reserve(g_any_len + 1)) {
+static uintptr_t astra_obj_add_slot(int kind, void *ptr) {
+  if (!astra_obj_table_reserve(g_obj_table.next_free + 1)) {
     return 0;
   }
-  uintptr_t h = g_next_any_handle;
-  g_next_any_handle += 2;
-  g_any[g_any_len].handle = h;
-  g_any[g_any_len].tag = tag;
-  g_any[g_any_len].value.ptr = 0;
-  g_any_len += 1;
-  return h;
+  
+  // Find the next available slot
+  size_t start = g_obj_table.next_free;
+  for (size_t i = start; i < g_obj_table.capacity; i++) {
+    if (!g_obj_table.slots[i].live) {
+      g_obj_table.slots[i].live = true;
+      g_obj_table.slots[i].kind = kind;
+      g_obj_table.slots[i].ptr = ptr;
+      g_obj_table.slots[i].generation = g_obj_table.next_generation++;
+      g_obj_table.next_free = i + 1;
+      
+      // Pack slot index and generation into handle
+      uintptr_t handle = ((uintptr_t)g_obj_table.slots[i].generation << 32) | (uintptr_t)i;
+      return handle;
+    }
+  }
+  
+  // If we didn't find one, wrap around and check from beginning
+  for (size_t i = 0; i < start; i++) {
+    if (!g_obj_table.slots[i].live) {
+      g_obj_table.slots[i].live = true;
+      g_obj_table.slots[i].kind = kind;
+      g_obj_table.slots[i].ptr = ptr;
+      g_obj_table.slots[i].generation = g_obj_table.next_generation++;
+      g_obj_table.next_free = i + 1;
+      
+      uintptr_t handle = ((uintptr_t)g_obj_table.slots[i].generation << 32) | (uintptr_t)i;
+      return handle;
+    }
+  }
+  
+  // No free slots available
+  return 0;
 }
 
-static AstraAnyEntry *astra_any_expect(uintptr_t handle) {
-  AstraAnyEntry *entry = astra_any_find(handle);
-  if (entry == NULL) {
-    astra_trap();
+static ObjSlot *astra_obj_find_slot(uintptr_t handle) {
+  size_t slot_index = (size_t)(handle & 0xFFFFFFFF);
+  uint32_t generation = (uint32_t)(handle >> 32);
+  
+  if (slot_index >= g_obj_table.capacity) {
+    return NULL;
   }
-  return entry;
+  
+  ObjSlot *slot = &g_obj_table.slots[slot_index];
+  if (!slot->live || slot->generation != generation) {
+    return NULL;
+  }
+  
+  return slot;
+}
+
+static void astra_obj_free_slot(uintptr_t handle) {
+  size_t slot_index = (size_t)(handle & 0xFFFFFFFF);
+  uint32_t generation = (uint32_t)(handle >> 32);
+  
+  if (slot_index >= g_obj_table.capacity) {
+    return;
+  }
+  
+  ObjSlot *slot = &g_obj_table.slots[slot_index];
+  if (slot->live && slot->generation == generation) {
+    slot->live = false;
+    slot->generation = 0;
+    if (slot_index < g_obj_table.next_free) {
+      g_obj_table.next_free = slot_index;
+    }
+  }
 }
 
 static int64_t astra_sat_f64_to_i64(double v) {
@@ -321,78 +611,79 @@ static int64_t astra_sat_f64_to_i64(double v) {
   return (int64_t)trunc(v);
 }
 
+#if defined(ASTRA_ENABLE_ANY_RUNTIME)
 uintptr_t astra_any_box_i64(int64_t value) {
-  uintptr_t h = astra_any_alloc(ASTRA_ANY_INT);
+  uintptr_t h = astra_any_alloc_slot(ASTRA_ANY_INT);
   if (h == 0) {
     return 0;
   }
-  AstraAnyEntry *entry = astra_any_expect(h);
-  entry->value.i64 = value;
+  AstraAnySlot *slot = astra_any_expect(h);
+  slot->value.i64 = value;
   return h;
 }
 
 uintptr_t astra_any_box_bool(_Bool value) {
-  uintptr_t h = astra_any_alloc(ASTRA_ANY_BOOL);
+  uintptr_t h = astra_any_alloc_slot(ASTRA_ANY_BOOL);
   if (h == 0) {
     return 0;
   }
-  AstraAnyEntry *entry = astra_any_expect(h);
-  entry->value.b = value ? 1 : 0;
+  AstraAnySlot *slot = astra_any_expect(h);
+  slot->value.b = value ? 1 : 0;
   return h;
 }
 
 uintptr_t astra_any_box_f64(double value) {
-  uintptr_t h = astra_any_alloc(ASTRA_ANY_FLOAT);
+  uintptr_t h = astra_any_alloc_slot(ASTRA_ANY_FLOAT);
   if (h == 0) {
     return 0;
   }
-  AstraAnyEntry *entry = astra_any_expect(h);
-  entry->value.f64 = value;
+  AstraAnySlot *slot = astra_any_expect(h);
+  slot->value.f64 = value;
   return h;
 }
 
 uintptr_t astra_any_box_str(uintptr_t value) {
-  uintptr_t h = astra_any_alloc(ASTRA_ANY_STR);
+  uintptr_t h = astra_any_alloc_slot(ASTRA_ANY_STR);
   if (h == 0) {
     return 0;
   }
-  AstraAnyEntry *entry = astra_any_expect(h);
+  AstraAnySlot *entry = astra_any_expect(h);
   entry->value.ptr = value;
   return h;
 }
 
 uintptr_t astra_any_box_ptr(uintptr_t value) {
-  uintptr_t h = astra_any_alloc(ASTRA_ANY_PTR);
+  uintptr_t h = astra_any_alloc_slot(ASTRA_ANY_PTR);
   if (h == 0) {
     return 0;
   }
-  AstraAnyEntry *entry = astra_any_expect(h);
+  AstraAnySlot *entry = astra_any_expect(h);
   entry->value.ptr = value;
   return h;
 }
 
 static uintptr_t astra_any_box_obj(AstraAnyTag tag, uintptr_t handle) {
-  uintptr_t h = astra_any_alloc(tag);
+  uintptr_t h = astra_any_alloc_slot(tag);
   if (h == 0) {
     return 0;
   }
-  AstraAnyEntry *entry = astra_any_expect(h);
+  AstraAnySlot *entry = astra_any_expect(h);
   entry->value.ptr = handle;
   return h;
 }
 
 uintptr_t astra_any_box_none(void) {
-  uintptr_t h = astra_any_alloc(ASTRA_ANY_NONE);
+  uintptr_t h = astra_any_alloc_slot(ASTRA_ANY_NONE);
   if (h == 0) {
     return 0;
   }
-  AstraAnyEntry *entry = astra_any_expect(h);
+  AstraAnySlot *entry = astra_any_expect(h);
   entry->value.ptr = 0;
   return h;
 }
 
 int64_t astra_any_to_i64(uintptr_t value) {
-  AstraAnyEntry *entry = astra_any_expect(value);
+  AstraAnySlot *entry = astra_any_expect(value);
   if (entry->tag == ASTRA_ANY_INT) {
     return entry->value.i64;
   }
@@ -407,7 +698,7 @@ int64_t astra_any_to_i64(uintptr_t value) {
 }
 
 _Bool astra_any_to_bool(uintptr_t value) {
-  AstraAnyEntry *entry = astra_any_expect(value);
+  AstraAnySlot *entry = astra_any_expect(value);
   if (entry->tag == ASTRA_ANY_BOOL) {
     return entry->value.b ? 1 : 0;
   }
@@ -422,12 +713,12 @@ _Bool astra_any_to_bool(uintptr_t value) {
 }
 
 _Bool astra_any_is_none(uintptr_t value) {
-  AstraAnyEntry *entry = astra_any_expect(value);
+  AstraAnySlot *entry = astra_any_expect(value);
   return entry->tag == ASTRA_ANY_NONE ? 1 : 0;
 }
 
 double astra_any_to_f64(uintptr_t value) {
-  AstraAnyEntry *entry = astra_any_expect(value);
+  AstraAnySlot *entry = astra_any_expect(value);
   if (entry->tag == ASTRA_ANY_FLOAT) {
     return entry->value.f64;
   }
@@ -442,7 +733,7 @@ double astra_any_to_f64(uintptr_t value) {
 }
 
 uintptr_t astra_any_to_str(uintptr_t value) {
-  AstraAnyEntry *entry = astra_any_expect(value);
+  AstraAnySlot *entry = astra_any_expect(value);
   if (entry->tag == ASTRA_ANY_STR) {
     return entry->value.ptr;
   }
@@ -451,7 +742,7 @@ uintptr_t astra_any_to_str(uintptr_t value) {
 }
 
 uintptr_t astra_any_to_ptr(uintptr_t value) {
-  AstraAnyEntry *entry = astra_any_expect(value);
+  AstraAnySlot *entry = astra_any_expect(value);
   if (entry->tag == ASTRA_ANY_PTR || entry->tag == ASTRA_ANY_LIST || entry->tag == ASTRA_ANY_MAP) {
     return entry->value.ptr;
   }
@@ -463,8 +754,8 @@ static _Bool astra_any_equal(uintptr_t a, uintptr_t b) {
   if (a == b) {
     return 1;
   }
-  AstraAnyEntry *ea = astra_any_find(a);
-  AstraAnyEntry *eb = astra_any_find(b);
+  AstraAnySlot *ea = astra_any_find_slot(a);
+  AstraAnySlot *eb = astra_any_find_slot(b);
   if (ea == NULL || eb == NULL) {
     return 0;
   }
@@ -505,62 +796,6 @@ static _Bool astra_any_equal(uintptr_t a, uintptr_t b) {
   }
 }
 
-static bool astra_obj_reserve(size_t want) {
-  if (g_objs_cap >= want) {
-    return true;
-  }
-  size_t next = g_objs_cap == 0 ? 8 : g_objs_cap * 2;
-  while (next < want) {
-    next *= 2;
-  }
-  ObjEntry *p = (ObjEntry *)realloc(g_objs, next * sizeof(ObjEntry));
-  if (p == NULL) {
-    return false;
-  }
-  g_objs = p;
-  g_objs_cap = next;
-  return true;
-}
-
-static uintptr_t astra_obj_add(int kind, void *ptr) {
-  if (!astra_obj_reserve(g_objs_len + 1)) {
-    return 0;
-  }
-  uintptr_t h = g_next_handle;
-  g_next_handle += 2;
-  g_objs[g_objs_len].handle = h;
-  g_objs[g_objs_len].kind = kind;
-  g_objs[g_objs_len].ptr = ptr;
-  g_objs_len += 1;
-  return h;
-}
-
-static ObjEntry *astra_obj_find(uintptr_t handle) {
-  for (size_t i = 0; i < g_objs_len; i++) {
-    if (g_objs[i].handle == handle) {
-      return &g_objs[i];
-    }
-  }
-  return NULL;
-}
-
-static bool astra_list_reserve(AstraList *xs, size_t want) {
-  if (xs->cap >= want) {
-    return true;
-  }
-  size_t next = xs->cap == 0 ? 8 : xs->cap * 2;
-  while (next < want) {
-    next *= 2;
-  }
-  uintptr_t *p = (uintptr_t *)realloc(xs->items, next * sizeof(uintptr_t));
-  if (p == NULL) {
-    return false;
-  }
-  xs->items = p;
-  xs->cap = next;
-  return true;
-}
-
 static bool astra_map_reserve(AstraMap *m, size_t want) {
   if (m->cap >= want) {
     return true;
@@ -584,27 +819,27 @@ static bool astra_map_reserve(AstraMap *m, size_t want) {
 }
 
 static AstraList *astra_expect_list(uintptr_t list_any) {
-  AstraAnyEntry *any = astra_any_expect(list_any);
+  AstraAnySlot *any = astra_any_expect(list_any);
   if (any->tag != ASTRA_ANY_LIST) {
     astra_trap();
   }
-  ObjEntry *e = astra_obj_find(any->value.ptr);
-  if (e == NULL || e->kind != OBJ_KIND_LIST) {
+  ObjSlot *slot = astra_obj_find_slot(any->value.ptr);
+  if (slot == NULL || slot->kind != OBJ_KIND_LIST) {
     astra_trap();
   }
-  return (AstraList *)e->ptr;
+  return (AstraList *)slot->ptr;
 }
 
 static AstraMap *astra_expect_map(uintptr_t map_any) {
-  AstraAnyEntry *any = astra_any_expect(map_any);
+  AstraAnySlot *any = astra_any_expect(map_any);
   if (any->tag != ASTRA_ANY_MAP) {
     astra_trap();
   }
-  ObjEntry *e = astra_obj_find(any->value.ptr);
-  if (e == NULL || e->kind != OBJ_KIND_MAP) {
+  ObjSlot *slot = astra_obj_find_slot(any->value.ptr);
+  if (slot == NULL || slot->kind != OBJ_KIND_MAP) {
     astra_trap();
   }
-  return (AstraMap *)e->ptr;
+  return (AstraMap *)slot->ptr;
 }
 
 uintptr_t astra_list_new(void) {
@@ -612,11 +847,28 @@ uintptr_t astra_list_new(void) {
   if (xs == NULL) {
     return 0;
   }
-  uintptr_t obj_h = astra_obj_add(OBJ_KIND_LIST, xs);
+  uintptr_t obj_h = astra_obj_add_slot(OBJ_KIND_LIST, xs);
   if (obj_h == 0) {
     return 0;
   }
   return astra_any_box_obj(ASTRA_ANY_LIST, obj_h);
+}
+
+static bool astra_list_reserve(AstraList *xs, size_t want) {
+  if (xs->cap >= want) {
+    return true;
+  }
+  size_t next = xs->cap == 0 ? 8 : xs->cap * 2;
+  while (next < want) {
+    next *= 2;
+  }
+  uintptr_t *p = (uintptr_t *)realloc(xs->items, next * sizeof(uintptr_t));
+  if (p == NULL) {
+    return false;
+  }
+  xs->items = p;
+  xs->cap = next;
+  return true;
 }
 
 uintptr_t astra_list_push(uintptr_t list_h, uintptr_t value) {
@@ -657,7 +909,7 @@ uintptr_t astra_map_new(void) {
   if (m == NULL) {
     return 0;
   }
-  uintptr_t obj_h = astra_obj_add(OBJ_KIND_MAP, m);
+  uintptr_t obj_h = astra_obj_add_slot(OBJ_KIND_MAP, m);
   if (obj_h == 0) {
     return 0;
   }
@@ -701,8 +953,292 @@ uintptr_t astra_map_set(uintptr_t map_h, uintptr_t key, uintptr_t value) {
   return 0;
 }
 
+// ============================================================================
+// TYPED COLLECTION OPERATIONS (Fast Native Path)
+// ============================================================================
+
+// Int Vector operations
+static AstraIntVector *astra_int_vector_new(size_t initial_cap) {
+  AstraIntVector *vec = (AstraIntVector *)malloc(sizeof(AstraIntVector));
+  if (vec == NULL) return NULL;
+  
+  vec->len = 0;
+  vec->cap = initial_cap > 0 ? initial_cap : 8;
+  vec->items = (int64_t *)malloc(vec->cap * sizeof(int64_t));
+  if (vec->items == NULL) {
+    free(vec);
+    return NULL;
+  }
+  
+  return vec;
+}
+
+static bool astra_int_vector_reserve(AstraIntVector *vec, size_t new_cap) {
+  if (vec->cap >= new_cap) return true;
+  
+  size_t next = vec->cap * 2;
+  while (next < new_cap) next *= 2;
+  
+  int64_t *new_items = (int64_t *)realloc(vec->items, next * sizeof(int64_t));
+  if (new_items == NULL) return false;
+  
+  vec->items = new_items;
+  vec->cap = next;
+  return true;
+}
+
+static bool astra_int_vector_push(AstraIntVector *vec, int64_t value) {
+  if (!astra_int_vector_reserve(vec, vec->len + 1)) return false;
+  vec->items[vec->len++] = value;
+  return true;
+}
+
+static int64_t astra_int_vector_get(AstraIntVector *vec, size_t index) {
+  if (index >= vec->len) return 0;  // Bounds check
+  return vec->items[index];
+}
+
+static void astra_int_vector_free(AstraIntVector *vec) {
+  if (vec) {
+    free(vec->items);
+    free(vec);
+  }
+}
+
+// Int Map operations (hash table)
+static AstraIntMap *astra_int_map_new(size_t initial_cap) {
+  AstraIntMap *map = (AstraIntMap *)malloc(sizeof(AstraIntMap));
+  if (map == NULL) return NULL;
+  
+  size_t cap = astra_next_pow2(initial_cap > 0 ? initial_cap : 8);
+  map->entries = (IntMapEntry *)calloc(cap, sizeof(IntMapEntry));
+  if (map->entries == NULL) {
+    free(map);
+    return NULL;
+  }
+  
+  map->capacity = cap;
+  map->size = 0;
+  map->mask = cap - 1;
+  return map;
+}
+
+static IntMapEntry *astra_int_map_find_entry(AstraIntMap *map, int64_t key) {
+  uint64_t hash = astra_hash_int64(key);
+  size_t index = hash & map->mask;
+  
+  // Linear probing
+  for (size_t i = 0; i < map->capacity; i++) {
+    size_t pos = (index + i) & map->mask;
+    IntMapEntry *entry = &map->entries[pos];
+    
+    if (!entry->occupied) return entry;  // Empty slot
+    if (entry->hash == hash && entry->key == key) return entry;  // Found
+  }
+  
+  return NULL;  // Table full
+}
+
+static bool astra_int_map_resize(AstraIntMap *map, size_t new_cap) {
+  new_cap = astra_next_pow2(new_cap);
+  
+  IntMapEntry *new_entries = (IntMapEntry *)calloc(new_cap, sizeof(IntMapEntry));
+  if (new_entries == NULL) return false;
+  
+  // Rehash all entries
+  for (size_t i = 0; i < map->capacity; i++) {
+    IntMapEntry *old_entry = &map->entries[i];
+    if (old_entry->occupied) {
+      size_t index = old_entry->hash & (new_cap - 1);
+      
+      for (size_t j = 0; j < new_cap; j++) {
+        size_t pos = (index + j) & (new_cap - 1);
+        IntMapEntry *new_entry = &new_entries[pos];
+        if (!new_entry->occupied) {
+          *new_entry = *old_entry;
+          break;
+        }
+      }
+    }
+  }
+  
+  free(map->entries);
+  map->entries = new_entries;
+  map->capacity = new_cap;
+  map->mask = new_cap - 1;
+  return true;
+}
+
+static bool astra_int_map_set(AstraIntMap *map, int64_t key, int64_t value) {
+  if (map->size * 2 > map->capacity) {
+    if (!astra_int_map_resize(map, map->capacity * 2)) return false;
+  }
+  
+  IntMapEntry *entry = astra_int_map_find_entry(map, key);
+  if (entry == NULL) return false;  // Shouldn't happen with proper resizing
+  
+  if (!entry->occupied) {
+    entry->hash = astra_hash_int64(key);
+    entry->key = key;
+    map->size++;
+  }
+  
+  entry->value = value;
+  entry->occupied = true;
+  return true;
+}
+
+static bool astra_int_map_get(AstraIntMap *map, int64_t key, int64_t *out_value) {
+  uint64_t hash = astra_hash_int64(key);
+  size_t index = hash & map->mask;
+  
+  for (size_t i = 0; i < map->capacity; i++) {
+    size_t pos = (index + i) & map->mask;
+    IntMapEntry *entry = &map->entries[pos];
+    
+    if (!entry->occupied) return false;
+    if (entry->hash == hash && entry->key == key) {
+      *out_value = entry->value;
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+static bool astra_int_map_has(AstraIntMap *map, int64_t key) {
+  int64_t dummy;
+  return astra_int_map_get(map, key, &dummy);
+}
+
+static void astra_int_map_free(AstraIntMap *map) {
+  if (map) {
+    free(map->entries);
+    free(map);
+  }
+}
+
+#if defined(ASTRA_ENABLE_ANY_RUNTIME)
+// ============================================================================
+// OPTIMIZED DYNAMIC COLLECTION OPERATIONS (Hash Tables)
+// ============================================================================
+
+// Optimized dynamic map operations using hash tables
+static AstraAnyMap *astra_any_map_new(size_t initial_cap) {
+  AstraAnyMap *map = (AstraAnyMap *)malloc(sizeof(AstraAnyMap));
+  if (map == NULL) return NULL;
+  
+  size_t cap = astra_next_pow2(initial_cap > 0 ? initial_cap : 8);
+  map->entries = (AnyMapEntry *)calloc(cap, sizeof(AnyMapEntry));
+  if (map->entries == NULL) {
+    free(map);
+    return NULL;
+  }
+  
+  map->capacity = cap;
+  map->size = 0;
+  map->mask = cap - 1;
+  return map;
+}
+
+static AnyMapEntry *astra_any_map_find_entry(AstraAnyMap *map, uintptr_t key) {
+  uint64_t hash = astra_hash_any(key);
+  size_t index = hash & map->mask;
+  
+  // Linear probing
+  for (size_t i = 0; i < map->capacity; i++) {
+    size_t pos = (index + i) & map->mask;
+    AnyMapEntry *entry = &map->entries[pos];
+    
+    if (!entry->occupied) return entry;  // Empty slot
+    if (entry->hash == hash && astra_any_equal(entry->key, key)) return entry;  // Found
+  }
+  
+  return NULL;  // Table full
+}
+
+static bool astra_any_map_resize(AstraAnyMap *map, size_t new_cap) {
+  new_cap = astra_next_pow2(new_cap);
+  
+  AnyMapEntry *new_entries = (AnyMapEntry *)calloc(new_cap, sizeof(AnyMapEntry));
+  if (new_entries == NULL) return false;
+  
+  // Rehash all entries
+  for (size_t i = 0; i < map->capacity; i++) {
+    AnyMapEntry *old_entry = &map->entries[i];
+    if (old_entry->occupied) {
+      size_t index = old_entry->hash & (new_cap - 1);
+      
+      for (size_t j = 0; j < new_cap; j++) {
+        size_t pos = (index + j) & (new_cap - 1);
+        AnyMapEntry *new_entry = &new_entries[pos];
+        if (!new_entry->occupied) {
+          *new_entry = *old_entry;
+          break;
+        }
+      }
+    }
+  }
+  
+  free(map->entries);
+  map->entries = new_entries;
+  map->capacity = new_cap;
+  map->mask = new_cap - 1;
+  return true;
+}
+
+static bool astra_any_map_set(AstraAnyMap *map, uintptr_t key, uintptr_t value) {
+  if (map->size * 2 > map->capacity) {
+    if (!astra_any_map_resize(map, map->capacity * 2)) return false;
+  }
+  
+  AnyMapEntry *entry = astra_any_map_find_entry(map, key);
+  if (entry == NULL) return false;  // Shouldn't happen with proper resizing
+  
+  if (!entry->occupied) {
+    entry->hash = astra_hash_any(key);
+    entry->key = key;
+    map->size++;
+  }
+  
+  entry->value = value;
+  entry->occupied = true;
+  return true;
+}
+
+static bool astra_any_map_get(AstraAnyMap *map, uintptr_t key, uintptr_t *out_value) {
+  uint64_t hash = astra_hash_any(key);
+  size_t index = hash & map->mask;
+  
+  for (size_t i = 0; i < map->capacity; i++) {
+    size_t pos = (index + i) & map->mask;
+    AnyMapEntry *entry = &map->entries[pos];
+    
+    if (!entry->occupied) return false;
+    if (entry->hash == hash && astra_any_equal(entry->key, key)) {
+      *out_value = entry->value;
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+static bool astra_any_map_has(AstraAnyMap *map, uintptr_t key) {
+  uintptr_t dummy;
+  return astra_any_map_get(map, key, &dummy);
+}
+
+static void astra_any_map_free(AstraAnyMap *map) {
+  if (map) {
+    free(map->entries);
+    free(map);
+  }
+}
+#endif
+
 uintptr_t astra_len_any(uintptr_t v) {
-  AstraAnyEntry *entry = astra_any_find(v);
+  AstraAnySlot *entry = astra_any_find_slot(v);
   if (entry == NULL) {
     return 0;
   }
@@ -720,6 +1256,7 @@ uintptr_t astra_len_any(uintptr_t v) {
   }
   return 0;
 }
+#endif
 
 uintptr_t astra_len_str(uintptr_t s) {
   if (s == 0) {
@@ -873,6 +1410,7 @@ static void astra_load_cli_args(void) {
 #endif
 }
 
+#if defined(ASTRA_ENABLE_ANY_RUNTIME)
 uintptr_t astra_args(void) {
   astra_load_cli_args();
   uintptr_t h = astra_list_new();
@@ -881,6 +1419,7 @@ uintptr_t astra_args(void) {
   }
   return h;
 }
+#endif
 
 uintptr_t astra_arg(uintptr_t i) {
   astra_load_cli_args();
@@ -895,26 +1434,418 @@ typedef struct {
   uintptr_t value;
   bool joined;
   bool has_thread;
+  uint32_t generation;  // Generation counter for handle validation
+  bool live;            // Whether this slot is in use
 #if defined(_WIN32)
   HANDLE thread;
 #else
   pthread_t thread;
 #endif
-  bool used;
-} SpawnEntry;
+} SpawnSlot;
 
-static SpawnEntry *g_spawn = NULL;
-static size_t g_spawn_cap = 0;
-static uintptr_t g_next_tid = 1;
+typedef struct {
+  SpawnSlot *slots;
+  size_t capacity;
+  size_t next_free;     // Index of next free slot to try
+  uint32_t next_generation;
+  bool initialized;     // Lazy initialization flag
+} SpawnSlotTable;
+
+static SpawnSlotTable g_spawn_table = {NULL, 0, 0, 1, false};
+
+typedef struct {
+  bool used;
+  uint32_t generation;  // Generation counter for handle validation
+  bool live;            // Whether this slot is in use
 #if defined(_WIN32)
-static SRWLOCK g_spawn_lock = SRWLOCK_INIT;
-#define ASTRA_SPAWN_LOCK() AcquireSRWLockExclusive(&g_spawn_lock)
-#define ASTRA_SPAWN_UNLOCK() ReleaseSRWLockExclusive(&g_spawn_lock)
+  SRWLOCK lock;
 #else
-static pthread_mutex_t g_spawn_lock = PTHREAD_MUTEX_INITIALIZER;
-#define ASTRA_SPAWN_LOCK() ((void)pthread_mutex_lock(&g_spawn_lock))
-#define ASTRA_SPAWN_UNLOCK() ((void)pthread_mutex_unlock(&g_spawn_lock))
+  pthread_mutex_t lock;
 #endif
+} MutexSlot;
+
+typedef struct {
+  MutexSlot *slots;
+  size_t capacity;
+  size_t next_free;     // Index of next free slot to try
+  uint32_t next_generation;
+  bool initialized;     // Lazy initialization flag
+} MutexSlotTable;
+
+static MutexSlotTable g_mutex_table = {NULL, 0, 0, 1, false};
+
+typedef struct {
+  bool used;
+  bool closed;
+  size_t head;
+  size_t len;
+  size_t cap;
+  uintptr_t *items;
+  uint32_t generation;  // Generation counter for handle validation
+  bool live;            // Whether this slot is in use
+#if defined(_WIN32)
+  SRWLOCK lock;
+  CONDITION_VARIABLE cv;
+#else
+  pthread_mutex_t lock;
+  pthread_cond_t cv;
+#endif
+} ChanSlot;
+
+typedef struct {
+  ChanSlot *slots;
+  size_t capacity;
+  size_t next_free;     // Index of next free slot to try
+  uint32_t next_generation;
+  bool initialized;     // Lazy initialization flag
+} ChanSlotTable;
+
+static ChanSlotTable g_chan_table = {NULL, 0, 0, 1, false};
+
+// ============================================================================
+// LAZY THREADING SLOT TABLE OPERATIONS
+// ============================================================================
+
+// Generic slot table operations (shared between spawn, mutex, chan)
+static bool astra_slot_table_reserve(void **table_ptr, size_t *capacity_ptr, size_t element_size, size_t min_capacity) {
+  size_t current_cap = *capacity_ptr;
+  if (current_cap >= min_capacity) {
+    return true;
+  }
+  size_t next = current_cap == 0 ? 8 : current_cap * 2;
+  while (next < min_capacity) {
+    next *= 2;
+  }
+  
+  void *new_table = realloc(*table_ptr, next * element_size);
+  if (new_table == NULL) {
+    return false;
+  }
+  
+  // Initialize new slots
+  char *bytes = (char *)new_table;
+  for (size_t i = current_cap; i < next; i++) {
+    // Set live to false and generation to 0 for all new slots
+    bool *live_ptr = (bool *)(bytes + i * element_size + offsetof(SpawnSlot, live));
+    uint32_t *gen_ptr = (uint32_t *)(bytes + i * element_size + offsetof(SpawnSlot, generation));
+    *live_ptr = false;
+    *gen_ptr = 0;
+  }
+  
+  *table_ptr = new_table;
+  *capacity_ptr = next;
+  return true;
+}
+
+// Spawn slot table operations
+static bool astra_spawn_table_init(void) {
+  if (g_spawn_table.initialized) {
+    return true;
+  }
+  
+  // Initialize with a small initial capacity
+  g_spawn_table.slots = (SpawnSlot *)calloc(8, sizeof(SpawnSlot));
+  if (g_spawn_table.slots == NULL) {
+    return false;
+  }
+  
+  g_spawn_table.capacity = 8;
+  g_spawn_table.next_free = 0;
+  g_spawn_table.next_generation = 1;
+  g_spawn_table.initialized = true;
+  return true;
+}
+
+static uintptr_t astra_spawn_alloc_slot(void) {
+  if (!g_spawn_table.initialized && !astra_spawn_table_init()) {
+    return 0;
+  }
+  
+  if (!astra_slot_table_reserve((void **)&g_spawn_table.slots, &g_spawn_table.capacity, 
+                               sizeof(SpawnSlot), g_spawn_table.next_free + 1)) {
+    return 0;
+  }
+  
+  // Find the next available slot
+  size_t start = g_spawn_table.next_free;
+  for (size_t i = start; i < g_spawn_table.capacity; i++) {
+    if (!g_spawn_table.slots[i].live) {
+      g_spawn_table.slots[i].live = true;
+      g_spawn_table.slots[i].generation = g_spawn_table.next_generation++;
+      g_spawn_table.slots[i].value = 0;
+      g_spawn_table.slots[i].joined = false;
+      g_spawn_table.slots[i].has_thread = false;
+      g_spawn_table.next_free = i + 1;
+      
+      // Pack slot index and generation into handle
+      uintptr_t handle = ((uintptr_t)g_spawn_table.slots[i].generation << 32) | (uintptr_t)i;
+      return handle;
+    }
+  }
+  
+  // If we didn't find one, wrap around and check from beginning
+  for (size_t i = 0; i < start; i++) {
+    if (!g_spawn_table.slots[i].live) {
+      g_spawn_table.slots[i].live = true;
+      g_spawn_table.slots[i].generation = g_spawn_table.next_generation++;
+      g_spawn_table.slots[i].value = 0;
+      g_spawn_table.slots[i].joined = false;
+      g_spawn_table.slots[i].has_thread = false;
+      g_spawn_table.next_free = i + 1;
+      
+      uintptr_t handle = ((uintptr_t)g_spawn_table.slots[i].generation << 32) | (uintptr_t)i;
+      return handle;
+    }
+  }
+  
+  // No free slots available
+  return 0;
+}
+
+static SpawnSlot *astra_spawn_find_slot(uintptr_t handle) {
+  if (!g_spawn_table.initialized) {
+    return NULL;
+  }
+  
+  size_t slot_index = (size_t)(handle & 0xFFFFFFFF);
+  uint32_t generation = (uint32_t)(handle >> 32);
+  
+  if (slot_index >= g_spawn_table.capacity) {
+    return NULL;
+  }
+  
+  SpawnSlot *slot = &g_spawn_table.slots[slot_index];
+  if (!slot->live || slot->generation != generation) {
+    return NULL;
+  }
+  
+  return slot;
+}
+
+static void astra_spawn_free_slot(uintptr_t handle) {
+  if (!g_spawn_table.initialized) {
+    return;
+  }
+  
+  size_t slot_index = (size_t)(handle & 0xFFFFFFFF);
+  uint32_t generation = (uint32_t)(handle >> 32);
+  
+  if (slot_index >= g_spawn_table.capacity) {
+    return;
+  }
+  
+  SpawnSlot *slot = &g_spawn_table.slots[slot_index];
+  if (slot->live && slot->generation == generation) {
+    slot->live = false;
+    slot->generation = 0;
+    if (slot_index < g_spawn_table.next_free) {
+      g_spawn_table.next_free = slot_index;
+    }
+  }
+}
+
+// Mutex slot table operations
+static bool astra_mutex_table_init(void) {
+  if (g_mutex_table.initialized) {
+    return true;
+  }
+  
+  g_mutex_table.slots = (MutexSlot *)calloc(8, sizeof(MutexSlot));
+  if (g_mutex_table.slots == NULL) {
+    return false;
+  }
+  
+  g_mutex_table.capacity = 8;
+  g_mutex_table.next_free = 0;
+  g_mutex_table.next_generation = 1;
+  g_mutex_table.initialized = true;
+  return true;
+}
+
+static uintptr_t astra_mutex_alloc_slot(void) {
+  if (!g_mutex_table.initialized && !astra_mutex_table_init()) {
+    return 0;
+  }
+  
+  if (!astra_slot_table_reserve((void **)&g_mutex_table.slots, &g_mutex_table.capacity, 
+                               sizeof(MutexSlot), g_mutex_table.next_free + 1)) {
+    return 0;
+  }
+  
+  size_t start = g_mutex_table.next_free;
+  for (size_t i = start; i < g_mutex_table.capacity; i++) {
+    if (!g_mutex_table.slots[i].live) {
+      g_mutex_table.slots[i].live = true;
+      g_mutex_table.slots[i].generation = g_mutex_table.next_generation++;
+      g_mutex_table.slots[i].used = false;
+#if defined(_WIN32)
+      InitializeSRWLock(&g_mutex_table.slots[i].lock);
+#else
+      pthread_mutex_init(&g_mutex_table.slots[i].lock, NULL);
+#endif
+      g_mutex_table.next_free = i + 1;
+      
+      uintptr_t handle = ((uintptr_t)g_mutex_table.slots[i].generation << 32) | (uintptr_t)i;
+      return handle;
+    }
+  }
+  
+  for (size_t i = 0; i < start; i++) {
+    if (!g_mutex_table.slots[i].live) {
+      g_mutex_table.slots[i].live = true;
+      g_mutex_table.slots[i].generation = g_mutex_table.next_generation++;
+      g_mutex_table.slots[i].used = false;
+#if defined(_WIN32)
+      InitializeSRWLock(&g_mutex_table.slots[i].lock);
+#else
+      pthread_mutex_init(&g_mutex_table.slots[i].lock, NULL);
+#endif
+      g_mutex_table.next_free = i + 1;
+      
+      uintptr_t handle = ((uintptr_t)g_mutex_table.slots[i].generation << 32) | (uintptr_t)i;
+      return handle;
+    }
+  }
+  
+  return 0;
+}
+
+static MutexSlot *astra_mutex_find_slot(uintptr_t handle) {
+  if (!g_mutex_table.initialized) {
+    return NULL;
+  }
+  
+  size_t slot_index = (size_t)(handle & 0xFFFFFFFF);
+  uint32_t generation = (uint32_t)(handle >> 32);
+  
+  if (slot_index >= g_mutex_table.capacity) {
+    return NULL;
+  }
+  
+  MutexSlot *slot = &g_mutex_table.slots[slot_index];
+  if (!slot->live || slot->generation != generation) {
+    return NULL;
+  }
+  
+  return slot;
+}
+
+// Channel slot table operations
+static bool astra_chan_table_init(void) {
+  if (g_chan_table.initialized) {
+    return true;
+  }
+  
+  g_chan_table.slots = (ChanSlot *)calloc(8, sizeof(ChanSlot));
+  if (g_chan_table.slots == NULL) {
+    return false;
+  }
+  
+  g_chan_table.capacity = 8;
+  g_chan_table.next_free = 0;
+  g_chan_table.next_generation = 1;
+  g_chan_table.initialized = true;
+  return true;
+}
+
+static uintptr_t astra_chan_alloc_slot(void) {
+  if (!g_chan_table.initialized && !astra_chan_table_init()) {
+    return 0;
+  }
+  
+  if (!astra_slot_table_reserve((void **)&g_chan_table.slots, &g_chan_table.capacity, 
+                               sizeof(ChanSlot), g_chan_table.next_free + 1)) {
+    return 0;
+  }
+  
+  size_t start = g_chan_table.next_free;
+  for (size_t i = start; i < g_chan_table.capacity; i++) {
+    if (!g_chan_table.slots[i].live) {
+      g_chan_table.slots[i].live = true;
+      g_chan_table.slots[i].generation = g_chan_table.next_generation++;
+      g_chan_table.slots[i].used = false;
+      g_chan_table.slots[i].closed = false;
+      g_chan_table.slots[i].head = 0;
+      g_chan_table.slots[i].len = 0;
+      g_chan_table.slots[i].cap = 0;
+      g_chan_table.slots[i].items = NULL;
+#if defined(_WIN32)
+      InitializeSRWLock(&g_chan_table.slots[i].lock);
+      InitializeConditionVariable(&g_chan_table.slots[i].cv);
+#else
+      pthread_mutex_init(&g_chan_table.slots[i].lock, NULL);
+      pthread_cond_init(&g_chan_table.slots[i].cv, NULL);
+#endif
+      g_chan_table.next_free = i + 1;
+      
+      uintptr_t handle = ((uintptr_t)g_chan_table.slots[i].generation << 32) | (uintptr_t)i;
+      return handle;
+    }
+  }
+  
+  for (size_t i = 0; i < start; i++) {
+    if (!g_chan_table.slots[i].live) {
+      g_chan_table.slots[i].live = true;
+      g_chan_table.slots[i].generation = g_chan_table.next_generation++;
+      g_chan_table.slots[i].used = false;
+      g_chan_table.slots[i].closed = false;
+      g_chan_table.slots[i].head = 0;
+      g_chan_table.slots[i].len = 0;
+      g_chan_table.slots[i].cap = 0;
+      g_chan_table.slots[i].items = NULL;
+#if defined(_WIN32)
+      InitializeSRWLock(&g_chan_table.slots[i].lock);
+      InitializeConditionVariable(&g_chan_table.slots[i].cv);
+#else
+      pthread_mutex_init(&g_chan_table.slots[i].lock, NULL);
+      pthread_cond_init(&g_chan_table.slots[i].cv, NULL);
+#endif
+      g_chan_table.next_free = i + 1;
+      
+      uintptr_t handle = ((uintptr_t)g_chan_table.slots[i].generation << 32) | (uintptr_t)i;
+      return handle;
+    }
+  }
+  
+  return 0;
+}
+
+static ChanSlot *astra_chan_find_slot(uintptr_t handle) {
+  if (!g_chan_table.initialized) {
+    return NULL;
+  }
+  
+  size_t slot_index = (size_t)(handle & 0xFFFFFFFF);
+  uint32_t generation = (uint32_t)(handle >> 32);
+  
+  if (slot_index >= g_chan_table.capacity) {
+    return NULL;
+  }
+  
+  ChanSlot *slot = &g_chan_table.slots[slot_index];
+  if (!slot->live || slot->generation != generation) {
+    return NULL;
+  }
+  
+  return slot;
+}
+
+static bool astra_chan_reserve(ChanSlot *slot, size_t want) {
+  if (slot->cap >= want) {
+    return true;
+  }
+  size_t next = slot->cap == 0 ? 8 : slot->cap * 2;
+  while (next < want) {
+    next *= 2;
+  }
+  uintptr_t *p = (uintptr_t *)realloc(slot->items, next * sizeof(uintptr_t));
+  if (p == NULL) {
+    return false;
+  }
+  slot->items = p;
+  slot->cap = next;
+  return true;
+}
 
 typedef uintptr_t (*AstraSpawnEntryFn)(uintptr_t);
 
@@ -949,32 +1880,6 @@ static void *astra_spawn_trampoline(void *opaque) {
 }
 #endif
 
-static bool astra_spawn_reserve(size_t want) {
-  if (g_spawn_cap >= want) {
-    return true;
-  }
-  size_t next = g_spawn_cap == 0 ? 8 : g_spawn_cap * 2;
-  while (next < want) {
-    next *= 2;
-  }
-  SpawnEntry *p = (SpawnEntry *)realloc(g_spawn, next * sizeof(SpawnEntry));
-  if (p == NULL) {
-    return false;
-  }
-  for (size_t i = g_spawn_cap; i < next; i++) {
-    p[i].value = 0;
-    p[i].joined = true;
-    p[i].has_thread = false;
-#if defined(_WIN32)
-    p[i].thread = NULL;
-#endif
-    p[i].used = false;
-  }
-  g_spawn = p;
-  g_spawn_cap = next;
-  return true;
-}
-
 uintptr_t astra_spawn_start(uintptr_t fn_ptr, uintptr_t arg) {
   if (fn_ptr == 0) {
     return 0;
@@ -986,125 +1891,129 @@ uintptr_t astra_spawn_start(uintptr_t fn_ptr, uintptr_t arg) {
   ctx->fn = (AstraSpawnEntryFn)fn_ptr;
   ctx->arg = arg;
 
-  uintptr_t tid = 0;
-  ASTRA_SPAWN_LOCK();
-  tid = g_next_tid++;
-  size_t idx = (size_t)tid;
-  if (!astra_spawn_reserve(idx + 1)) {
-    ASTRA_SPAWN_UNLOCK();
+  // Allocate a slot from the table (lazy initialization handled internally)
+  uintptr_t handle = astra_spawn_alloc_slot();
+  if (handle == 0) {
     free(ctx);
     return 0;
   }
-  g_spawn[idx].used = true;
-  g_spawn[idx].joined = false;
-  g_spawn[idx].has_thread = true;
-  g_spawn[idx].value = 0;
-  ASTRA_SPAWN_UNLOCK();
+
+  SpawnSlot *slot = astra_spawn_find_slot(handle);
+  if (slot == NULL) {
+    free(ctx);
+    return 0;
+  }
+
+  slot->has_thread = true;
 
 #if defined(_WIN32)
   HANDLE thread = CreateThread(NULL, 0, astra_spawn_trampoline, (LPVOID)ctx, 0, NULL);
   if (thread == NULL) {
-    ASTRA_SPAWN_LOCK();
-    g_spawn[idx].used = false;
-    g_spawn[idx].joined = true;
-    g_spawn[idx].has_thread = false;
-    ASTRA_SPAWN_UNLOCK();
+    slot->has_thread = false;
+    slot->live = false;  // Free the slot
     free(ctx);
     return 0;
   }
-  ASTRA_SPAWN_LOCK();
-  g_spawn[idx].thread = thread;
-  ASTRA_SPAWN_UNLOCK();
+  slot->thread = thread;
 #else
   pthread_t th;
   if (pthread_create(&th, NULL, astra_spawn_trampoline, (void *)ctx) != 0) {
-    ASTRA_SPAWN_LOCK();
-    g_spawn[idx].used = false;
-    g_spawn[idx].joined = true;
-    g_spawn[idx].has_thread = false;
-    ASTRA_SPAWN_UNLOCK();
+    slot->has_thread = false;
+    slot->live = false;  // Free the slot
     free(ctx);
     return 0;
   }
-  ASTRA_SPAWN_LOCK();
-  g_spawn[idx].thread = th;
-  ASTRA_SPAWN_UNLOCK();
+  slot->thread = th;
 #endif
-  return tid;
+
+  return handle;
 }
 
 uintptr_t astra_spawn_store(uintptr_t value) {
-  ASTRA_SPAWN_LOCK();
-  uintptr_t tid = g_next_tid++;
-  size_t idx = (size_t)tid;
-  if (!astra_spawn_reserve(idx + 1)) {
-    ASTRA_SPAWN_UNLOCK();
+  uintptr_t handle = astra_spawn_alloc_slot();
+  if (handle == 0) {
     return 0;
   }
-  g_spawn[idx].value = value;
-  g_spawn[idx].joined = true;
-  g_spawn[idx].has_thread = false;
-  g_spawn[idx].used = true;
-  ASTRA_SPAWN_UNLOCK();
-  return tid;
+
+  SpawnSlot *slot = astra_spawn_find_slot(handle);
+  if (slot == NULL) {
+    return 0;
+  }
+
+  slot->value = value;
+  slot->joined = true;
+  slot->has_thread = false;
+  return handle;
 }
 
-uintptr_t astra_join(uintptr_t tid) {
-  size_t idx = (size_t)tid;
-  ASTRA_SPAWN_LOCK();
-  if (idx >= g_spawn_cap || !g_spawn[idx].used) {
-    ASTRA_SPAWN_UNLOCK();
+uintptr_t astra_join(uintptr_t handle) {
+  SpawnSlot *slot = astra_spawn_find_slot(handle);
+  if (slot == NULL) {
+#if defined(ASTRA_ENABLE_ANY_RUNTIME)
     return astra_any_box_i64(0);
-  }
-  if (g_spawn[idx].joined) {
-    uintptr_t done_value = g_spawn[idx].value;
-    ASTRA_SPAWN_UNLOCK();
-    return done_value;
-  }
-  bool has_thread = g_spawn[idx].has_thread;
-  // Mark as joining immediately to prevent reuse
-  g_spawn[idx].joined = true;
-#if defined(_WIN32)
-  HANDLE th = g_spawn[idx].thread;
 #else
-  pthread_t th = g_spawn[idx].thread;
+    return 0;
 #endif
-  ASTRA_SPAWN_UNLOCK();
+  }
+  
+  if (slot->joined) {
+    uintptr_t done_value = slot->value;
+    slot->live = false;  // Free the slot
+#if defined(ASTRA_ENABLE_ANY_RUNTIME)
+    return astra_any_box_i64((int64_t)done_value);
+#else
+    return done_value;
+#endif
+  }
+  
+  bool has_thread = slot->has_thread;
+  // Mark as joining immediately to prevent reuse
+  slot->joined = true;
+  
+#if defined(_WIN32)
+  HANDLE th = slot->thread;
+#else
+  pthread_t th = slot->thread;
+#endif
 
   uintptr_t worker_raw = 0;
-  if (has_thread) {
+  
 #if defined(_WIN32)
-    if (th == NULL) {
-      return astra_any_box_i64(0);
+  if (th != NULL) {
+    DWORD code;
+    if (GetExitCodeThread(th, &code) && code == STILL_ACTIVE) {
+      WaitForSingleObject(th, INFINITE);
     }
-    DWORD wait_rc = WaitForSingleObject(th, INFINITE);
-    if (wait_rc != WAIT_OBJECT_0) {
-      CloseHandle(th);
-      return astra_any_box_i64(0);
-    }
-    DWORD code = 0;
-    if (!GetExitCodeThread(th, &code)) {
-      CloseHandle(th);
-      return astra_any_box_i64(0);
+    if (GetExitCodeThread(th, &code)) {
+      worker_raw = (uintptr_t)code;
     }
     CloseHandle(th);
-    worker_raw = (uintptr_t)code;
+  }
 #else
+  if (th != 0) {
     void *ret_ptr = NULL;
-    if (pthread_join(th, &ret_ptr) != 0) {
-      return astra_any_box_i64(0);
+    if (pthread_join(th, &ret_ptr) == 0) {
+      worker_raw = (uintptr_t)ret_ptr;
     }
-    worker_raw = (uintptr_t)ret_ptr;
+  }
 #endif
-  }
+
+  slot->has_thread = false;
+  slot->value = worker_raw;
+  
+#if defined(ASTRA_ENABLE_ANY_RUNTIME)
   uintptr_t boxed = astra_any_box_i64((int64_t)worker_raw);
-  ASTRA_SPAWN_LOCK();
-  // Double-check that the entry is still valid and hasn't been reused
-  if (idx < g_spawn_cap && g_spawn[idx].used && g_spawn[idx].has_thread == has_thread) {
-    g_spawn[idx].value = boxed;
-    g_spawn[idx].has_thread = false;
+#else
+  uintptr_t boxed = worker_raw;
+#endif
+  
+  // Double-check that the entry is still valid
+  SpawnSlot *check_slot = astra_spawn_find_slot(handle);
+  if (check_slot == slot && check_slot->has_thread == false) {
+    slot->value = boxed;
+    slot->has_thread = false;
   }
-  ASTRA_SPAWN_UNLOCK();
+  
   return boxed;
 }
 
@@ -1161,73 +2070,48 @@ typedef struct {
 #endif
 } AstraMutexEntry;
 
-static AstraMutexEntry *g_mutexes = NULL;
-static size_t g_mutexes_cap = 0;
-static uintptr_t g_next_mutex = 1;
-
-static bool astra_mutex_reserve(size_t want) {
-  if (g_mutexes_cap >= want) {
-    return true;
-  }
-  size_t next = g_mutexes_cap == 0 ? 8 : g_mutexes_cap * 2;
-  while (next < want) {
-    next *= 2;
-  }
-  AstraMutexEntry *p = (AstraMutexEntry *)realloc(g_mutexes, next * sizeof(AstraMutexEntry));
-  if (p == NULL) {
-    return false;
-  }
-  for (size_t i = g_mutexes_cap; i < next; i++) {
-    p[i].used = false;
-  }
-  g_mutexes = p;
-  g_mutexes_cap = next;
-  return true;
-}
-
 uintptr_t astra_mutex_new(void) {
-  uintptr_t mid = g_next_mutex++;
-  size_t idx = (size_t)mid;
-  if (!astra_mutex_reserve(idx + 1)) {
+  uintptr_t handle = astra_mutex_alloc_slot();
+  if (handle == 0) {
     return 0;
   }
-  g_mutexes[idx].used = true;
-#if defined(_WIN32)
-  InitializeSRWLock(&g_mutexes[idx].lock);
-#else
-  if (pthread_mutex_init(&g_mutexes[idx].lock, NULL) != 0) {
-    g_mutexes[idx].used = false;
+
+  MutexSlot *slot = astra_mutex_find_slot(handle);
+  if (slot == NULL) {
     return 0;
   }
-#endif
-  return mid;
+
+  slot->used = true;
+  return handle;
 }
 
-uintptr_t astra_mutex_lock(uintptr_t mid, uintptr_t owner_tid) {
+uintptr_t astra_mutex_lock(uintptr_t handle, uintptr_t owner_tid) {
   (void)owner_tid;
-  size_t idx = (size_t)mid;
-  if (idx >= g_mutexes_cap || !g_mutexes[idx].used) {
+  MutexSlot *slot = astra_mutex_find_slot(handle);
+  if (slot == NULL) {
     return (uintptr_t)-1;
   }
+
 #if defined(_WIN32)
-  AcquireSRWLockExclusive(&g_mutexes[idx].lock);
+  AcquireSRWLockExclusive(&slot->lock);
   return 0;
 #else
-  return pthread_mutex_lock(&g_mutexes[idx].lock) == 0 ? 0 : (uintptr_t)-1;
+  return pthread_mutex_lock(&slot->lock) == 0 ? 0 : (uintptr_t)-1;
 #endif
 }
 
 uintptr_t astra_mutex_unlock(uintptr_t mid, uintptr_t owner_tid) {
   (void)owner_tid;
-  size_t idx = (size_t)mid;
-  if (idx >= g_mutexes_cap || !g_mutexes[idx].used) {
+  MutexSlot *slot = astra_mutex_find_slot(mid);
+  if (slot == NULL) {
     return (uintptr_t)-1;
   }
+
 #if defined(_WIN32)
-  ReleaseSRWLockExclusive(&g_mutexes[idx].lock);
+  ReleaseSRWLockExclusive(&slot->lock);
   return 0;
 #else
-  return pthread_mutex_unlock(&g_mutexes[idx].lock) == 0 ? 0 : (uintptr_t)-1;
+  return pthread_mutex_unlock(&slot->lock) == 0 ? 0 : (uintptr_t)-1;
 #endif
 }
 
@@ -1247,186 +2131,175 @@ typedef struct {
 #endif
 } AstraChanEntry;
 
-static AstraChanEntry *g_chans = NULL;
-static size_t g_chans_cap = 0;
-static uintptr_t g_next_chan = 1;
-
-static bool astra_chan_reserve(size_t want) {
-  if (g_chans_cap >= want) {
-    return true;
-  }
-  size_t next = g_chans_cap == 0 ? 8 : g_chans_cap * 2;
-  while (next < want) {
-    next *= 2;
-  }
-  AstraChanEntry *p = (AstraChanEntry *)realloc(g_chans, next * sizeof(AstraChanEntry));
-  if (p == NULL) {
-    return false;
-  }
-  for (size_t i = g_chans_cap; i < next; i++) {
-    p[i].used = false;
-    p[i].closed = false;
-    p[i].head = 0;
-    p[i].len = 0;
-    p[i].cap = 0;
-    p[i].items = NULL;
-  }
-  g_chans = p;
-  g_chans_cap = next;
-  return true;
-}
-
-static bool astra_chan_push(AstraChanEntry *ch, uintptr_t v) {
-  if (ch->len >= ch->cap) {
-    size_t next = ch->cap == 0 ? 8 : ch->cap * 2;
-    uintptr_t *p = (uintptr_t *)realloc(ch->items, next * sizeof(uintptr_t));
-    if (p == NULL) {
-      return false;
-    }
-    ch->items = p;
-    ch->cap = next;
-  }
-  ch->items[ch->len++] = v;
-  return true;
-}
-
-static uintptr_t astra_chan_pop(AstraChanEntry *ch) {
-  if (ch->head >= ch->len) {
-    return astra_any_box_none();
-  }
-  uintptr_t out = ch->items[ch->head++];
-  if (ch->head >= ch->len) {
-    ch->head = 0;
-    ch->len = 0;
-  }
-  return out;
-}
-
 uintptr_t astra_chan_new(void) {
-  uintptr_t cid = g_next_chan++;
-  size_t idx = (size_t)cid;
-  if (!astra_chan_reserve(idx + 1)) {
+  uintptr_t handle = astra_chan_alloc_slot();
+  if (handle == 0) {
     return 0;
   }
-  AstraChanEntry *ch = &g_chans[idx];
-  ch->used = true;
-  ch->closed = false;
-  ch->head = 0;
-  ch->len = 0;
-#if defined(_WIN32)
-  InitializeSRWLock(&ch->lock);
-  InitializeConditionVariable(&ch->cv);
-#else
-  if (pthread_mutex_init(&ch->lock, NULL) != 0) {
-    ch->used = false;
+
+  ChanSlot *slot = astra_chan_find_slot(handle);
+  if (slot == NULL) {
     return 0;
   }
-  if (pthread_cond_init(&ch->cv, NULL) != 0) {
-    ch->used = false;
+
+  slot->used = true;
+  slot->closed = false;
+  slot->head = 0;
+  slot->len = 0;
+  return handle;
+}
+
+uintptr_t astra_chan_send(uintptr_t handle, uintptr_t value) {
+  ChanSlot *slot = astra_chan_find_slot(handle);
+  if (slot == NULL) {
+    return (uintptr_t)-1;
+  }
+
+#if defined(_WIN32)
+  AcquireSRWLockExclusive(&slot->lock);
+#else
+  pthread_mutex_lock(&slot->lock);
+#endif
+
+  if (slot->closed) {
+#if defined(_WIN32)
+    ReleaseSRWLockExclusive(&slot->lock);
+#else
+    pthread_mutex_unlock(&slot->lock);
+#endif
+    return (uintptr_t)-1;
+  }
+
+  if (!astra_chan_reserve(slot, slot->len + 1)) {
+#if defined(_WIN32)
+    ReleaseSRWLockExclusive(&slot->lock);
+#else
+    pthread_mutex_unlock(&slot->lock);
+#endif
+    return (uintptr_t)-1;
+  }
+
+  slot->items[slot->len] = value;
+  slot->len += 1;
+
+#if defined(_WIN32)
+  WakeConditionVariable(&slot->cv);
+  ReleaseSRWLockExclusive(&slot->lock);
+#else
+  pthread_cond_signal(&slot->cv);
+  pthread_mutex_unlock(&slot->lock);
+#endif
+
+  return 0;
+}
+
+uintptr_t astra_chan_recv_try(uintptr_t handle) {
+  ChanSlot *slot = astra_chan_find_slot(handle);
+  if (slot == NULL) {
+#if defined(ASTRA_ENABLE_ANY_RUNTIME)
+    return astra_any_box_none();
+#else
     return 0;
-  }
 #endif
-  return cid;
-}
+  }
 
-uintptr_t astra_chan_send(uintptr_t cid, uintptr_t value) {
-  size_t idx = (size_t)cid;
-  if (idx >= g_chans_cap || !g_chans[idx].used) {
-    return 1;
-  }
-  AstraChanEntry *ch = &g_chans[idx];
 #if defined(_WIN32)
-  AcquireSRWLockExclusive(&ch->lock);
-  if (ch->closed) {
-    ReleaseSRWLockExclusive(&ch->lock);
-    return 1;
-  }
-  bool ok = astra_chan_push(ch, value);
-  WakeConditionVariable(&ch->cv);
-  ReleaseSRWLockExclusive(&ch->lock);
-  return ok ? 0 : 1;
+  AcquireSRWLockExclusive(&slot->lock);
 #else
-  if (pthread_mutex_lock(&ch->lock) != 0) {
-    return 1;
-  }
-  if (ch->closed) {
-    (void)pthread_mutex_unlock(&ch->lock);
-    return 1;
-  }
-  bool ok = astra_chan_push(ch, value);
-  (void)pthread_cond_signal(&ch->cv);
-  (void)pthread_mutex_unlock(&ch->lock);
-  return ok ? 0 : 1;
+  pthread_mutex_lock(&slot->lock);
 #endif
-}
 
-uintptr_t astra_chan_recv_try(uintptr_t cid) {
-  size_t idx = (size_t)cid;
-  if (idx >= g_chans_cap || !g_chans[idx].used) {
-    return astra_any_box_none();
-  }
-  AstraChanEntry *ch = &g_chans[idx];
-#if defined(_WIN32)
-  AcquireSRWLockExclusive(&ch->lock);
-  uintptr_t out = astra_chan_pop(ch);
-  ReleaseSRWLockExclusive(&ch->lock);
-  return out;
+  uintptr_t out;
+  if (slot->head >= slot->len) {
+#if defined(ASTRA_ENABLE_ANY_RUNTIME)
+    out = astra_any_box_none();
 #else
-  if (pthread_mutex_lock(&ch->lock) != 0) {
-    return astra_any_box_none();
-  }
-  uintptr_t out = astra_chan_pop(ch);
-  (void)pthread_mutex_unlock(&ch->lock);
-  return out;
+    out = 0;
 #endif
-}
-
-uintptr_t astra_chan_recv_blocking(uintptr_t cid) {
-  size_t idx = (size_t)cid;
-  if (idx >= g_chans_cap || !g_chans[idx].used) {
-    return astra_any_box_none();
+  } else {
+    out = slot->items[slot->head++];
+    if (slot->head >= slot->len) {
+      slot->head = 0;
+      slot->len = 0;
+    }
   }
-  AstraChanEntry *ch = &g_chans[idx];
+
 #if defined(_WIN32)
-  AcquireSRWLockExclusive(&ch->lock);
-  while (ch->head >= ch->len && !ch->closed) {
-    SleepConditionVariableSRW(&ch->cv, &ch->lock, INFINITE, 0);
-  }
-  uintptr_t out = astra_chan_pop(ch);
-  ReleaseSRWLockExclusive(&ch->lock);
-  return out;
+  ReleaseSRWLockExclusive(&slot->lock);
 #else
-  if (pthread_mutex_lock(&ch->lock) != 0) {
-    return astra_any_box_none();
-  }
-  while (ch->head >= ch->len && !ch->closed) {
-    (void)pthread_cond_wait(&ch->cv, &ch->lock);
-  }
-  uintptr_t out = astra_chan_pop(ch);
-  (void)pthread_mutex_unlock(&ch->lock);
-  return out;
+  pthread_mutex_unlock(&slot->lock);
 #endif
+
+  return out;
 }
 
-uintptr_t astra_chan_close(uintptr_t cid) {
-  size_t idx = (size_t)cid;
-  if (idx >= g_chans_cap || !g_chans[idx].used) {
+uintptr_t astra_chan_recv_blocking(uintptr_t handle) {
+  ChanSlot *slot = astra_chan_find_slot(handle);
+  if (slot == NULL) {
+#if defined(ASTRA_ENABLE_ANY_RUNTIME)
+    return astra_any_box_none();
+#else
+    return 0;
+#endif
+  }
+
+#if defined(_WIN32)
+  AcquireSRWLockExclusive(&slot->lock);
+#else
+  pthread_mutex_lock(&slot->lock);
+#endif
+
+  while (slot->head >= slot->len && !slot->closed) {
+#if defined(_WIN32)
+    SleepConditionVariableSRW(&slot->cv, &slot->lock, INFINITE, 0);
+#else
+    pthread_cond_wait(&slot->cv, &slot->lock);
+#endif
+  }
+
+  uintptr_t out;
+  if (slot->head >= slot->len && slot->closed) {
+#if defined(ASTRA_ENABLE_ANY_RUNTIME)
+    out = astra_any_box_none();
+#else
+    out = 0;
+#endif
+  } else {
+    out = slot->items[slot->head++];
+    if (slot->head >= slot->len) {
+      slot->head = 0;
+      slot->len = 0;
+    }
+  }
+
+#if defined(_WIN32)
+  ReleaseSRWLockExclusive(&slot->lock);
+#else
+  pthread_mutex_unlock(&slot->lock);
+#endif
+
+  return out;
+}
+
+uintptr_t astra_chan_close(uintptr_t handle) {
+  ChanSlot *slot = astra_chan_find_slot(handle);
+  if (slot == NULL) {
     return 1;
   }
-  AstraChanEntry *ch = &g_chans[idx];
+
 #if defined(_WIN32)
-  AcquireSRWLockExclusive(&ch->lock);
-  ch->closed = true;
-  WakeAllConditionVariable(&ch->cv);
-  ReleaseSRWLockExclusive(&ch->lock);
+  AcquireSRWLockExclusive(&slot->lock);
+  slot->closed = true;
+  WakeAllConditionVariable(&slot->cv);
+  ReleaseSRWLockExclusive(&slot->lock);
   return 0;
 #else
-  if (pthread_mutex_lock(&ch->lock) != 0) {
+  if (pthread_mutex_lock(&slot->lock) != 0) {
     return 1;
   }
-  ch->closed = true;
-  (void)pthread_cond_broadcast(&ch->cv);
-  (void)pthread_mutex_unlock(&ch->lock);
+  slot->closed = true;
+  (void)pthread_cond_broadcast(&slot->cv);
+  (void)pthread_mutex_unlock(&slot->lock);
   return 0;
 #endif
 }
@@ -1863,6 +2736,171 @@ static char *astra_buf_finish_heap(AstraBuf *buf) {
   return out;
 }
 
+// ============================================================================
+// STRING BUILDER (Public API)
+// ============================================================================
+
+typedef struct {
+  char *data;
+  size_t len;
+  size_t cap;
+} StringBuilder;
+
+// Create a new StringBuilder
+uintptr_t astra_string_builder_new(void) {
+  StringBuilder *sb = (StringBuilder *)malloc(sizeof(StringBuilder));
+  if (sb == NULL) {
+    return 0;
+  }
+  sb->data = NULL;
+  sb->len = 0;
+  sb->cap = 0;
+  return (uintptr_t)sb;
+}
+
+// Free a StringBuilder (does not return the string)
+void astra_string_builder_free(uintptr_t sb_handle) {
+  StringBuilder *sb = (StringBuilder *)sb_handle;
+  if (sb) {
+    if (sb->data) {
+      free(sb->data);
+    }
+    free(sb);
+  }
+}
+
+// Reserve capacity in StringBuilder
+bool astra_string_builder_reserve(uintptr_t sb_handle, size_t capacity) {
+  StringBuilder *sb = (StringBuilder *)sb_handle;
+  if (sb == NULL) {
+    return false;
+  }
+  
+  if (sb->cap >= capacity) {
+    return true;
+  }
+  
+  size_t next = sb->cap == 0 ? 64 : sb->cap * 2;
+  while (next < capacity) {
+    next *= 2;
+  }
+  
+  char *p = (char *)realloc(sb->data, next);
+  if (p == NULL) {
+    return false;
+  }
+  
+  sb->data = p;
+  sb->cap = next;
+  return true;
+}
+
+// Append a string to StringBuilder
+bool astra_string_builder_append_str(uintptr_t sb_handle, uintptr_t str_ptr) {
+  StringBuilder *sb = (StringBuilder *)sb_handle;
+  const char *str = (const char *)str_ptr;
+  if (sb == NULL || str == NULL) {
+    return false;
+  }
+  
+  size_t str_len = strlen(str);
+  if (!astra_string_builder_reserve(sb_handle, sb->len + str_len + 1)) {
+    return false;
+  }
+  
+  memcpy(sb->data + sb->len, str, str_len);
+  sb->len += str_len;
+  if (sb->data) {
+    sb->data[sb->len] = '\0';
+  }
+  return true;
+}
+
+// Append a character to StringBuilder
+bool astra_string_builder_append_char(uintptr_t sb_handle, char ch) {
+  StringBuilder *sb = (StringBuilder *)sb_handle;
+  if (sb == NULL) {
+    return false;
+  }
+  
+  if (!astra_string_builder_reserve(sb_handle, sb->len + 2)) {
+    return false;
+  }
+  
+  sb->data[sb->len++] = ch;
+  sb->data[sb->len] = '\0';
+  return true;
+}
+
+// Append an integer to StringBuilder
+bool astra_string_builder_append_int(uintptr_t sb_handle, int64_t value) {
+  StringBuilder *sb = (StringBuilder *)sb_handle;
+  if (sb == NULL) {
+    return false;
+  }
+  
+  // Buffer sufficient for 64-bit integer
+  char buffer[32];
+  snprintf(buffer, sizeof(buffer), "%lld", (long long)value);
+  return astra_string_builder_append_str(sb_handle, (uintptr_t)buffer);
+}
+
+// Append a float to StringBuilder
+bool astra_string_builder_append_float(uintptr_t sb_handle, double value) {
+  StringBuilder *sb = (StringBuilder *)sb_handle;
+  if (sb == NULL) {
+    return false;
+  }
+  
+  // Buffer sufficient for double
+  char buffer[64];
+  snprintf(buffer, sizeof(buffer), "%.6g", value);
+  return astra_string_builder_append_str(sb_handle, (uintptr_t)buffer);
+}
+
+// Get current length of StringBuilder
+size_t astra_string_builder_len(uintptr_t sb_handle) {
+  StringBuilder *sb = (StringBuilder *)sb_handle;
+  if (sb == NULL) {
+    return 0;
+  }
+  return sb->len;
+}
+
+// Clear StringBuilder (keep capacity)
+void astra_string_builder_clear(uintptr_t sb_handle) {
+  StringBuilder *sb = (StringBuilder *)sb_handle;
+  if (sb && sb->data) {
+    sb->len = 0;
+    sb->data[0] = '\0';
+  }
+}
+
+// Finish StringBuilder and return heap-allocated string
+uintptr_t astra_string_builder_finish(uintptr_t sb_handle) {
+  StringBuilder *sb = (StringBuilder *)sb_handle;
+  if (sb == NULL) {
+    return (uintptr_t)astra_strdup_s("");
+  }
+  
+  if (sb->data == NULL) {
+    free(sb);
+    return (uintptr_t)astra_strdup_s("");
+  }
+  
+  char *out = (char *)astra_heap_alloc(sb->len + 1);
+  if (out == NULL) {
+    free(sb->data);
+    free(sb);
+    return (uintptr_t)astra_strdup_s("");
+  }
+  
+  memcpy(out, sb->data, sb->len + 1);
+  free(sb->data);
+  free(sb);
+  return (uintptr_t)out;
+}
+
 static bool astra_json_write_escaped_string(AstraBuf *buf, const char *s) {
   if (!astra_buf_append_ch(buf, '"')) {
     return false;
@@ -1922,13 +2960,14 @@ static bool astra_json_write_escaped_string(AstraBuf *buf, const char *s) {
   return astra_buf_append_ch(buf, '"');
 }
 
+#if defined(ASTRA_ENABLE_ANY_RUNTIME)
 static bool astra_json_write_map_key(AstraBuf *buf, uintptr_t key_any);
 
 static bool astra_json_write_any(AstraBuf *buf, uintptr_t v, int depth) {
   if (depth > 256) {
     return astra_buf_append(buf, "null");
   }
-  AstraAnyEntry *entry = astra_any_find(v);
+  AstraAnySlot *entry = astra_any_find_slot(v);
   if (entry == NULL) {
     return astra_buf_append(buf, "null");
   }
@@ -1994,7 +3033,7 @@ static bool astra_json_write_any(AstraBuf *buf, uintptr_t v, int depth) {
 }
 
 static bool astra_json_write_map_key(AstraBuf *buf, uintptr_t key_any) {
-  AstraAnyEntry *entry = astra_any_find(key_any);
+  AstraAnySlot *entry = astra_any_find_slot(key_any);
   if (entry == NULL) {
     return astra_json_write_escaped_string(buf, "null");
   }
@@ -2033,6 +3072,7 @@ uintptr_t astra_to_json(uintptr_t v) {
   }
   return (uintptr_t)astra_buf_finish_heap(&buf);
 }
+#endif
 
 typedef struct {
   const char *s;
@@ -2151,6 +3191,7 @@ static char *astra_json_parse_string(AstraJsonCursor *c) {
   return NULL;
 }
 
+#if defined(ASTRA_ENABLE_ANY_RUNTIME)
 static uintptr_t astra_json_parse_value(AstraJsonCursor *c);
 
 static uintptr_t astra_json_parse_array(AstraJsonCursor *c) {
@@ -2318,6 +3359,7 @@ uintptr_t astra_from_json(uintptr_t s_ptr) {
   }
   return out;
 }
+#endif
 
 uintptr_t astra_sha256(uintptr_t s_ptr) {
   const char *s = (const char *)s_ptr;
@@ -2334,6 +3376,7 @@ uintptr_t astra_hmac_sha256(uintptr_t k_ptr, uintptr_t s_ptr) {
   return (uintptr_t)astra_hex64x4(x, hk, hs, x ^ hk ^ hs);
 }
 
+#if defined(ASTRA_ENABLE_ANY_RUNTIME)
 uintptr_t astra_rand_bytes(uintptr_t n) {
   if ((int64_t)n < 0) {
     return astra_any_box_none();
@@ -2375,6 +3418,7 @@ uintptr_t astra_rand_bytes(uintptr_t n) {
   free(buf);
   return out;
 }
+#endif
 
 uintptr_t astra_env_get(uintptr_t key_ptr) {
   const char *k = (const char *)key_ptr;

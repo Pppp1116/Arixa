@@ -86,7 +86,7 @@ class EnhancedBuildPipeline:
                 self._write_llvm_output(out_path, llvm_ir)
             else:  # native
                 self._generate_native_output(
-                    llvm_ir, out_path, src_file, profile, sanitize, triple,
+                    llvm_ir, out_path, src_file, prog, profile, sanitize, triple,
                     freestanding, kind, links
                 )
         
@@ -251,7 +251,7 @@ class EnhancedBuildPipeline:
         Path(out_path).write_text(llvm_ir)
     
     def _generate_native_output(
-        self, llvm_ir: str, out_path: str, src_file: Path, profile: str,
+        self, llvm_ir: str, out_path: str, src_file: Path, prog: Any, profile: str,
         sanitize: str | None, triple: str | None, freestanding: bool,
         kind: str, links: list[str] | None
     ):
@@ -265,6 +265,7 @@ class EnhancedBuildPipeline:
             llvm_ir,
             out_path,
             src_file,
+            prog,
             profile=profile,
             sanitize=sanitize,
             triple=triple,

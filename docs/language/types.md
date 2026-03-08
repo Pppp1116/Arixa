@@ -18,7 +18,7 @@
 - **Bytes**: `Bytes`
 - **Unit**: `Void`
 - **Bottom**: `Never` (uninhabited type)
-- **Dynamic**: `Any`
+- **Dynamic**: `Any` - opt-in runtime feature (see [Any Type Optimization](any_type_optimization.md))
 
 ## Compound and Generic Types
 
@@ -115,3 +115,39 @@ fn accept_slice(data: &[Int]) Int {
 let vec_data: Vec<Int> = [1, 2, 3];
 let first = accept_slice(&vec_data);  // Automatic conversion
 ```
+
+## Any Type
+
+The `Any` type provides dynamic typing capabilities but is **optimized to be opt-in**:
+
+### When to Use Any
+```astra
+// Heterogeneous collections
+fn process_mixed_data() Any {
+    mut data = list_new();  // Any-based list
+    list_push(data, "config");  // String
+    list_push(data, 42);       // Int
+    list_push(data, true);     // Bool
+    return data;
+}
+
+// Dynamic casting
+fn handle_any(value: Any) Int {
+    if value is Int {
+        return value as Int;
+    }
+    return 0;
+}
+```
+
+### Prefer Typed Containers
+```astra
+// Better - no Any overhead
+fn process_numbers() {
+    mut numbers: Vec<Int> = vec_new();
+    vec_push(numbers, 42);
+    vec_push(numbers, 84);
+}
+```
+
+**Note**: The Any runtime is only included when actually used. Typed programs have zero Any overhead. See [Any Type Optimization](any_type_optimization.md) for complete details.

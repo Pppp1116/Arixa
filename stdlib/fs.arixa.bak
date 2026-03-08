@@ -3,265 +3,328 @@
 /// This module provides file and directory operations for hosted environments only.
 /// All operations require runtime support and host OS access.
 
-import std.io;
 import std.path;
+import std.vec;
 
-/// File information structure
+/// File information structure.
 struct FileInfo {
     path String,
     size Int,
     is_file Bool,
     is_dir Bool,
     is_symlink Bool,
-    created Int,  // Timestamp in milliseconds
-    modified Int, // Timestamp in milliseconds
-    accessed Int, // Timestamp in milliseconds
+    created Int,   // timestamp in milliseconds
+    modified Int,  // timestamp in milliseconds
+    accessed Int,  // timestamp in milliseconds
 }
 
-/// File permissions structure
+/// File permissions structure.
 struct FilePermissions {
     readable Bool,
     writable Bool,
     executable Bool,
 }
 
-/// Directory entry structure
+/// Directory entry structure.
 struct DirEntry {
     name String,
     path String,
     file_info FileInfo,
 }
 
-/// Check if a file or directory exists at the given path
-///
-/// Returns true if the path exists, false otherwise
+/// Check if a file or directory exists at the given path.
 fn exists(path String) Bool {
-    // Implementation uses host runtime to check existence
     return file_exists_impl(path);
 }
 
-/// Check if a path points to a regular file
-fn is_file(path String) Bool {
-    info = file_info(path);
-    return info != none && (info as FileInfo?).is_file;
-}
-
-/// Check if a path points to a directory
-fn is_dir(path String) Bool {
-    info = file_info(path);
-    return info != none && (info as FileInfo?).is_dir;
-}
-
-/// Check if a path points to a symbolic link
-fn is_symlink(path String) Bool {
-    info = file_info(path);
-    return info != none && (info as FileInfo?).is_symlink;
-}
-
-/// Get file information for the given path
+/// Get file information for the given path.
 ///
-/// Returns FileInfo if path exists, none otherwise
+/// Returns FileInfo if path exists, none otherwise.
 fn file_info(path String) FileInfo? {
-    if !exists(path) {
-        return none;
-    }
-    
     return get_file_info_impl(path);
 }
 
-/// Get file size in bytes
+/// Check if a path points to a regular file.
+fn is_file(path String) Bool {
+    info = file_info(path);
+    if info == none {
+        return false;
+    }
+    else {}
+    return (info as FileInfo).is_file;
+}
+
+/// Check if a path points to a directory.
+fn is_dir(path String) Bool {
+    info = file_info(path);
+    if info == none {
+        return false;
+    }
+    else {}
+    return (info as FileInfo).is_dir;
+}
+
+/// Check if a path points to a symbolic link.
+fn is_symlink(path String) Bool {
+    info = file_info(path);
+    if info == none {
+        return false;
+    }
+    else {}
+    return (info as FileInfo).is_symlink;
+}
+
+/// Get file size in bytes.
 ///
-/// Returns file size if file exists and is accessible, none otherwise
+/// Returns file size if file exists and is a regular file, none otherwise.
 fn file_size(path String) Int? {
     info = file_info(path);
     if info == none {
         return none;
     }
-    
-    file_data = info as FileInfo?;
-    if !file_data.is_file {
+    else {}
+
+    meta = info as FileInfo;
+    if !meta.is_file {
         return none;
     }
-    
-    return file_data.size;
+    else {}
+
+    return meta.size;
 }
 
-/// Get file permissions
+/// Get file permissions.
 fn file_permissions(path String) FilePermissions? {
+    if !exists(path) {
+        return none;
+    }
+    else {}
     return get_file_permissions_impl(path);
 }
 
-/// Set file permissions
+/// Set file permissions.
 fn set_permissions(path String, perms FilePermissions) Bool {
+    if !exists(path) {
+        return false;
+    }
+    else {}
     return set_file_permissions_impl(path, perms);
 }
 
-/// Create a new directory at the given path
+/// Create a new directory at the given path.
 ///
-/// Returns true if directory was created successfully, false otherwise
-/// Parent directories must exist
+/// Returns true if directory was created successfully, false otherwise.
+/// Parent directories must already exist.
 fn create_dir(path String) Bool {
     if exists(path) {
-        return false; // Already exists
+        return false;
     }
-    
+    else {}
     return create_dir_impl(path);
 }
 
-/// Create directories recursively (like mkdir -p)
+/// Create directories recursively (like mkdir -p).
 fn create_dir_all(path String) Bool {
+    if path == "" {
+        return false;
+    }
+    else {}
+
     if exists(path) {
         return is_dir(path);
     }
-    
-    parent = path.parent_path();
-    if parent != "" && !exists(parent) {
+    else {}
+
+    parent = parent_path(path);
+    if parent != "" && parent != path && !exists(parent) {
         if !create_dir_all(parent) {
             return false;
         }
+        else {}
     }
-    
-    return create_dir(path);
+    else {}
+
+    return create_dir_impl(path);
 }
 
-/// Remove an empty directory
+/// Remove an empty directory.
 fn remove_dir(path String) Bool {
     if !is_dir(path) {
         return false;
     }
-    
+    else {}
     return remove_dir_impl(path);
 }
 
-/// Remove a directory and all its contents recursively
-fn remove_dir_all(path String) Bool {
-    if !is_dir(path) {
-        return false;
-    }
-    
-    // Remove all contents first
-    entries = read_dir(path);
-    if entries != none {
-        entry_list = entries as Vec<DirEntry>?;
-        mut i = 0;
-        while i < vec_len(entry_list) {
-            entry_opt = vec_get(entry_list, i);
-            if entry_opt != none {
-                entry = (entry_opt as DirEntry?) ?? DirEntry{"", "", FileInfo{"", 0, false, false, false, 0, 0, 0}};
-                if entry.file_info.is_file {
-                    if !remove_file(entry.path) {
-                        return false;
-                    }
-                } else {
-                    if !remove_dir_all(entry.path) {
-                        return false;
-                    }
-                }
-            }
-            i += 1;
-        }
-    }
-    
-    return remove_dir(path);
-}
-
-/// Remove a file
+/// Remove a file.
+///
+/// Symbolic links are removed as files/links, not followed.
 fn remove_file(path String) Bool {
-    if !is_file(path) {
+    info = file_info(path);
+    if info == none {
         return false;
     }
-    
+    else {}
+
+    meta = info as FileInfo;
+    if meta.is_symlink {
+        return remove_file_impl(path);
+    }
+    else {}
+
+    if !meta.is_file {
+        return false;
+    }
+    else {}
+
     return remove_file_impl(path);
 }
 
-/// Copy a file from source to destination
+/// Remove a directory and all its contents recursively.
+///
+/// Symbolic links are removed as links and are not traversed.
+fn remove_dir_all(path String) Bool {
+    info = file_info(path);
+    if info == none {
+        return false;
+    }
+    else {}
+
+    meta = info as FileInfo;
+
+    if meta.is_symlink {
+        return remove_file_impl(path);
+    }
+    else {}
+
+    if meta.is_file {
+        return remove_file_impl(path);
+    }
+    else {}
+
+    if !meta.is_dir {
+        return false;
+    }
+    else {}
+
+    entries = read_dir_impl(path);
+    if entries == none {
+        return false;
+    }
+    else {}
+
+    entry_list = entries as Vec<DirEntry>;
+    mut i = 0;
+    while i < vec_len(entry_list) {
+        entry_opt = vec_get(entry_list, i);
+        if entry_opt == none {
+            return false;
+        }
+        else {}
+
+        entry = entry_opt as DirEntry;
+
+        if entry.file_info.is_symlink {
+            if !remove_file_impl(entry.path) {
+                return false;
+            }
+            else {}
+        }
+        else if entry.file_info.is_file {
+            if !remove_file_impl(entry.path) {
+                return false;
+            }
+            else {}
+        }
+        else if entry.file_info.is_dir {
+            if !remove_dir_all(entry.path) {
+                return false;
+            }
+            else {}
+        }
+        else {
+            return false;
+        }
+
+        i += 1;
+    }
+
+    return remove_dir_impl(path);
+}
+
+/// Copy a file from source to destination.
+///
+/// Returns false if source is not a file or destination already exists.
 fn copy_file(src String, dst String) Bool {
     if !is_file(src) {
         return false;
     }
-    
+    else {}
+
     if exists(dst) {
-        return false; // Destination already exists
+        return false;
     }
-    
+    else {}
+
     return copy_file_impl(src, dst);
 }
 
-/// Move/rename a file or directory
+/// Move/rename a file or directory.
+///
+/// Returns false if source does not exist or destination already exists.
 fn rename(old_path String, new_path String) Bool {
     if !exists(old_path) {
         return false;
     }
-    
+    else {}
+
     if exists(new_path) {
-        return false; // Destination already exists
+        return false;
     }
-    
+    else {}
+
     return rename_impl(old_path, new_path);
 }
 
-/// Read directory contents
+/// Read directory contents.
 ///
-/// Returns vector of directory entries if successful, none otherwise
+/// Returns vector of directory entries if successful, none otherwise.
 fn read_dir(path String) Vec<DirEntry>? {
     if !is_dir(path) {
         return none;
     }
-    
+    else {}
     return read_dir_impl(path);
 }
 
-/// Get current working directory
+/// Get current working directory.
 fn current_dir() String? {
     return get_current_dir_impl();
 }
 
-/// Set current working directory
+/// Set current working directory.
 fn set_current_dir(path String) Bool {
     if !is_dir(path) {
         return false;
     }
-    
+    else {}
     return set_current_dir_impl(path);
 }
 
-/// Get temporary directory
+/// Get temporary directory.
 fn temp_dir() String {
     return get_temp_dir_impl();
 }
 
-/// Canonicalize a path (resolve symlinks and relative components)
+/// Canonicalize a path (resolve symlinks and relative components).
 fn canonicalize(path String) String? {
-    if !exists(path) {
-        return none;
-    }
-    
     return canonicalize_impl(path);
 }
 
-/// Get available space on the filesystem containing the given path
-fn available_space(path String) Int? {
-    return get_available_space_impl(path);
-}
+// Host implementation functions.
 
-/// Get total space on the filesystem containing the given path
-fn total_space(path String) Int? {
-    return get_total_space_impl(path);
-}
-
-/// Watch a directory for changes
-/// Note: This is a basic implementation, real file watchers are more complex
-fn watch_directory(path String, callback fn(DirEntry)) Bool {
-    if !is_dir(path) {
-        return false;
-    }
-    
-    return watch_directory_impl(path, callback);
-}
-
-// Host implementation functions (would be implemented in runtime)
 extern fn file_exists_impl(path String) Bool;
-extern fn get_file_info_impl(path String) FileInfo;
+extern fn get_file_info_impl(path String) FileInfo?;
 extern fn get_file_permissions_impl(path String) FilePermissions?;
 extern fn set_file_permissions_impl(path String, perms FilePermissions) Bool;
 extern fn create_dir_impl(path String) Bool;
@@ -274,6 +337,3 @@ extern fn get_current_dir_impl() String?;
 extern fn set_current_dir_impl(path String) Bool;
 extern fn get_temp_dir_impl() String;
 extern fn canonicalize_impl(path String) String?;
-extern fn get_available_space_impl(path String) Int?;
-extern fn get_total_space_impl(path String) Int?;
-extern fn watch_directory_impl(path String, callback fn(DirEntry)) Bool;

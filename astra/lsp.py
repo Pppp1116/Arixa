@@ -610,7 +610,7 @@ class LSPServer:
                 if isinstance(st, LetStmt):
                     out[st.name] = (st.line, st.col)
                 if isinstance(st, IteratorForStmt):
-                    out[st.var] = (st.line, st.col)
+                    out[st.var_name] = (st.line, st.col)
                     walk(st.body)
                 if isinstance(st, IfStmt):
                     walk(st.then_body)

@@ -9,6 +9,7 @@
 - [Language Tour](language/tour.md) - Interactive tutorial with examples
 - [Syntax Guide](language/syntax.md) - Current syntax and usage
 - [Type System](language/types.md) - Type system and conversions
+- [Any Type Optimization](language/any_type_optimization.md) - Opt-in Any runtime feature
 - [Functions](language/functions.md) - Function definitions and calls
 - [Memory Model](language/memory_model.md)
 - [Control Flow](language/control_flow.md) - Updated iterator-style loops

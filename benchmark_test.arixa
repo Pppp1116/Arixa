@@ -1,0 +1,77 @@
+import std.algorithm as algo;
+import std.time as time;
+
+fn fibonacci(n Int) Int {
+    if n <= 1 {
+        return n;
+    }
+    return fibonacci(n - 1) + fibonacci(n - 2);
+}
+
+fn matrix_multiply(size Int) Int {
+    // Create simple matrix multiplication
+    mut sum = 0;
+    for i in 0..size {
+        for j in 0..size {
+            for k in 0..size {
+                sum = sum + (i * j * k);
+            }
+        }
+    }
+    return sum;
+}
+
+fn sieve_primes(limit Int) Int {
+    mut count = 0;
+    mut is_prime: [Bool; 10001];  // Fixed size array
+    
+    // Initialize array
+    i = 0;
+    while i <= limit {
+        is_prime[i] = true;
+        i = i + 1;
+    }
+    
+    is_prime[0] = false;
+    is_prime[1] = false;
+    
+    for i in 2..limit {
+        if is_prime[i] {
+            count = count + 1;
+            mut j = i * i;
+            while j < limit {
+                is_prime[j] = false;
+                j = j + i;
+            }
+        }
+    }
+    
+    return count;
+}
+
+fn main() Int {
+    print("Starting ASTRA Performance Benchmarks");
+    
+    // Benchmark 1: Fibonacci (recursive)
+    start = time.now();
+    fib_result = fibonacci(35);
+    fib_time = time.now() - start;
+    print("Fibonacci(35) = " + fib_result + " took " + fib_time + "ms");
+    
+    // Benchmark 2: Matrix operations
+    start = time.now();
+    matrix_result = matrix_multiply(50);
+    matrix_time = time.now() - start;
+    print("Matrix multiply 50x50 = " + matrix_result + " took " + matrix_time + "ms");
+    
+    // Benchmark 3: Prime sieve
+    start = time.now();
+    prime_result = sieve_primes(10000);
+    prime_time = time.now() - start;
+    print("Prime sieve up to 10000 = " + prime_result + " took " + prime_time + "ms");
+    
+    total_time = fib_time + matrix_time + prime_time;
+    print("Total benchmark time: " + total_time + "ms");
+    
+    return 0;
+}

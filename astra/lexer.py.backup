@@ -213,13 +213,7 @@ def lex(src: str, filename: str = "<input>") -> list[Token]:
                 elif c == "\\":
                     escaped = True
                 elif c == '{' and not escaped:
-                    # Check if this is an escaped brace ({{)
-                    if j + 1 < len(src) and src[j + 1] == '{':
-                        # Skip the escaped brace - it's a literal, not interpolation
-                        j += 1  # Skip the second {
-                    else:
-                        # This is a real interpolation marker
-                        has_interpolation = True
+                    has_interpolation = True
                 elif c == '"':
                     break
                 j += 1

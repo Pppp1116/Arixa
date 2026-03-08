@@ -16,6 +16,44 @@ from astra.parser import parse
 from astra.error_reporting import ErrorReporter, EnhancedError
 
 
+@dataclass
+class AnyUsageInfo:
+    """Tracks Any type usage in a program for opt-in runtime support."""
+    uses_any_type: bool = False
+    uses_dynamic_containers: bool = False
+    uses_any_casting: bool = False
+    uses_any_lists: bool = False
+    uses_any_maps: bool = False
+    uses_any_functions: bool = False
+    
+    def mark_any_type_used(self):
+        self.uses_any_type = True
+    
+    def mark_dynamic_containers_used(self):
+        self.uses_dynamic_containers = True
+        self.mark_any_type_used()
+    
+    def mark_any_casting_used(self):
+        self.uses_any_casting = True
+        self.mark_any_type_used()
+    
+    def mark_any_lists_used(self):
+        self.uses_any_lists = True
+        self.mark_dynamic_containers_used()
+    
+    def mark_any_maps_used(self):
+        self.uses_any_maps = True
+        self.mark_dynamic_containers_used()
+    
+    def mark_any_functions_used(self):
+        self.uses_any_functions = True
+        self.mark_any_type_used()
+    
+    def needs_any_runtime(self) -> bool:
+        """Check if Any runtime support is needed."""
+        return self.uses_any_type
+
+
 class DeadCodeAnalyzer:
     """Analyzes AST for dead code and unreachable code patterns."""
     
@@ -434,6 +472,17 @@ def _is_numeric_scalar_type(typ: str) -> bool:
     return _is_int_type(typ) or _is_float_type(typ)
 
 
+def _is_generic_type(t: str) -> bool:
+    """Check if a type is a generic type like Vec<T>, Map<K,V>, etc."""
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*<.*>", t))
+
+
+def _get_generic_base(t: str) -> str:
+    """Get the base name of a generic type, e.g., Vec<Int> -> Vec"""
+    match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)<", t)
+    return match.group(1) if match else t
+
+
 def _is_unsized_value_type(typ: str) -> bool:
     c = _canonical_type(typ)
     return c == "str" or _is_slice_type(c)
@@ -625,7 +674,7 @@ BUILTIN_SIGS: dict[str, BuiltinSig] = {
     "ctz": BuiltinSig(["Any"], "Int"),
     "rotl": BuiltinSig(["Any", "Any"], "Any"),
     "rotr": BuiltinSig(["Any", "Any"], "Any"),
-    "vec_new": BuiltinSig([], "Any"),
+    "vec_new": BuiltinSig([], "Vec<Unknown>"),  # Generic, will be inferred
     "vec_from": BuiltinSig(["Any"], "Any"),
     "vec_len": BuiltinSig(["Any"], "Int"),
     "vec_get": BuiltinSig(["Any", "Int"], "Any | none"),
@@ -1229,7 +1278,15 @@ def _assign_base_name(target: Any) -> str | None:
     return None
 
 
-def _same_type(expected: str, actual: str) -> bool:
+def _get_any_usage() -> AnyUsageInfo:
+    """Get the current Any usage context from the program."""
+    # This is a bit of a hack - we'll store it in a global during analysis
+    return getattr(_get_any_usage, 'current', AnyUsageInfo())
+
+
+def _same_type(expected: str, actual: str, any_usage: AnyUsageInfo | None = None) -> bool:
+    if any_usage is None:
+        any_usage = _get_any_usage()
     if expected == actual:
         return True
     if actual == "Never":
@@ -1270,8 +1327,12 @@ def _same_type(expected: str, actual: str) -> bool:
         act_elem = actual[5:-1]   # Remove &Vec< and >
         return _same_type(exp_elem, act_elem)
     if expected == "Any":
+        if any_usage:
+            any_usage.mark_any_type_used()
         return True
     if actual == "Any":
+        if any_usage:
+            any_usage.mark_any_type_used()
         return False
     # Handle type aliases - if both are custom types that resolve to the same underlying type
     if expected in {"Float"} | FLOAT_TYPES and _is_int_type(actual):
@@ -1471,10 +1532,12 @@ def _require_strict_int_operands(filename: str, line: int, col: int, op: str, le
         raise SemanticError(_diag(filename, line, col, f"operator {op} requires matching integer types, got {left} and {right}"))
 
 
-def _cast_supported(src: str, dst: str) -> bool:
+def _cast_supported(src: str, dst: str, any_usage: AnyUsageInfo | None = None) -> bool:
+    if any_usage is None:
+        any_usage = _get_any_usage()
     src_c = _canonical_type(src)
     dst_c = _canonical_type(dst)
-    if _same_type(src_c, dst_c):
+    if _same_type(src_c, dst_c, any_usage):
         return True
     # Support casting between equivalent nullable types
     if _is_nullable_union(src_c) and _is_nullable_union(dst_c):
@@ -1499,10 +1562,14 @@ def _cast_supported(src: str, dst: str) -> bool:
     if dst_c == "Bool" and (_is_numeric_scalar_type(src_c) or src_c == "Bool"):
         return True
     if src_c == "Any":
+        if any_usage:
+            any_usage.mark_any_casting_used()
         if _is_generic_symbol_name(dst_c):
             return True
         return _is_any_dynamic_cast_target(dst_c)
     if dst_c == "Any":
+        if any_usage:
+            any_usage.mark_any_casting_used()
         if _is_generic_symbol_name(src_c):
             return True
         return _is_any_dynamic_cast_target(src_c) or _is_ref_type(src_c) or src_c.startswith("fn(")
@@ -1519,6 +1586,14 @@ def _cast_supported(src: str, dst: str) -> bool:
     # Support none to pointer conversions (null pointer)
     if src_c == NONE_LIT_TYPE and _is_ref_type(dst_c):
         return True
+    
+    # Support casting from Unknown generic types to concrete generic types
+    if _is_generic_type(src_c) and _is_generic_type(dst_c):
+        src_base = _get_generic_base(src_c)
+        dst_base = _get_generic_base(dst_c)
+        # Allow casting from Unknown to same generic base type
+        if src_base == dst_base and "Unknown" in src_c:
+            return True
     
     return False
 
@@ -2457,6 +2532,10 @@ def analyze(
         Value produced by the routine, if any.
     """
     _FREESTANDING_MODE_STACK.append(freestanding)
+    any_usage = AnyUsageInfo()
+    setattr(prog, "any_usage", any_usage)
+    _get_any_usage.current = any_usage
+    
     try:
         errors: list[str] = []
         seen_errors: set[str] = set()
@@ -2727,7 +2806,7 @@ def analyze(
                 entry = entries[0]
                 if entry.params:
                     raise SemanticError(_diag(filename, entry.line, entry.col, f"{require_entrypoint}() must not take parameters"))
-                if require_entrypoint == "main" and _canonical_type(entry.ret) != "i64":
+                if require_entrypoint == "main" and _canonical_type(entry.ret) not in {"Int", "i64"}:
                     raise SemanticError(_diag(filename, entry.line, entry.col, "main() must return Int"))
             except SemanticError as err:
                 _record(err)
@@ -3664,7 +3743,7 @@ def _check_stmt(
                     )
                 )
         if gpu_kernel and not _is_gpu_safe_type(loop_var_ty, structs):
-            raise SemanticError(_diag(filename, st.line, st.col, f"gpu kernel loop variable {st.var} uses unsupported type {loop_var_ty}"))
+            raise SemanticError(_diag(filename, st.line, st.col, f"gpu kernel loop variable {st.var_name} uses unsupported type {loop_var_ty}"))
         loop_scopes = scopes + [{}]
         loop_mut_scopes = mut_scopes + [{}]
         loop_owned = owned.copy()
@@ -3672,9 +3751,9 @@ def _check_stmt(
         loop_move = move.copy()
         loop_borrow_scopes = borrow_scopes + [set()]
         loop_move_scopes = move_scopes + [{}]
-        loop_scopes[-1][st.var] = loop_var_ty
-        loop_mut_scopes[-1][st.var] = False
-        loop_move_scopes[-1][st.var] = loop_move.moved.get(st.var, False)
+        loop_scopes[-1][st.var_name] = loop_var_ty
+        loop_mut_scopes[-1][st.var_name] = False
+        loop_move_scopes[-1][st.var_name] = loop_move.moved.get(st.var_name, False)
         _check_block(
             st.body,
             loop_scopes,
@@ -4508,7 +4587,19 @@ def _infer(
             arg_ty = _infer(arg, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
             arg_types.append(arg_ty)
         
-        # Return Any for now - would be resolved in full method resolution
+        # Basic method resolution for common built-in methods
+        obj_ty_canonical = _canonical_type(obj_ty)
+        
+        # Handle array/slice .get() method
+        if e.method == "get" and _is_slice_type(obj_ty_canonical):
+            if len(e.args) != 1:
+                raise SemanticError(_diag(filename, e.line, e.col, f".get() method takes 1 argument, got {len(e.args)}"))
+            arg_ty = _infer(e.args[0], scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
+            _require_type(filename, e.args[0].line, e.args[0].col, "Int", arg_ty, "get() index")
+            element_ty = _slice_inner(obj_ty_canonical)
+            return _typed(e, f"{element_ty} | none")
+        
+        # For other methods, return Any for now - would be resolved in full method resolution
         return _typed(e, "Any")
     
     if isinstance(e, VectorLiteral):
@@ -4857,7 +4948,9 @@ def _infer_call(
         if builtin_base == "vec_new":
             if len(e.args) != 0:
                 raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects 0 args, got {len(e.args)}"))
-            return "Any"
+            # vec_new creates a typed container, not an Any-based one
+            # Return a generic type that will be inferred from usage
+            return "Vec<Unknown>"
         if builtin_base == "vec_from":
             if len(e.args) != 1:
                 raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects 1 args, got {len(e.args)}"))
@@ -4899,6 +4992,21 @@ def _infer_call(
                 raise SemanticError(_diag(filename, e.args[0].line, e.args[0].col, f"{name} expects Vec<T>, got {src_ty}"))
             _require_type(filename, e.args[1].line, e.args[1].col, _vec_inner(src_ty), arg_types[1], f"arg 1 for {name}")
             return "Int"
+        
+        # Handle dynamic Any-based containers
+        if builtin_base == "list_new":
+            if len(e.args) != 0:
+                raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects 0 args, got {len(e.args)}"))
+            any_usage = _get_any_usage()
+            any_usage.mark_any_lists_used()
+            return "Any"
+        if builtin_base == "map_new":
+            if len(e.args) != 0:
+                raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects 0 args, got {len(e.args)}"))
+            any_usage = _get_any_usage()
+            any_usage.mark_any_maps_used()
+            return "Any"
+        
         if name in fn_groups:
             known_types = set(PRIMITIVES) | set(structs.keys()) | set(enums.keys())
             if not gpu_kernel:

@@ -807,6 +807,7 @@ def _build_native_llvm(
     ir_text: str,
     out_path: str,
     src_file: Path,
+    prog: Any,
     *,
     profile: str,
     sanitize: str | None,
@@ -822,13 +823,21 @@ def _build_native_llvm(
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     opt_flag = "-O3" if profile == "release" else "-O0"
+    debug_flags = ["-g"] if profile == "debug" else []
+    define_flags = ["-DNDEBUG"] if profile == "release" else []
+    
+    # Check if Any runtime is needed
+    any_usage = getattr(prog, "any_usage", None)
+    if any_usage and any_usage.needs_any_runtime():
+        define_flags.append("-DASTRA_ENABLE_ANY_RUNTIME")
+    
     sanitize_flag = f"-fsanitize={sanitize}" if sanitize else None
     with tempfile.TemporaryDirectory(prefix="astra-native-") as td:
         ll_path = Path(td) / "module.ll"
         ll_path.write_text(ir_text)
         is_windows = sys.platform.startswith("win")
         if kind == "lib":
-            cmd = [clang, opt_flag, "-shared", "-fPIC", str(ll_path), "-o", str(out)]
+            cmd = [clang, opt_flag] + debug_flags + define_flags + ["-shared", "-fPIC", str(ll_path), "-o", str(out)]
             if not freestanding:
                 runtime_c = runtime_source_path()
                 if runtime_c is None:
@@ -845,6 +854,7 @@ def _build_native_llvm(
             cmd = [
                 clang,
                 opt_flag,
+            ] + debug_flags + define_flags + [
                 str(ll_path),
                 "-nostdlib",
                 "-nostartfiles",
@@ -858,7 +868,7 @@ def _build_native_llvm(
                 raise RuntimeError(
                     f"CODEGEN {src_file}:1:1: missing runtime source; set ASTRA_RUNTIME_C_PATH or install bundled runtime"
                 )
-            cmd = [clang, opt_flag, str(ll_path), str(runtime_c), "-o", str(out)]
+            cmd = [clang, opt_flag] + debug_flags + define_flags + [str(ll_path), str(runtime_c), "-o", str(out)]
             if is_windows:
                 cmd.extend(["-lbcrypt", "-lws2_32"])
             else:
@@ -1153,6 +1163,7 @@ def build(
             llvm_ir,
             out_path,
             src_file,
+            prog,
             profile=profile,
             sanitize=sanitize,
             triple=triple,

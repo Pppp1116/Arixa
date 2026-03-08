@@ -600,12 +600,12 @@ class _Evaluator:
                 seq = list(range(start, stop))
             else:
                 seq = list(self.eval_expr(st.iterable, env, env_types))
-            had_old = st.var in env
-            old_v = env.get(st.var)
-            old_ty = env_types.get(st.var)
+            had_old = st.var_name in env
+            old_v = env.get(st.var_name)
+            old_ty = env_types.get(st.var_name)
             for it in seq:
-                env[st.var] = it
-                env_types[st.var] = self._value_type(it)
+                env[st.var_name] = it
+                env_types[st.var_name] = self._value_type(it)
                 for s in st.body:
                     sig = self.exec_stmt(s, env, env_types)
                     if not isinstance(sig, _LoopSignal):
@@ -614,25 +614,25 @@ class _Evaluator:
                         break
                     if sig.kind == "break":
                         if had_old:
-                            env[st.var] = old_v
+                            env[st.var_name] = old_v
                             if old_ty is not None:
-                                env_types[st.var] = old_ty
+                                env_types[st.var_name] = old_ty
                             else:
-                                env_types.pop(st.var, None)
+                                env_types.pop(st.var_name, None)
                         else:
-                            env.pop(st.var, None)
-                            env_types.pop(st.var, None)
+                            env.pop(st.var_name, None)
+                            env_types.pop(st.var_name, None)
                         return None
                     return sig
             if had_old:
-                env[st.var] = old_v
+                env[st.var_name] = old_v
                 if old_ty is not None:
-                    env_types[st.var] = old_ty
+                    env_types[st.var_name] = old_ty
                 else:
-                    env_types.pop(st.var, None)
+                    env_types.pop(st.var_name, None)
             else:
-                env.pop(st.var, None)
-                env_types.pop(st.var, None)
+                env.pop(st.var_name, None)
+                env_types.pop(st.var_name, None)
             return None
         if isinstance(st, ComptimeStmt):
             for s in st.body:

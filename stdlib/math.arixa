@@ -256,46 +256,12 @@ fn tanh(x Float) Float {
     return __tanh_impl(x);
 }
 
-/// Calculate mean of integer array.
-/// Returns `none` if array is empty.
-fn mean_int(data &Vec<Int>) Float | none {
-    n = vec_len(*data);
-    if n == 0 {
-        return none;
-    }
-    else {}
-    mut sum = 0;
-    mut i = 0;
-    while i < n {
-        val = vec_get(*data, i);
-        if val != none {
-            sum += val as Int;
-        }
-        else {}
-        i += 1;
-    }
-    return sum as Float / n as Float;
-}
+
 
 /// Calculate median of integer array.
 /// Returns `none` if array is empty.
-fn median_int(data Vec<Int>) Float | none {
-    n = vec_len(data);
-    if n == 0 {
-        return none;
-    }
-    else {}
-    sorted = vec_new() as Vec<Int>;
-    mut i = 0;
-    while i < n {
-        val = vec_get(data, i);
-        if val != none {
-            vec_push(sorted, val as Int);
-        }
-        else {}
-        i += 1;
-    }
-    bubble_sort_int(&sorted);
+
+fn   bubble_sort_int(&sorted){
     if n % 2 == 1 {
         mid_val = vec_get(sorted, n / 2);
         if mid_val != none {
@@ -315,35 +281,9 @@ fn median_int(data Vec<Int>) Float | none {
             return none;
         }
     }
+
 }
 
-/// Calculate standard deviation of integer array.
-/// Returns `none` if array is empty.
-fn std_dev_int(data Vec<Int>) Float | none {
-    mean = mean_int(&data);
-    if mean == none {
-        return none;
-    }
-    else {}
-    n = vec_len(data);
-    if n == 0 {
-        return none;
-    }
-    else {}
-    mut sum_sq_diff = 0.0;
-    mut i = 0;
-    while i < n {
-        val = vec_get(data, i);
-        if val != none {
-            diff = val as Int as Float - mean as Float;
-            sum_sq_diff += diff * diff;
-        }
-        else {}
-        i += 1;
-    }
-    variance = sum_sq_diff / n as Float;
-    return sqrt(variance);
-}
 
 const PI = 3.141592653589793;
 

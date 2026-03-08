@@ -625,7 +625,7 @@ class Parser:
         return name, typ, is_mut
 
     def _starts_type(self) -> bool:
-        return self.cur().kind in {"IDENT", "INT_TYPE", "none", "*", "&", "[", "fn", "f16", "f80", "f128"}
+        return self.cur().kind in {"IDENT", "INT_TYPE", "ARBITRARY_INT_TYPE", "none", "*", "&", "[", "fn", "f16", "f80", "f128"}
 
     def parse_extern_fn(
         self,
@@ -890,7 +890,11 @@ class Parser:
                         int_info = parse_int_type_name(name)
                         if int_info is not None:
                             bits, signed = int_info
-                            typ = str(ArbitraryIntType(signed=signed, width=bits))
+                            # Don't convert Int, isize, usize to ArbitraryIntType
+                            if name in {"Int", "isize", "usize"}:
+                                typ = name
+                            else:
+                                typ = str(ArbitraryIntType(signed=signed, width=bits))
                         else:
                             typ = name
                 if self.opt("<"):

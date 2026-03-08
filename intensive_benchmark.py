@@ -496,61 +496,25 @@ def _astra_load_first_lib(names):
     if last is not None:
         raise last
     raise OSError('ASTRA FFI: no link libraries were provided')
+def fib(n):
+    try:
+        if (n <= 1):
+            return n
+        return (fib((n - 1)) + fib((n - 2)))
+    except _AstraTryNone:
+        return None
+    except _AstraTryResultErr as __astra_err:
+        return __astra_result_err(__astra_err.value)
 def main():
     try:
-        data = __astra_cast(vec_from([72, 101]), 'Vec<u8>')
-        return __astra_cast(_astra_module_bytes.len(data), 'i64')
-    except _AstraTryNone:
-        return None
-    except _AstraTryResultErr as __astra_err:
-        return __astra_result_err(__astra_err.value)
-def __astra_mod_bytes_len(b):
-    try:
-        return vec_len(b)
-    except _AstraTryNone:
-        return None
-    except _AstraTryResultErr as __astra_err:
-        return __astra_result_err(__astra_err.value)
-def __astra_mod_bytes_is_empty(b):
-    try:
-        return (vec_len(b) == 0)
-    except _AstraTryNone:
-        return None
-    except _AstraTryResultErr as __astra_err:
-        return __astra_result_err(__astra_err.value)
-def vec_new_typed():
-    try:
-        return __astra_cast(vec_new(), 'Vec<T>')
-    except _AstraTryNone:
-        return None
-    except _AstraTryResultErr as __astra_err:
-        return __astra_result_err(__astra_err.value)
-def vec_len_typed(v):
-    try:
-        return vec_len(v)
-    except _AstraTryNone:
-        return None
-    except _AstraTryResultErr as __astra_err:
-        return __astra_result_err(__astra_err.value)
-def vec_push_typed(v, value):
-    try:
-        return vec_push(v, value)
-    except _AstraTryNone:
-        return None
-    except _AstraTryResultErr as __astra_err:
-        return __astra_result_err(__astra_err.value)
-def vec_get_typed(v, index):
-    try:
-        return vec_get(v, index)
+        result = fib(35)
+        print_(result)
+        return 0
     except _AstraTryNone:
         return None
     except _AstraTryResultErr as __astra_err:
         return __astra_result_err(__astra_err.value)
 from types import SimpleNamespace
-# Create module namespace for bytes
-_astra_module_bytes = SimpleNamespace()
-_astra_module_bytes.len = __astra_mod_bytes_len
-_astra_module_bytes.is_empty = __astra_mod_bytes_is_empty
 if __name__ == '__main__':
     _main_out = main()
     if inspect.isawaitable(_main_out):

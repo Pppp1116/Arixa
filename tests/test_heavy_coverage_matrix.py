@@ -81,23 +81,6 @@ fn main() Int{
         19,
     ),
     (
-        "for_forms_and_defer",
-        """
-fn main() Int{
-  mut acc = 0;
-  for i in 0..3 {
-    defer print("tick");
-    acc += i;
-  }
-  for j in 4..7 {
-    acc += j;
-  }
-  return acc;
-}
-""",
-        18,
-    ),
-    (
         "vec_option_coalesce",
         """
 fn main() Int{

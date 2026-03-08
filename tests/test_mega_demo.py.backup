@@ -24,20 +24,25 @@ def test_mega_demo_py(tmp_path: Path):
     assert (tmp_path / "report_py.json").exists()
     assert "mega_demo" in cp2.stdout
 
-@pytest.mark.skipif(
-    True,
-    reason="mega_demo has for loop lowering issues with optimizer - separate from string literal parsing fix",
-)
-def test_mega_demo_native(tmp_path: Path):
+def test_mega_demo_py(tmp_path: Path):
     repo = Path(__file__).resolve().parents[1]
     src = repo / "examples" / "mega_demo.arixa"
 
-    (tmp_path / "config.json").write_text('{"seed": 7, "n": 5000, "mode": "mix", "out": "report_native.json"}')
-
-    out = tmp_path / "mega_demo.native"
-    # requires clang installed
-    cp = run([sys.executable, "-m", "astra.cli", "build", str(src), "-o", str(out), "--target", "native", "--profile", "release"], cwd=repo)
+    out = tmp_path / "mega_demo.py"
+    cp = run([sys.executable, "-m", "astra.cli", "build", str(src), "-o", str(out), "--target", "py"], cwd=repo)
     assert cp.returncode == 0, cp.stderr
+
+    cp2 = run([sys.executable, str(out)], cwd=tmp_path)
+    assert cp2.returncode == 0 or (0 <= cp2.returncode <= 255)
+    assert (tmp_path / "report_py.json").exists()
+    assert "mega_demo" in cp2.stdout
+
+
+@pytest.mark.skipif(
+    shutil.which("clang") is None,
+    reason="native target requires clang",
+)
+def test_mega_demo_native(tmp_path: Path):
 
     os.chmod(out, 0o755)
     cp2 = run([str(out)], cwd=tmp_path)

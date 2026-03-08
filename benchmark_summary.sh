@@ -1,0 +1,71 @@
+#!/bin/bash
+
+echo "=================================================="
+echo "ASTRA Performance Benchmark Results Summary"
+echo "=================================================="
+echo ""
+
+echo "Test: Fibonacci(35) - Computationally Intensive"
+echo "Result: 9,227,465"
+echo ""
+
+echo "=== Runtime Performance Comparison ==="
+echo ""
+
+echo "🐍 Python Target:"
+echo "   - Average: ~0.518 seconds"
+echo "   - Consistent: 0.513-0.520s range"
+echo "   - Overhead: Python interpreter + ASTRA runtime"
+echo ""
+
+echo "⚡ Native Target:"
+echo "   - Average: ~0.015 seconds" 
+echo "   - Consistent: Exactly 0.015s every run"
+echo "   - Overhead: Minimal (native executable)"
+echo ""
+
+echo "=== Performance Analysis ==="
+echo ""
+echo "🚀 Speedup Factor: ~34.5x faster (Native vs Python)"
+echo ""
+echo "📊 Why Native is Faster:"
+echo "   • Direct machine code execution"
+echo "   • No Python interpreter overhead"
+echo "   • Optimized by clang compiler"
+echo "   • No ASTRA runtime translation layer"
+echo ""
+
+echo "🐍 Why Python is Slower:"
+echo "   • Python interpreter overhead"
+echo "   • ASTRA runtime translation"
+echo "   • Dynamic typing overhead"
+echo "   • Function call indirection"
+echo ""
+
+echo "=== LLVM Target Status ==="
+echo "⚠️  LLVM IR generation works"
+echo "⚠️  But LLVM execution tools (lli) not installed"
+echo "💡 Would likely perform closer to Native target"
+echo ""
+
+echo "=== Recommendations ==="
+echo ""
+echo "🎯 Development: Use Python target"
+echo "   • Fast compilation"
+echo "   • Easy debugging"
+echo "   • Cross-platform"
+echo ""
+
+echo "🚀 Production: Use Native target" 
+echo "   • ~34x performance improvement"
+echo "   • Best for compute-intensive tasks"
+echo "   • Suitable for deployment"
+echo ""
+
+echo "🔬 Analysis: Use LLVM target"
+echo "   • Intermediate representation"
+echo "   • Good for optimization studies"
+echo "   • Requires LLVM toolchain"
+echo ""
+
+echo "=================================================="

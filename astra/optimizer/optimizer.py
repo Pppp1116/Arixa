@@ -119,34 +119,6 @@ def _optimize_stmt(st: Any, env: dict[str, Any], mutable_names: set[str]) -> tup
         st.body = body_out
         env.clear()
         return st, env, False
-    if isinstance(st, ForStmt):
-        prefix: list[Any] = []
-        cur_env = dict(env)
-        if st.init is not None:
-            if isinstance(st.init, LetStmt):
-                init_out, cur_env, _ = _optimize_stmt(st.init, cur_env, mutable_names)
-                if init_out is not None:
-                    prefix.extend(init_out if isinstance(init_out, list) else [init_out])
-                st.init = None
-            else:
-                st.init = _fold_ast_expr(st.init, cur_env, mutable_names)
-        if st.cond is not None:
-            st.cond = _fold_ast_expr(st.cond, cur_env, mutable_names)
-        if st.step is not None:
-            if isinstance(st.step, AssignStmt):
-                step_out, _, _ = _optimize_stmt(st.step, dict(cur_env), mutable_names)
-                st.step = step_out if isinstance(step_out, AssignStmt) else None
-            else:
-                st.step = _fold_ast_expr(st.step, cur_env, mutable_names)
-        cond = _literal_value(st.cond)
-        if cond is False:
-            return prefix, cur_env, False
-        body_out, _ = _optimize_stmts(st.body, dict(cur_env), mutable_names)
-        st.body = body_out
-        cur_env.clear()
-        if prefix:
-            return prefix + [st], cur_env, False
-        return st, cur_env, False
     if isinstance(st, MatchStmt):
         st.expr = _fold_ast_expr(st.expr, env, mutable_names)
         target = _literal_value(st.expr)
@@ -539,8 +511,6 @@ def _collect_mutable_names(stmts: list[Any]) -> set[str]:
                 walk(st.else_body)
             elif isinstance(st, WhileStmt):
                 walk(st.body)
-            elif isinstance(st, IteratorForStmt):
-                walk(st.body)
             elif isinstance(st, MatchStmt):
                 for _, body in st.arms:
                     walk(body)
@@ -696,7 +666,7 @@ def _cse_stmt(st: Any, avail: dict[Any, tuple[str, set[str]]]) -> tuple[Any | No
         st.body, _ = _cse_stmts(st.body, {})
         return st, {}, False
 
-    if isinstance(st, ForStmt):
+    if isinstance(st, IteratorForStmt):
         if st.init is not None:
             if isinstance(st.init, LetStmt):
                 st.init, _, _ = _cse_stmt(st.init, dict(avail))
@@ -951,7 +921,7 @@ def _dse_stmts(stmts: list[Any], live_out: set[str]) -> tuple[list[Any], set[str
             out_rev.append(st)
             live = set(live) | _used_names_expr(st.cond) | body_live | _names_assigned_stmts(st.body)
             continue
-        if isinstance(st, ForStmt):
+        if isinstance(st, IteratorForStmt):
             loop_seed = set(live) | _names_assigned_stmts(st.body)
             if st.cond is not None:
                 loop_seed |= _used_names_expr(st.cond)
@@ -1077,8 +1047,6 @@ def _names_assigned_stmts(stmts: list[Any]) -> set[str]:
                 walk(st.then_body)
                 walk(st.else_body)
             elif isinstance(st, WhileStmt):
-                walk(st.body)
-            elif isinstance(st, IteratorForStmt):
                 walk(st.body)
             elif isinstance(st, MatchStmt):
                 for _, body in st.arms:
