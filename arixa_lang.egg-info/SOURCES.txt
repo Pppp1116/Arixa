@@ -47,6 +47,10 @@ astra/gpu/kernel_ir.py
 astra/gpu/kernel_lowering.py
 astra/gpu/runtime.py
 astra/optimizer/__init__.py
+astra/optimizer/advanced_optimizations.py
+astra/optimizer/cfg.py
+astra/optimizer/effects.py
+astra/optimizer/expressions.py
 astra/optimizer/optimizer.py
 astra/optimizer/optimizer_advanced.py
 astra/optimizer/optimizer_controlflow.py
@@ -56,8 +60,9 @@ astra/optimizer/optimizer_interprocedural.py
 astra/optimizer/optimizer_loops_advanced.py
 astra/optimizer/optimizer_memory.py
 astra/optimizer/optimizer_pgo.py
-astra/optimizer/optimizer_ssa.py
 astra/optimizer/optimizer_target_specific.py
+astra/optimizer/pass_manager.py
+astra/optimizer/safe_optimizations.py
 astra/stdlib/algorithm.arixa
 astra/stdlib/atomic.arixa
 astra/stdlib/c.arixa
@@ -84,8 +89,11 @@ astra/stdlib/bindings/sdl2.arixa
 astra/stdlib/bindings/sqlite3.arixa
 tests/test_advanced_optimizations.py
 tests/test_all_optimizations.py
+tests/test_allocation_tracking.py
+tests/test_any_optimization.py
 tests/test_astpm.py
 tests/test_build.py
+tests/test_bytes_stdlib.py
 tests/test_cast_semantics.py
 tests/test_check.py
 tests/test_cli.py
@@ -119,6 +127,7 @@ tests/test_metamorphic_runtime.py
 tests/test_module_resolver.py
 tests/test_optimization_enhancements.py
 tests/test_optimizer_edges.py
+tests/test_optimizer_infrastructure.py
 tests/test_packaged_assets.py
 tests/test_packaging_integration.py
 tests/test_parser.py
@@ -133,6 +142,7 @@ tests/test_std_crypto_serde_runtime.py
 tests/test_std_net_runtime.py
 tests/test_std_process_runtime.py
 tests/test_stdlib_modules.py
+tests/test_string_literals.py
 tests/test_syntax_migration.py
 tests/test_tooling_inprocess.py
 tests/test_tools.py

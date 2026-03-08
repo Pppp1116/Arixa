@@ -1,9 +1,0 @@
-// Test standalone match statement
-fn main() Int {
-    value = 42;
-    match value {
-        42 => print("answer"),
-        _ => print("other"),
-    }
-    return 0;
-}

@@ -497,7 +497,6 @@ def _astra_load_first_lib(names):
         raise last
     raise OSError('ASTRA FFI: no link libraries were provided')
 def fibonacci(n):
-    _astra_defer_stack = []
     try:
         if (n <= 1):
             return n
@@ -506,20 +505,14 @@ def fibonacci(n):
         return None
     except _AstraTryResultErr as __astra_err:
         return __astra_result_err(__astra_err.value)
-    finally:
-        for _d in reversed(_astra_defer_stack):
-            _d()
 def main():
-    _astra_defer_stack = []
     try:
         return fibonacci(10)
     except _AstraTryNone:
         return None
     except _AstraTryResultErr as __astra_err:
         return __astra_result_err(__astra_err.value)
-    finally:
-        for _d in reversed(_astra_defer_stack):
-            _d()
+from types import SimpleNamespace
 if __name__ == '__main__':
     _main_out = main()
     if inspect.isawaitable(_main_out):
