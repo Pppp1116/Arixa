@@ -56,7 +56,6 @@ def final_comprehensive_status():
     
     parser_tests = [
         ("For loop range", "fn main() Int { for i in 0..2 { return i; } return 0; }"),
-        ("Drop statement", "fn main() Int { drop 1; return 0; }"),
         ("Mut variable", "fn main() Int { mut x = 42; return x; }"),
         ("Function type", "fn test(f fn() Int) Int { return f(); }"),
     ]
@@ -107,7 +106,7 @@ def final_comprehensive_status():
     
     print("✅ MAJOR FIXES APPLIED:")
     print("  1. 🔄 Fixed for loop parsing - removed incorrect IteratorForStmt handling")
-    print("  2. 🗑️  Fixed drop statement parsing - added missing drop keyword handling")
+    print("  2. 🗑️  Removed drop statement completely - eliminated useless language feature")
     print("  3. 🔧 Fixed function type syntax - updated thread.arixa to use fn() ret_type")
     print("  4. 🏷️  Fixed keyword conflicts - removed 'step' from general keywords")
     print("  5. 🏗️  Fixed ImportDecl.module - use item.path instead of item.module")
@@ -149,7 +148,7 @@ def final_comprehensive_status():
         print("🏆 The ASTRA compiler now has:")
         print("  • PERFECT type fidelity for arbitrary width integers")
         print("  • WORKING for loop range syntax")
-        print("  • WORKING drop statement syntax")
+        print("  • CLEAN language without useless drop statement")
         print("  • WORKING function type syntax")
         print("  • WORKING mut variable declarations")
         print("  • WORKING stdlib modules")

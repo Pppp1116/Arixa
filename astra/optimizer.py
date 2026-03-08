@@ -92,9 +92,6 @@ def _optimize_stmt(st: Any, env: dict[str, Any], mutable_names: set[str]) -> tup
         if _is_discardable_expr(st.expr):
             return None, env, False
         return st, env, False
-    if isinstance(st, DropStmt):
-        st.expr = _fold_ast_expr(st.expr, env, mutable_names)
-        return st, env, False
     if isinstance(st, ReturnStmt):
         if st.expr is not None:
             st.expr = _fold_ast_expr(st.expr, env, mutable_names)
@@ -685,12 +682,6 @@ def _cse_stmt(st: Any, avail: dict[Any, tuple[str, set[str]]]) -> tuple[Any | No
             avail = _invalidate_available(avail, clear=True)
         return st, avail, False
 
-    if isinstance(st, DropStmt):
-        st.expr = _cse_expr(st.expr, avail)
-        if not _is_discardable_expr(st.expr):
-            avail = _invalidate_available(avail, clear=True)
-        return st, avail, False
-
     if isinstance(st, ReturnStmt):
         if st.expr is not None:
             st.expr = _cse_expr(st.expr, avail)
@@ -902,10 +893,6 @@ def _dse_stmts(stmts: list[Any], live_out: set[str]) -> tuple[list[Any], set[str
             out_rev.append(st)
             live |= _used_names_expr(st.expr)
             continue
-        if isinstance(st, DropStmt):
-            out_rev.append(st)
-            live |= _used_names_expr(st.expr)
-            continue
         if isinstance(st, LetStmt):
             uses = _used_names_expr(st.expr)
             if st.name not in live:
@@ -1053,6 +1040,11 @@ def _used_names_expr(expr: Any) -> set[str]:
         out: set[str] = set()
         for elem in expr.elements:
             out |= _used_names_expr(elem)
+        return out
+    if isinstance(expr, StringInterpolation):
+        out: set[str] = set()
+        for expr_part in expr.exprs:
+            out |= _used_names_expr(expr_part)
         return out
     if isinstance(expr, StructLit):
         out: set[str] = set()

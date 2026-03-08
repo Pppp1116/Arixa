@@ -526,60 +526,52 @@ def _astra_load_first_lib(names):
         raise last
     raise OSError('ASTRA FFI: no link libraries were provided')
 def __str_char_at_impl(s, index):
-    _lib = _astra_load_first_lib(['c'])
-    _fn = getattr(_lib, '__str_char_at_impl')
-    _fn.restype = ctypes.c_void_p
-    _fn.argtypes = [ctypes.c_void_p, ctypes.c_longlong]
-    return _fn(s, index)
+    try:
+        return s[index] if index < len(s) else ''
+    except (IndexError, TypeError):
+        return ''
 
 def __str_from_char_impl(c):
-    _lib = _astra_load_first_lib(['c'])
-    _fn = getattr(_lib, '__str_from_char_impl')
-    _fn.restype = ctypes.c_void_p
-    _fn.argtypes = [ctypes.c_void_p]
-    return _fn(c)
+    try:
+        return str(c) if c is not None else ''
+    except (TypeError, ValueError):
+        return ''
 
 def __str_substring_impl(s, start, length):
-    _lib = _astra_load_first_lib(['c'])
-    _fn = getattr(_lib, '__str_substring_impl')
-    _fn.restype = ctypes.c_void_p
-    _fn.argtypes = [ctypes.c_void_p, ctypes.c_longlong, ctypes.c_longlong]
-    return _fn(s, start, length)
+    try:
+        return s[start:start+length] if s is not None else ''
+    except (TypeError, ValueError):
+        return ''
 
 def __str_to_upper_impl(s):
-    _lib = _astra_load_first_lib(['c'])
-    _fn = getattr(_lib, '__str_to_upper_impl')
-    _fn.restype = ctypes.c_void_p
-    _fn.argtypes = [ctypes.c_void_p]
-    return _fn(s)
+    try:
+        return s.upper() if s is not None else ''
+    except AttributeError:
+        return str(s).upper() if s is not None else ''
 
 def __str_to_lower_impl(s):
-    _lib = _astra_load_first_lib(['c'])
-    _fn = getattr(_lib, '__str_to_lower_impl')
-    _fn.restype = ctypes.c_void_p
-    _fn.argtypes = [ctypes.c_void_p]
-    return _fn(s)
+    try:
+        return s.lower() if s is not None else ''
+    except AttributeError:
+        return str(s).lower() if s is not None else ''
 
 def __str_trim_impl(s):
-    _lib = _astra_load_first_lib(['c'])
-    _fn = getattr(_lib, '__str_trim_impl')
-    _fn.restype = ctypes.c_void_p
-    _fn.argtypes = [ctypes.c_void_p]
-    return _fn(s)
+    try:
+        return s.strip() if s is not None else ''
+    except AttributeError:
+        return str(s).strip() if s is not None else ''
 
 def __str_find_impl(s, pattern):
-    _lib = _astra_load_first_lib(['c'])
-    _fn = getattr(_lib, '__str_find_impl')
-    _fn.restype = ctypes.c_longlong
-    _fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-    return _fn(s, pattern)
+    try:
+        return s.find(pattern) if s is not None and pattern is not None else -1
+    except (AttributeError, TypeError):
+        return str(s).find(str(pattern)) if s is not None and pattern is not None else -1
 
 def __str_replace_impl(s, pattern, replacement):
-    _lib = _astra_load_first_lib(['c'])
-    _fn = getattr(_lib, '__str_replace_impl')
-    _fn.restype = ctypes.c_void_p
-    _fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
-    return _fn(s, pattern, replacement)
+    try:
+        return s.replace(pattern, replacement) if s is not None and pattern is not None and replacement is not None else s
+    except (AttributeError, TypeError):
+        return str(s).replace(str(pattern), str(replacement)) if s is not None and pattern is not None and replacement is not None else str(s) if s is not None else ''
 
 def main():
     _astra_defer_stack = []

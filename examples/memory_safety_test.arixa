@@ -1,0 +1,43 @@
+// Test memory safety and ownership system
+import std.io;
+
+struct Data {
+    value: Int,
+}
+
+fn test_ownership() Int {
+    // Test ownership transfer
+    data1 = Data(42);
+    data2 = data1;  // data1 is moved
+    
+    // This would cause use-after-move error:
+    // print(data1.value);  // ERROR: use-after-move
+    
+    print(data2.value);  // OK
+    return 0;
+}
+
+fn test_borrowing() Int {
+    // Test borrowing rules
+    mut data = Data(100);
+    
+    // Immutable borrow
+    {
+        ref1 = &data;
+        print(ref1.value);  // OK
+    }
+
+    // After ref1 goes out of scope, we can mutably borrow
+    ref2 = &mut data;
+    ref2.value = 200;
+    print(ref2.value);  // OK
+    
+    return 0;
+}
+
+fn main() Int {
+    test_ownership();
+    test_borrowing();
+    print("Memory safety tests passed!");
+    return 0;
+}

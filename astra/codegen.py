@@ -260,13 +260,13 @@ def to_python(
         "_astra_next_tid = 1",
         "_astra_atomics = {}",
         "_astra_next_atomic = 1",
-        "_astra_atomic_lock = threading.Lock()",
         "_astra_mutexes = {}",
         "_astra_next_mutex = 1",
         "_astra_channels = {}",
         "_astra_next_chan = 1",
         "_astra_sockets = {}",
         "_astra_next_sock = 1",
+        "_astra_registry_lock = threading.Lock()",
         "_astra_libs = {}",
         "def __astra_cast(v, t):",
         "    if t in ('Float', 'f32', 'f64'):",
@@ -290,7 +290,8 @@ def to_python(
         "    if signed and out >= (1 << (bits - 1)):",
         "        out -= (1 << bits)",
         "    return out",
-        "def print_(x): print(x); return None",
+        "def print_(*args): print(*args); return None",
+        "def format_(*args): return ' '.join(str(arg) for arg in args)",
         "class _AstraTryNone(Exception):",
         "    pass",
         "class _AstraTryResultErr(Exception):",
@@ -321,17 +322,19 @@ def to_python(
         "def arg(i): return sys.argv[i] if 0 <= int(i) < len(sys.argv) else ''",
         "def alloc(n):",
         "    global _astra_next_ptr",
-        "    ptr = _astra_next_ptr",
-        "    _astra_next_ptr += 1",
-        "    _astra_heap[ptr] = bytearray(max(0, int(n)))",
-        "    return ptr",
+        "    with _astra_registry_lock:",
+        "        ptr = _astra_next_ptr",
+        "        _astra_next_ptr += 1",
+        "        _astra_heap[ptr] = bytearray(max(0, int(n)))",
+        "        return ptr",
         "def free(ptr):",
         "    _astra_heap.pop(ptr, None)",
         "    return None",
         "def spawn(fn, *a):",
         "    global _astra_next_tid",
-        "    tid = _astra_next_tid",
-        "    _astra_next_tid += 1",
+        "    with _astra_registry_lock:",
+        "        tid = _astra_next_tid",
+        "        _astra_next_tid += 1",
         "    state = {'done': False, 'result': 0, 'thread': None}",
         "    def _runner():",
         "        try:",
@@ -362,26 +365,26 @@ def to_python(
         "    return v",
         "def atomic_int_new(v):",
         "    global _astra_next_atomic",
-        "    with _astra_atomic_lock:",
+        "    with _astra_registry_lock:",
         "        h = _astra_next_atomic",
         "        _astra_next_atomic += 1",
         "        _astra_atomics[h] = int(v)",
         "    return h",
         "def atomic_load(h):",
-        "    with _astra_atomic_lock:",
+        "    with _astra_registry_lock:",
         "        return int(_astra_atomics.get(int(h), 0))",
         "def atomic_store(h, v):",
-        "    with _astra_atomic_lock:",
+        "    with _astra_registry_lock:",
         "        _astra_atomics[int(h)] = int(v)",
         "    return 0",
         "def atomic_fetch_add(h, delta):",
-        "    with _astra_atomic_lock:",
+        "    with _astra_registry_lock:",
         "        key = int(h)",
         "        old = int(_astra_atomics.get(key, 0))",
         "        _astra_atomics[key] = old + int(delta)",
         "    return old",
         "def atomic_compare_exchange(h, expected, desired):",
-        "    with _astra_atomic_lock:",
+        "    with _astra_registry_lock:",
         "        key = int(h)",
         "        cur = int(_astra_atomics.get(key, 0))",
         "        if cur == int(expected):",
@@ -390,10 +393,11 @@ def to_python(
         "    return False",
         "def mutex_new():",
         "    global _astra_next_mutex",
-        "    mid = _astra_next_mutex",
-        "    _astra_next_mutex += 1",
-        "    _astra_mutexes[mid] = threading.Lock()",
-        "    return mid",
+        "    with _astra_registry_lock:",
+        "        mid = _astra_next_mutex",
+        "        _astra_next_mutex += 1",
+        "        _astra_mutexes[mid] = threading.Lock()",
+        "        return mid",
         "def mutex_lock(mid, owner_tid):",
         "    lk = _astra_mutexes.get(int(mid))",
         "    if lk is None:",
@@ -411,11 +415,12 @@ def to_python(
         "        return 1",
         "def chan_new():",
         "    global _astra_next_chan",
-        "    cid = _astra_next_chan",
-        "    _astra_next_chan += 1",
-        "    cv = threading.Condition()",
-        "    _astra_channels[cid] = {'q': collections.deque(), 'closed': False, 'cv': cv}",
-        "    return cid",
+        "    with _astra_registry_lock:",
+        "        cid = _astra_next_chan",
+        "        _astra_next_chan += 1",
+        "        cv = threading.Condition()",
+        "        _astra_channels[cid] = {'q': collections.deque(), 'closed': False, 'cv': cv}",
+        "        return cid",
         "def chan_send(cid, v):",
         "    ch = _astra_channels.get(int(cid))",
         "    if ch is None:",
@@ -482,10 +487,11 @@ def to_python(
         "        return 1",
         "def _sock_new(s):",
         "    global _astra_next_sock",
-        "    sid = _astra_next_sock",
-        "    _astra_next_sock += 1",
-        "    _astra_sockets[sid] = s",
-        "    return sid",
+        "    with _astra_registry_lock:",
+        "        sid = _astra_next_sock",
+        "        _astra_next_sock += 1",
+        "        _astra_sockets[sid] = s",
+        "        return sid",
         "def tcp_connect(addr):",
         "    try:",
         "        host, port = str(addr).rsplit(':', 1)",
@@ -528,7 +534,16 @@ def to_python(
         "def panic(msg): import sys; print(f'panic: {msg}', file=sys.stderr); sys.exit(101)",
         "def env_get(k): return os.environ.get(str(k), '')",
         "def cwd(): return os.getcwd()",
-        "def proc_run(cmd): return subprocess.call(str(cmd), shell=True)",
+        "def proc_run(cmd):",
+        "    import shlex",
+        "    try:",
+        "        if isinstance(cmd, str):",
+        "            cmd_list = shlex.split(str(cmd))",
+        "        else:",
+        "            cmd_list = list(str(arg) for arg in cmd)",
+        "        return subprocess.call(cmd_list, shell=False)",
+        "    except (ValueError, OSError, subprocess.SubprocessError):",
+        "        return -1",
         "def now_unix(): return int(time.time())",
         "def monotonic_ms(): return int(time.monotonic() * 1000)",
         "def sleep_ms(ms): time.sleep(max(0, int(ms)) / 1000.0); return 0",
@@ -571,31 +586,31 @@ def to_python(
         "    def __init__(self, runtime):",
         "        self._runtime = runtime",
         "    def available(self):",
-        "        return self._runtime.available()",
+        "        return self._runtime.available() if self._runtime is not None else False",
         "    def device_count(self):",
-        "        return self._runtime.device_count()",
+        "        return self._runtime.device_count() if self._runtime is not None else 0",
         "    def device_name(self, index):",
-        "        return self._runtime.device_name(index)",
+        "        return self._runtime.device_name(index) if self._runtime is not None else ''",
         "    def alloc(self, size):",
-        "        return self._runtime.alloc(size)",
+        "        return self._runtime.alloc(size) if self._runtime is not None else None",
         "    def copy(self, host_values):",
-        "        return self._runtime.copy(host_values)",
+        "        return self._runtime.copy(host_values) if self._runtime is not None else None",
         "    def read(self, memory):",
-        "        return self._runtime.read(memory)",
+        "        return self._runtime.read(memory) if self._runtime is not None else None",
         "    def launch(self, kernel, grid_size, block_size, *args):",
-        "        return self._runtime.launch(kernel, grid_size, block_size, *args)",
+        "        return self._runtime.launch(kernel, grid_size, block_size, *args) if self._runtime is not None else None",
         "    def global_id(self):",
-        "        return self._runtime.global_id()",
+        "        return self._runtime.global_id() if self._runtime is not None else 0",
         "    def thread_id(self):",
-        "        return self._runtime.thread_id()",
+        "        return self._runtime.thread_id() if self._runtime is not None else 0",
         "    def block_id(self):",
-        "        return self._runtime.block_id()",
+        "        return self._runtime.block_id() if self._runtime is not None else 0",
         "    def block_dim(self):",
-        "        return self._runtime.block_dim()",
+        "        return self._runtime.block_dim() if self._runtime is not None else 0",
         "    def grid_dim(self):",
-        "        return self._runtime.grid_dim()",
+        "        return self._runtime.grid_dim() if self._runtime is not None else 0",
         "    def barrier(self):",
-        "        return self._runtime.barrier()",
+        "        return self._runtime.barrier() if self._runtime is not None else None",
         "gpu = _AstraGpuNamespace(_astra_gpu_runtime)",
         "_astra_host_list_new = list_new",
         "_astra_host_list_push = list_push",
@@ -774,6 +789,10 @@ def to_python(
             lines.append(
                 f"if _astra_gpu_runtime is not None: _astra_gpu_runtime.register_kernel({cuda_kernel_name}, name={item.name!r}, symbol={fn_name!r}, "
                 f"params={param_types!r}, ret={type_text(item.ret)!r}, cuda_source={cuda_source!r}, cuda_name={cuda_kernel_name!r})"
+            )
+            # Always set the kernel marker attribute, even if runtime is not available
+            lines.append(
+                f"else: setattr({cuda_kernel_name}, '__astra_gpu_kernel__', True); setattr({cuda_kernel_name}, '__astra_gpu_name__', {item.name!r}); setattr({cuda_kernel_name}, '__astra_gpu_symbol__', {fn_name!r})"
             )
     if emit_entrypoint and not freestanding:
         lines.append("if __name__ == '__main__':")
@@ -964,6 +983,29 @@ def _expr(e: Any) -> str:
             raise CodegenError(_diag(e, str(err))) from err
     if isinstance(e, Literal):
         return repr(e.value)
+    if isinstance(e, StringInterpolation):
+        # Convert to Python f-string equivalent with proper type conversion
+        parts = []
+        for i, part in enumerate(e.parts):
+            if part:
+                parts.append(repr(part))
+            if i < len(e.exprs):
+                expr = e.exprs[i]
+                expr_code = _expr(expr)
+                # Convert to string if needed
+                expr_type = getattr(expr, 'inferred_type', 'Any')
+                numeric_types = {
+                    'Int', 'isize', 'usize', 'Float', 'f32', 'f64', 'Bool',
+                    'i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64'
+                }
+                if expr_type in numeric_types or (isinstance(expr_type, str) and expr_type.startswith(('i', 'u', 'f'))):
+                    expr_code = f"str({expr_code})"
+                parts.append(expr_code)
+        if not parts:
+            return '""'
+        if len(parts) == 1:
+            return parts[0]
+        return " + ".join(parts)
     if isinstance(e, Name):
         return e.value
     if isinstance(e, WildcardPattern):
@@ -1008,6 +1050,27 @@ def _expr(e: Any) -> str:
             args = [ufcs_receiver] + args
         if name == "panic" and len(args) == 1:
             return f"panic({_expr(args[0])})"
+        if name == "format":
+            # Handle format function with string interpolation support
+            if len(args) == 1 and isinstance(args[0], StringInterpolation):
+                # Single string interpolation argument
+                return _expr(args[0])
+            else:
+                # Multiple arguments - join with spaces
+                exprs = [_expr(arg) for arg in args]
+                # Convert non-string expressions to string
+                for i, (arg, expr) in enumerate(zip(args, exprs)):
+                    arg_type = getattr(arg, 'inferred_type', 'Any')
+                    # Also check literal values
+                    if isinstance(arg, Literal):
+                        if isinstance(arg.value, (int, float, bool)):
+                            exprs[i] = f"str({expr})"
+                    elif arg_type in {'Int', 'isize', 'usize', 'Float', 'f64', 'Bool'}:
+                        exprs[i] = f"str({expr})"
+                    # Handle boolean literals that might have lost type info
+                    elif expr == "True" or expr == "False":
+                        exprs[i] = f"str({expr})"
+                return " + ' ' + ".join(exprs) if len(exprs) > 1 else exprs[0]
         if name in {
             "countOnes",
             "__countOnes",
@@ -1027,7 +1090,7 @@ def _expr(e: Any) -> str:
         if name in {"rotl", "__rotl", "rotr", "__rotr"} and len(args) == 2:
             bits = _known_py_int_bits(args[0])
             return f"{name}({_expr(args[0])}, {_expr(args[1])}, {bits})"
-        name = {"print": "print_", "len": "len_"}.get(name, name)
+        name = {"print": "print_", "format": "format_", "len": "len_"}.get(name, name)
         return f"{name}({', '.join(_expr(a) for a in args)})"
     if isinstance(e, IndexExpr):
         return f"({_expr(e.obj)})[{_expr(e.index)}]"
@@ -1202,10 +1265,6 @@ def _stmt_py(st: Any, ind: int) -> list[str]:
     if isinstance(st, ComptimeStmt):
         return []
     if isinstance(st, ExprStmt):
-        return [f"{p}{_expr(st.expr)}"]
-    if isinstance(st, DropStmt):
-        if getattr(st, "drop_free", False) and isinstance(st.expr, Name):
-            return [f"{p}free({st.expr.value})"]
         return [f"{p}{_expr(st.expr)}"]
     if isinstance(st, IfStmt):
         lines = [f"{p}if {_expr(st.cond)}:"]

@@ -2,9 +2,9 @@ import std.vec;
 
 fn main() Int{
     v: Vec<Int> = vec_new() as Vec<Int>;
-    drop vec_push(v, 3);
-    drop vec_push(v, 4);
-    drop vec_push(v, 5);
+    vec_push(v, 3);
+    vec_push(v, 4);
+    vec_push(v, 5);
 
     n = vec_len(v);
     first: Int? = vec_get(v, 0);

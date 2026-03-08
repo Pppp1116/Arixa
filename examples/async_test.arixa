@@ -1,0 +1,13 @@
+// Test async/await functionality
+import std.time;
+
+async fn fetch_data(url String) String {
+    await sleep_ms(100);
+    return "data from " + url;
+}
+
+fn main() Int {
+    data = await fetch_data("https://example.com");
+    print(data);
+    return 0;
+}

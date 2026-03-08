@@ -484,21 +484,8 @@ class IfExpression:
 
 
 @dataclass
-class TryCatchStmt:
-    """AST node representing try-catch statement.
-    
-    This type is part of Astra's public compiler/tooling surface.
-    """
-    try_body: list[Any]
-    catch_handlers: list[tuple[str, list[Any]]]  # (error_name, catch_body)
-    pos: int = 0
-    line: int = 0
-    col: int = 0
-
-
-@dataclass
-class ExprStmt:
-    """AST node representing expr stmt.
+class DeferStmt:
+    """AST node representing defer statement.
     
     This type is part of Astra's public compiler/tooling surface.
     """
@@ -509,8 +496,8 @@ class ExprStmt:
 
 
 @dataclass
-class DropStmt:
-    """AST node representing drop stmt.
+class ExprStmt:
+    """AST node representing expr stmt.
     
     This type is part of Astra's public compiler/tooling surface.
     """
@@ -675,6 +662,19 @@ class TryExpr:
     This type is part of Astra's public compiler/tooling surface.
     """
     expr: Any
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class StringInterpolation:
+    """AST node representing string interpolation.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
+    parts: list[str]  # String literal parts
+    exprs: list[Any]  # Interpolated expressions
     pos: int = 0
     line: int = 0
     col: int = 0

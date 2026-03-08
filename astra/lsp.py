@@ -51,7 +51,6 @@ KEYWORDS = [
     "await",
     "unsafe",
     "match",
-    "drop",
     "none",
 ]
 SNIPPETS = {

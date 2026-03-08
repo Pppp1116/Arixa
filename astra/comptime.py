@@ -554,9 +554,6 @@ class _Evaluator:
         if isinstance(st, ExprStmt):
             self.eval_expr(st.expr, env, env_types)
             return None
-        if isinstance(st, DropStmt):
-            self.eval_expr(st.expr, env, env_types)
-            return None
         if isinstance(st, ReturnStmt):
             v = None if st.expr is None else self.eval_expr(st.expr, env, env_types)
             return _LoopSignal("return", v)
@@ -787,9 +784,6 @@ def _collect_runtime_name_uses_stmt(stmt: Any, out: set[str]) -> None:
             _collect_runtime_name_uses_expr(stmt.expr, out)
         return
     if isinstance(stmt, ExprStmt):
-        _collect_runtime_name_uses_expr(stmt.expr, out)
-        return
-    if isinstance(stmt, DropStmt):
         _collect_runtime_name_uses_expr(stmt.expr, out)
         return
     if isinstance(stmt, DeferStmt):

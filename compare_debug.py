@@ -37,7 +37,8 @@ def __astra_cast(v, t):
     if signed and out >= (1 << (bits - 1)):
         out -= (1 << bits)
     return out
-def print_(x): print(x); return None
+def print_(*args): print(*args); return None
+def format_(*args): return ' '.join(str(arg) for arg in args)
 class _AstraTryNone(Exception):
     pass
 class _AstraTryResultErr(Exception):
@@ -481,6 +482,30 @@ def _astra_load_first_lib(names):
     if last is not None:
         raise last
     raise OSError('ASTRA FFI: no link libraries were provided')
+def fibonacci(n):
+    _astra_defer_stack = []
+    try:
+        if (n <= 1):
+            return n
+        return (fibonacci((n - 1)) + fibonacci((n - 2)))
+    except _AstraTryNone:
+        return None
+    except _AstraTryResultErr as __astra_err:
+        return __astra_result_err(__astra_err.value)
+    finally:
+        for _d in reversed(_astra_defer_stack):
+            _d()
+def main():
+    _astra_defer_stack = []
+    try:
+        return fibonacci(10)
+    except _AstraTryNone:
+        return None
+    except _AstraTryResultErr as __astra_err:
+        return __astra_result_err(__astra_err.value)
+    finally:
+        for _d in reversed(_astra_defer_stack):
+            _d()
 if __name__ == '__main__':
     _main_out = main()
     if inspect.isawaitable(_main_out):

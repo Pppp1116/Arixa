@@ -518,7 +518,8 @@ class Span:
 
 
 BUILTIN_SIGS: dict[str, BuiltinSig] = {
-    "print": BuiltinSig(["Any"], "Void"),
+    "print": BuiltinSig(None, "Void"),  # Variable arguments
+    "format": BuiltinSig(None, "String"),  # Variable arguments, returns string
     "len": BuiltinSig(["Any"], "Int"),
     "read_file": BuiltinSig(["String"], "String"),
     "write_file": BuiltinSig(["String", "String"], "Int"),
@@ -774,6 +775,8 @@ class _OwnedState:
 class _BorrowInfo:
     owner: str
     mutable: bool
+    line: int = 0
+    col: int = 0
 
 
 class _BorrowState:
@@ -848,45 +851,85 @@ class _BorrowState:
             self.mutable_borrowed.add(owner)
         else:
             self.shared_counts[owner] = self.shared_counts.get(owner, 0) + 1
-        self.ref_bindings[ref_name] = _BorrowInfo(owner, mutable)
+        self.ref_bindings[ref_name] = _BorrowInfo(owner, mutable, line, col)
         if origin is not None:
             self.ref_origins[ref_name] = origin
+
+    def _generate_conflict_report(self, owner: str) -> str:
+        """Generate a detailed report of existing borrows for a given owner."""
+        conflicts = []
+        
+        # Check for mutable borrows
+        if owner in self.mutable_borrowed:
+            conflicts.append("1 mutable reference")
+        
+        # Check for shared borrows
+        shared_count = self.shared_counts.get(owner, 0)
+        if shared_count > 0:
+            conflicts.append(f"{shared_count} immutable reference(s)")
+        
+        if conflicts:
+            return f"The value `{owner}` is currently borrowed by: " + ", ".join(conflicts)
+        return ""
 
     def ensure_can_borrow(self, owner: str, mutable: bool, owner_mutable: bool, filename: str, line: int, col: int):
         has_shared = self.shared_counts.get(owner, 0) > 0
         has_mut = owner in self.mutable_borrowed
         if mutable:
             if not owner_mutable:
-                raise SemanticError(_diag(filename, line, col, f"cannot mutably borrow immutable binding {owner}"))
+                raise SemanticError(_diag(filename, line, col, 
+                    f"cannot create mutable reference to `{owner}` because it is declared as immutable. "
+                    f"Consider declaring it as `mut {owner}` if you need mutable access."))
             if has_mut or has_shared:
-                details: list[str] = []
-                if has_mut:
-                    details.append("an active mutable borrow exists")
-                if has_shared:
-                    details.append(f"{self.shared_counts.get(owner, 0)} active shared borrow(s)")
-                suffix = f" ({'; '.join(details)})" if details else ""
-                raise SemanticError(_diag(filename, line, col, f"cannot mutably borrow {owner} while it is already borrowed{suffix}"))
+                conflict_report = self._generate_conflict_report(owner)
+                raise SemanticError(_diag(filename, line, col, 
+                    f"cannot create mutable reference to `{owner}` because it is already borrowed. "
+                    f"{conflict_report}. "
+                    f"Mutable references require exclusive access to ensure memory safety. "
+                    f"Consider waiting for existing references to go out of scope, using interior mutability patterns, or cloning the value."))
             return
         if has_mut:
-            raise SemanticError(_diag(filename, line, col, f"cannot immutably borrow {owner} while it is mutably borrowed"))
+            conflict_report = self._generate_conflict_report(owner)
+            raise SemanticError(_diag(filename, line, col, 
+                f"cannot create immutable reference to `{owner}` because it is mutably borrowed. "
+                f"{conflict_report}. "
+                f"Immutable references cannot coexist with mutable references to prevent data races. "
+                f"Consider waiting for the mutable reference to go out of scope."))
 
     def check_read(self, name: str, filename: str, line: int, col: int):
         if name in self.ref_bindings:
             return
         if name in self.mutable_borrowed:
-            raise SemanticError(_diag(filename, line, col, f"cannot use {name} while it is mutably borrowed"))
+            raise SemanticError(_diag(filename, line, col, 
+                f"cannot read from `{name}` while it is mutably borrowed. "
+                f"The value `{name}` is currently mutably borrowed, which prevents direct access. "
+                f"Consider using the mutable reference directly instead of the original value."))
 
     def check_write(self, name: str, filename: str, line: int, col: int):
-        if self.shared_counts.get(name, 0) > 0:
-            raise SemanticError(_diag(filename, line, col, f"cannot mutate {name} while it is immutably borrowed"))
+        shared_count = self.shared_counts.get(name, 0)
+        if shared_count > 0:
+            raise SemanticError(_diag(filename, line, col, 
+                f"cannot mutate `{name}` because it has {shared_count} active immutable reference(s). "
+                f"The value `{name}` is currently immutably borrowed, which prevents mutation. "
+                f"Consider waiting for all immutable references to go out of scope or using interior mutability patterns."))
         if name in self.mutable_borrowed:
-            raise SemanticError(_diag(filename, line, col, f"cannot mutate {name} while it is mutably borrowed"))
+            raise SemanticError(_diag(filename, line, col, 
+                f"cannot mutate `{name}` through multiple mutable references. "
+                f"The value `{name}` is already mutably borrowed elsewhere. "
+                f"Only one mutable reference can exist at a time to prevent data races."))
 
     def ensure_can_move(self, name: str, filename: str, line: int, col: int):
-        if self.shared_counts.get(name, 0) > 0:
-            raise SemanticError(_diag(filename, line, col, f"cannot move {name} while it is immutably borrowed"))
+        shared_count = self.shared_counts.get(name, 0)
+        if shared_count > 0:
+            raise SemanticError(_diag(filename, line, col, 
+                f"cannot move `{name}` because it has {shared_count} active immutable reference(s). "
+                f"The value `{name}` is currently immutably borrowed, which prevents moving it. "
+                f"Consider waiting for all immutable references to go out of scope or cloning the value instead."))
         if name in self.mutable_borrowed:
-            raise SemanticError(_diag(filename, line, col, f"cannot move {name} while it is mutably borrowed"))
+            raise SemanticError(_diag(filename, line, col, 
+                f"cannot move `{name}` because it is mutably borrowed. "
+                f"The value `{name}` is currently mutably borrowed elsewhere. "
+                f"Consider waiting for the mutable reference to go out of scope."))
 
 
 class _MoveState:
@@ -2815,7 +2858,7 @@ def _check_stmt(
             return None
         return expr.left.value, _canonical_type(expr.right.value)
 
-    if gpu_kernel and isinstance(st, (DeferStmt, ComptimeStmt, UnsafeStmt, DropStmt, MatchStmt)):
+    if gpu_kernel and isinstance(st, (DeferStmt, ComptimeStmt, UnsafeStmt, MatchStmt)):
         raise SemanticError(
             _diag(
                 filename,
@@ -3477,19 +3520,6 @@ def _check_stmt(
                 raise SemanticError(_diag(filename, st.line, st.col, "free() expects a named owner"))
             owned.free(ptr.value, Span.at(filename, st.line, st.col))
         return
-    if isinstance(st, DropStmt):
-        expr_ty = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
-        _consume_if_move_name(st.expr, expr_ty, borrow, move, filename, st.line, st.col)
-        if isinstance(st.expr, Name):
-            if st.expr.value in owned.owners:
-                setattr(st, "drop_free", True)
-                owned.free(st.expr.value, Span.at(filename, st.line, st.col))
-        if _is_free_call(st.expr):
-            ptr = st.expr.args[0]
-            if not isinstance(ptr, Name):
-                raise SemanticError(_diag(filename, st.line, st.col, "free() expects a named owner"))
-            owned.free(ptr.value, Span.at(filename, st.line, st.col))
-        return
     
     # Enhanced syntax semantic analysis
     if isinstance(st, EnhancedWhileStmt):
@@ -3570,20 +3600,9 @@ def _check_stmt(
         move.merge(move, loop_move)
         return
     
-    if isinstance(st, TryCatchStmt):
-        # Analyze try body
-        try_owned = owned.copy()
-        try_borrow = borrow.enter()
-        try_move = move.enter()
-        _check_block(st.try_body, scopes, mut_scopes, [try_borrow], [try_move], fn_groups, structs, enums, fn_ret, ref_param_names, try_owned, borrow, move, filename, fn_name, loop_depth, unsafe_ok, gpu_kernel)
-        
-        # Analyze catch handlers
-        for error_name, catch_body in st.catch_handlers:
-            catch_scope = {error_name: "String"}  # Error type
-            scopes.append(catch_scope)
-            _check_block(catch_body, scopes, mut_scopes, [try_borrow], [try_move], fn_groups, structs, enums, fn_ret, ref_param_names, try_owned, borrow, move, filename, fn_name, loop_depth, unsafe_ok, gpu_kernel)
-            scopes.pop()
-        
+    if isinstance(st, DeferStmt):
+        # Analyze defer statement
+        defer_ty = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
         return
     
     raise SemanticError(_diag(filename, st.line, st.col, f"unsupported statement type: {type(st).__name__}"))
@@ -3621,6 +3640,11 @@ def _infer(
             return _typed(e, "Int")
         if isinstance(e.value, float):
             return _typed(e, "Float")
+        return _typed(e, "String")
+    if isinstance(e, StringInterpolation):
+        # Type check all interpolated expressions
+        for expr in e.exprs:
+            _infer(expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
         return _typed(e, "String")
     if isinstance(e, Name):
         # Special handling for NaN as a literal

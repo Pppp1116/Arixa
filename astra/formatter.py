@@ -229,8 +229,6 @@ def _fmt_stmt(st, ind: int, cfg: FormatConfig) -> list[str]:
         return [f"{p}continue;"]
     if isinstance(st, ExprStmt):
         return [f"{p}{_fmt_expr(st.expr, cfg, indent=ind)};"]
-    if isinstance(st, DropStmt):
-        return [f"{p}drop {_fmt_expr(st.expr, cfg, indent=ind)};"]
     if isinstance(st, DeferStmt):
         return [f"{p}defer {_fmt_expr(st.expr, cfg, indent=ind)};"]
     if isinstance(st, UnsafeStmt):

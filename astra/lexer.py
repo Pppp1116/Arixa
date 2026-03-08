@@ -6,38 +6,30 @@ from astra.int_types import INT_WIDTH_MAX, parse_prefixed_int_type, prefixed_int
 
 KEYWORDS = {
     "fn",
-    "return",
+    "let",
+    "mut",
     "if",
     "else",
     "while",
     "for",
+    "match",
+    "return",
     "break",
     "continue",
+    "defer",
+    "unsafe",
     "struct",
     "enum",
     "type",
     "import",
-    "mut",
-    "pub",
     "extern",
-    "async",
-    "await",
-    "unsafe",
-    "trait",
-    "where",
-    "match",
-    "defer",
-    "drop",
     "comptime",
     "none",
     "set",
-    "is",
     "in",
     "as",
     "sizeof",
     "alignof",
-    "try",
-    "catch",
     "const",
 }
 
@@ -203,12 +195,15 @@ def lex(src: str, filename: str = "<input>") -> list[Token]:
         if ch == '"':
             j = i + 1
             escaped = False
+            has_interpolation = False
             while j < len(src):
                 c = src[j]
                 if escaped:
                     escaped = False
                 elif c == "\\":
                     escaped = True
+                elif c == '{' and not escaped:
+                    has_interpolation = True
                 elif c == '"':
                     break
                 j += 1
@@ -216,7 +211,10 @@ def lex(src: str, filename: str = "<input>") -> list[Token]:
                 out.append(Token("ERROR", "unterminated string", start_i, start_line, start_col))
                 break
             raw = src[i + 1 : j]
-            out.append(Token("STR", raw, start_i, start_line, start_col))
+            if has_interpolation:
+                out.append(Token("STR_INTERP", raw, start_i, start_line, start_col))
+            else:
+                out.append(Token("STR", raw, start_i, start_line, start_col))
             text = src[i : j + 1]
             line, col = _advance_pos(text, line, col)
             i = j + 1

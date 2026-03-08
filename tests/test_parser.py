@@ -1,15 +1,15 @@
 from astra.ast import (
-    BitSizeOfTypeExpr,
+    ArrayLit,
     AlignOfTypeExpr,
     AlignOfValueExpr,
     AssignStmt,
     AwaitExpr,
     Binary,
+    BitSizeOfTypeExpr,
     BreakStmt,
     CastExpr,
     ContinueStmt,
     DeferStmt,
-    DropStmt,
     EnumDecl,
     ExternFnDecl,
     FieldExpr,
@@ -359,13 +359,6 @@ b\"\"\";
 """
     prog = parse(src)
     assert isinstance(prog.items[0], FnDecl)
-
-
-def test_parse_drop_stmt():
-    src = "fn main() Int{ drop print(1); return 0; }"
-    prog = parse(src)
-    fn = prog.items[0]
-    assert isinstance(fn.body[0], DropStmt)
 
 
 def test_parse_mutable_borrow_unary_expression():

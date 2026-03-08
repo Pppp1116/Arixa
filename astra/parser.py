@@ -946,11 +946,6 @@ class Parser:
             if not allow_no_semicolon:
                 self.eat(";")
             return DeferStmt(e, tok.pos, tok.line, tok.col)
-        if self.opt("drop"):
-            e = self.parse_expr()
-            if not allow_no_semicolon:
-                self.eat(";")
-            return DropStmt(e, tok.pos, tok.line, tok.col)
         if self.opt("comptime"):
             body = self.parse_block()
             return ComptimeStmt(body, tok.pos, tok.line, tok.col)
@@ -1006,8 +1001,6 @@ class Parser:
             else:
                 # Fall back to existing for loop parsing (handles ranges)
                 return self.parse_for(tok)
-        if self.opt("try"):
-            return self.parse_try_catch(tok)
         if self.opt("match"):
             return self.parse_match(tok)
         if self.opt("unsafe"):
@@ -1296,6 +1289,8 @@ class Parser:
             return Literal(_parse_float_literal(tok.text), tok.pos, tok.line, tok.col)
         if self.opt("STR"):
             return Literal(tok.text, tok.pos, tok.line, tok.col)
+        if self.opt("STR_INTERP"):
+            return self.parse_string_interpolation(tok)
         if self.opt("STR_MULTI"):
             return Literal(tok.text, tok.pos, tok.line, tok.col)
         if self.opt("CHAR"):
@@ -1341,23 +1336,6 @@ class Parser:
             return e
         self._err(f"unexpected atom {self.cur().kind}")
         raise ParseError(self.errors[-1])
-
-    def parse_try_catch(self, tok: Token) -> TryCatchStmt:
-        """Parse try-catch statement."""
-        self.eat("try")
-        try_body = self.parse_block()
-        
-        catch_handlers = []
-        while self.opt("catch"):
-            if self.cur().kind == "IDENT":
-                error_name = self.eat("IDENT").text
-                catch_body = self.parse_block()
-                catch_handlers.append((error_name, catch_body))
-            else:
-                self._err("expected error name after 'catch'")
-                raise ParseError(self.errors[-1])
-        
-        return TryCatchStmt(try_body, catch_handlers, tok.pos, tok.line, tok.col)
 
     def parse_method_call(self, obj_expr: Any) -> Any:
         """Parse method call syntax like obj.method(args) or field access like obj.field."""
@@ -1507,6 +1485,102 @@ class Parser:
         else:
             else_expr = self.parse_unary()  # Parse a single expression
         return IfExpression(cond, then_expr, else_expr, cond.pos, cond.line, cond.col)
+
+    def parse_string_interpolation(self, tok: Token) -> StringInterpolation:
+        """Parse string interpolation like 'hello {name}'."""
+        raw = tok.text
+        parts = []
+        exprs = []
+        
+        i = 0
+        while i < len(raw):
+            # Find next interpolation start
+            next_brace = i
+            while next_brace < len(raw):
+                next_brace = raw.find('{', next_brace)
+                if next_brace == -1:
+                    break
+                # Check if this is an escaped brace ({{)
+                if next_brace + 1 < len(raw) and raw[next_brace + 1] == '{':
+                    # Skip escaped brace
+                    next_brace += 2
+                    continue
+                break
+            if next_brace == -1:
+                # No more interpolations, add remaining text
+                if i < len(raw):
+                    # Process escaped braces in the final text part
+                    text_part = raw[i:]
+                    text_part = text_part.replace("{{", "{").replace("}}", "}")
+                    parts.append(text_part)
+                # Ensure invariant holds - if we have expressions but no trailing text, add empty string
+                elif exprs and len(parts) == len(exprs):
+                    parts.append("")
+                break
+            
+            # Add text before interpolation
+            if next_brace > i:
+                # Process escaped braces in the text part
+                text_part = raw[i:next_brace]
+                text_part = text_part.replace("{{", "{").replace("}}", "}")
+                parts.append(text_part)
+            elif next_brace == i:
+                # Interpolation at current position - add empty string to maintain invariant
+                parts.append("")
+            
+            # Find matching closing brace
+            brace_depth = 1
+            j = next_brace + 1
+            while j < len(raw) and brace_depth > 0:
+                if raw[j] == '{':
+                    brace_depth += 1
+                elif raw[j] == '}':
+                    # Check for escaped closing brace (}})
+                    if j + 1 < len(raw) and raw[j + 1] == '}':
+                        # Skip the escaped brace
+                        j += 1
+                    else:
+                        brace_depth -= 1
+                        if brace_depth == 0:
+                            break
+                j += 1
+            
+            if brace_depth > 0:
+                self._err("unclosed interpolation brace", tok)
+                raise ParseError(self.errors[-1])
+            
+            # Extract expression inside braces
+            expr_text = raw[next_brace + 1:j]
+            if not expr_text:
+                self._err("empty interpolation", tok)
+                raise ParseError(self.errors[-1])
+            
+            # Save current parser state
+            saved_i = self.i
+            saved_toks = self.toks
+            
+            # Create temporary tokens for the expression
+            try:
+                temp_tokens = lex(expr_text, f"<interpolation at {tok.line}:{tok.col}>")
+                self.toks = temp_tokens
+                self.i = 0
+                expr = self.parse_expr()
+                if self.errors:
+                    raise ParseError(self.errors[-1])
+                
+                # Ensure we consumed all tokens - no partial parses allowed
+                if self.i < len(self.toks):
+                    next_tok = self.toks[self.i]
+                    raise ParseError(f"Unexpected token after interpolation: {next_tok.kind} at {next_tok.line}:{next_tok.col}")
+            finally:
+                # Restore parser state
+                self.toks = saved_toks
+                self.i = saved_i
+            
+            exprs.append(expr)
+            i = j + 1
+        
+        return StringInterpolation(parts, exprs, tok.pos, tok.line, tok.col)
 
 
 def parse(src: str, filename: str = "<input>"):

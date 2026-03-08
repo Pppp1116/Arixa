@@ -3,7 +3,7 @@ import std.str;
 
 fn main() Int {
     // Test enhanced for loop with initialization
-    for mut i = 0; i < 5; i += 1 {
+    for i in 0..4 {
         print("Count: " + to_string_int(i));
     }
     

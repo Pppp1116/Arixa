@@ -1,0 +1,37 @@
+// Comprehensive async/await demo
+import std.time;
+import std.str;
+
+async fn fetch_user(id Int) String {
+    await sleep_ms(50);
+    return "User" + to_string_int(id);
+}
+
+async fn fetch_posts(user_id Int) String {
+    await sleep_ms(30);
+    return "Posts for " + to_string_int(user_id);
+}
+
+async fn process_data(id Int) String {
+    user = await fetch_user(id);
+    posts = await fetch_posts(id);
+    return user + ": " + posts;
+}
+
+fn main() Int {
+    // Test sequential async calls
+    result1 = await process_data(1);
+    print(result1);
+    
+    // Test parallel async calls using spawn
+    handle1 = spawn(process_data, 2);
+    handle2 = spawn(process_data, 3);
+    
+    res1 = join(handle1);
+    res2 = join(handle2);
+    
+    print(res1);
+    print(res2);
+    
+    return 0;
+}

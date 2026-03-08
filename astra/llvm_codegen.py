@@ -367,7 +367,7 @@ def _packed_load_bits(ctx: _ModuleCtx, state: _FnState, base_ptr: ir.Value, sinf
             ext = b.shl(ext, ir.Constant(int_ty, i * 8))
         acc = b.or_(acc, ext)
     shifted = b.lshr(acc, ir.Constant(int_ty, bit_shift))
-    mask_v = (1 << bits) - 1
+    mask_v = (1 << bits) - 1 if bits > 0 else 0
     raw = b.and_(shifted, ir.Constant(int_ty, mask_v))
     return raw, bits, bit_shift
 
@@ -407,12 +407,16 @@ def _packed_store_bits(
     else:
         raise CodegenError(_diag(node, "packed field assignment expects integer value"))
 
-    mask_v = (1 << bits) - 1
+    # Truncate value to field width first
+    mask_v = (1 << bits) - 1 if bits > 0 else 0
+    truncated_value = b.and_(nb, ir.Constant(int_ty, mask_v))
+    
+    # Clear destination bits and insert new value
     field_mask = mask_v << bit_shift
     window_bits = nbytes * 8
     full_mask = (1 << window_bits) - 1
     clear_mask = full_mask ^ field_mask
-    inserted = b.shl(b.and_(nb, ir.Constant(int_ty, mask_v)), ir.Constant(int_ty, bit_shift))
+    inserted = b.shl(truncated_value, ir.Constant(int_ty, bit_shift))
     merged = b.or_(b.and_(old, ir.Constant(int_ty, clear_mask)), inserted)
 
     for i in range(nbytes):
@@ -1032,6 +1036,8 @@ def _declare_runtime(ctx: _ModuleCtx, name: str) -> ir.Function:
     i1 = ir.IntType(1)
     if name == "astra_print_i64":
         fnty = ir.FunctionType(ir.VoidType(), [i64])
+    elif name == "astra_print_int":
+        fnty = ir.FunctionType(ir.VoidType(), [i64])
     elif name == "astra_print_str":
         fnty = ir.FunctionType(ir.VoidType(), [i8p, i64])
     elif name == "astra_any_box_i64":
@@ -1162,6 +1168,20 @@ def _declare_runtime(ctx: _ModuleCtx, name: str) -> ir.Function:
         fnty = ir.FunctionType(ir.VoidType(), [i8p, i64])
     elif name == "astra_fmod":
         fnty = ir.FunctionType(ir.DoubleType(), [ir.DoubleType(), ir.DoubleType()])
+    elif name == "astra_print_int":
+        fnty = ir.FunctionType(ir.VoidType(), [i64])
+    elif name == "astra_print_bool":
+        fnty = ir.FunctionType(ir.VoidType(), [i1])
+    elif name == "astra_print_float":
+        fnty = ir.FunctionType(ir.VoidType(), [ir.DoubleType()])
+    elif name == "astra_int_to_str":
+        fnty = ir.FunctionType(i8p, [i64])
+    elif name == "astra_float_to_str":
+        fnty = ir.FunctionType(i8p, [ir.DoubleType()])
+    elif name == "astra_bool_to_str":
+        fnty = ir.FunctionType(i8p, [i1])
+    elif name == "astra_format_string":
+        fnty = ir.FunctionType(i8p, [i8p, i8p, i64])
     elif name.startswith("astra_i128_"):
         fnty = ir.FunctionType(i128, [i128, i128])
     elif name.startswith("astra_u128_"):
@@ -1171,6 +1191,61 @@ def _declare_runtime(ctx: _ModuleCtx, name: str) -> ir.Function:
     fn = ir.Function(ctx.module, fnty, name=name)
     ctx.fn_map[name] = fn
     return fn
+
+
+def _compile_string_interpolation(ctx: _ModuleCtx, state: _CompileState, interp: StringInterpolation) -> _Value:
+    """Compile string interpolation to a string value."""
+    # For now, implement simple concatenation using runtime string formatting
+    # This could be optimized in the future
+    
+    # Create a format string that will be used by a runtime function
+    format_parts = []
+    for i, part in enumerate(interp.parts):
+        if part:
+            format_parts.append(part.replace("{", "{{").replace("}", "}}"))
+        if i < len(interp.exprs):
+            format_parts.append("{}")
+    
+    format_str = "".join(format_parts)
+    
+    # Get the format string global
+    g = _get_string_global(ctx, format_str)
+    b = state.builder
+    ptr = b.gep(g, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+    
+    # Compile all expressions
+    args = []
+    for expr in interp.exprs:
+        arg = _compile_expr(ctx, state, expr)
+        aty = _canonical_type(arg.ty)
+        
+        # Convert each argument to string if needed
+        if aty in {"String", "str"}:
+            args.append(arg.value)
+        elif aty in {"Int", "isize", "usize"}:
+            to_str_fn = _declare_runtime(ctx, "astra_int_to_str")
+            str_val = b.call(to_str_fn, [arg.value])
+            args.append(str_val)
+        elif aty in {"Float", "f64"}:
+            to_str_fn = _declare_runtime(ctx, "astra_float_to_str")
+            str_val = b.call(to_str_fn, [arg.value])
+            args.append(str_val)
+        elif aty == "Bool":
+            to_str_fn = _declare_runtime(ctx, "astra_bool_to_str")
+            str_val = b.call(to_str_fn, [arg.value])
+            args.append(str_val)
+        else:
+            # Convert to JSON then to string
+            json_fn = _declare_runtime(ctx, "astra_to_json")
+            boxed_arg = _coerce_value(ctx, state, arg.value, arg.ty, "Any", expr)
+            json_val = b.call(json_fn, [boxed_arg])
+            args.append(json_val)
+    
+    # Call runtime format function
+    format_fn = _declare_runtime(ctx, "astra_format_string")
+    result = b.call(format_fn, [ptr] + args)
+    
+    return _Value(result, "String")
 
 
 def _declare_intrinsic(ctx: _ModuleCtx, base: str, bits: int) -> ir.Function:
@@ -1676,28 +1751,147 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
             return _Value(ir.Constant(i64, 0), "Int")
 
     if base == "print":
-        if len(call.args) != 1:
-            raise CodegenError(_diag(call, "print expects 1 argument"))
-        arg_node = call.args[0]
-        if isinstance(arg_node, Literal) and isinstance(arg_node.value, str):
-            g = _get_string_global(ctx, arg_node.value)
-            ptr = b.gep(g, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
-            fn = _declare_runtime(ctx, "astra_print_str")
-            b.call(fn, [ptr, ir.Constant(i64, len(arg_node.value.encode("utf-8")))])
+        # Gather all string representations first
+        parts = []
+        for i, arg_node in enumerate(call.args):
+            if isinstance(arg_node, StringInterpolation):
+                compiled_str = _compile_string_interpolation(ctx, state, arg_node)
+                parts.append(compiled_str.value)
+            elif isinstance(arg_node, Literal) and isinstance(arg_node.value, str):
+                g = _get_string_global(ctx, arg_node.value)
+                ptr = b.gep(g, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+                parts.append(ptr)
+            else:
+                arg = _compile_expr(ctx, state, arg_node)
+                aty = _canonical_type(arg.ty)
+                if aty in {"String", "str"}:
+                    sp = _as_string_ptr(arg, arg_node)
+                    parts.append(sp)
+                elif aty in {"Int", "isize", "usize"}:
+                    to_str_fn = _declare_runtime(ctx, "astra_int_to_str")
+                    str_val = b.call(to_str_fn, [arg.value])
+                    parts.append(str_val)
+                elif aty in {"Float", "f64"}:
+                    to_str_fn = _declare_runtime(ctx, "astra_float_to_str")
+                    str_val = b.call(to_str_fn, [arg.value])
+                    parts.append(str_val)
+                elif aty == "Bool":
+                    to_str_fn = _declare_runtime(ctx, "astra_bool_to_str")
+                    str_val = b.call(to_str_fn, [arg.value])
+                    parts.append(str_val)
+                else:
+                    json_fn = _declare_runtime(ctx, "astra_to_json")
+                    boxed_arg = _coerce_value(ctx, state, arg.value, arg.ty, "Any", arg_node)
+                    json_val = b.call(json_fn, [boxed_arg])
+                    sp = _as_string_ptr(_Value(json_val, "String"), arg_node)
+                    parts.append(sp)
+            
+            # Add space between arguments (except last)
+            if i < len(call.args) - 1:
+                space_str = _get_string_global(ctx, " ")
+                space_ptr = b.gep(space_str, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+                parts.append(space_ptr)
+        
+        # Concatenate all parts into one string
+        if not parts:
+            empty_str = _get_string_global(ctx, "")
+            final_ptr = b.gep(empty_str, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
         else:
+            # Start with the first part
+            result = parts[0]
+            for part in parts[1:]:
+                concat_fn = _declare_runtime(ctx, "astra_str_concat")
+                result = b.call(concat_fn, [result, part])
+            final_ptr = result
+        
+        # Single print call
+        len_fn = _declare_runtime(ctx, "astra_len_str")
+        final_len = b.call(len_fn, [final_ptr])
+        fn = _declare_runtime(ctx, "astra_print_str")
+        b.call(fn, [final_ptr, final_len])
+        
+        return _Value(ir.Constant(i64, 0), "Int")
+
+    if base == "format":
+        # Format function returns a string instead of printing
+        if len(call.args) == 1 and isinstance(call.args[0], StringInterpolation):
+            # Single string interpolation argument
+            return _compile_string_interpolation(ctx, state, call.args[0])
+        elif len(call.args) == 1:
+            # Single argument - convert to string if needed
+            arg_node = call.args[0]
             arg = _compile_expr(ctx, state, arg_node)
             aty = _canonical_type(arg.ty)
             if aty in {"String", "str"}:
-                sp = _as_string_ptr(arg, arg_node)
-                len_fn = _declare_runtime(ctx, "astra_len_str")
-                ln = b.call(len_fn, [sp])
-                fn = _declare_runtime(ctx, "astra_print_str")
-                b.call(fn, [sp, ln])
+                return arg
+            elif aty in {"Int", "isize", "usize"}:
+                to_str_fn = _declare_runtime(ctx, "astra_int_to_str")
+                str_val = b.call(to_str_fn, [arg.value])
+                return _Value(str_val, "String")
+            elif aty in {"Float", "f64"}:
+                to_str_fn = _declare_runtime(ctx, "astra_float_to_str")
+                str_val = b.call(to_str_fn, [arg.value])
+                return _Value(str_val, "String")
+            elif aty == "Bool":
+                to_str_fn = _declare_runtime(ctx, "astra_bool_to_str")
+                str_val = b.call(to_str_fn, [arg.value])
+                return _Value(str_val, "String")
             else:
-                v = _as_i64(arg, call)
-                fn = _declare_runtime(ctx, "astra_print_i64")
-                b.call(fn, [v])
-        return _Value(ir.Constant(i64, 0), "Void")
+                # Convert to JSON then to string
+                json_fn = _declare_runtime(ctx, "astra_to_json")
+                boxed_arg = _coerce_value(ctx, state, arg.value, arg.ty, "Any", arg_node)
+                json_val = b.call(json_fn, [boxed_arg])
+                return _Value(json_val, "String")
+        else:
+            # Multiple arguments - concatenate with spaces
+            parts = []
+            for i, arg_node in enumerate(call.args):
+                if isinstance(arg_node, StringInterpolation):
+                    compiled_str = _compile_string_interpolation(ctx, state, arg_node)
+                    parts.append(compiled_str.value)
+                else:
+                    arg = _compile_expr(ctx, state, arg_node)
+                    aty = _canonical_type(arg.ty)
+                    if aty in {"String", "str"}:
+                        parts.append(arg.value)
+                    elif aty in {"Int", "isize", "usize"}:
+                        to_str_fn = _declare_runtime(ctx, "astra_int_to_str")
+                        str_val = b.call(to_str_fn, [arg.value])
+                        parts.append(str_val)
+                    elif aty in {"Float", "f64"}:
+                        to_str_fn = _declare_runtime(ctx, "astra_float_to_str")
+                        str_val = b.call(to_str_fn, [arg.value])
+                        parts.append(str_val)
+                    elif aty == "Bool":
+                        to_str_fn = _declare_runtime(ctx, "astra_bool_to_str")
+                        str_val = b.call(to_str_fn, [arg.value])
+                        parts.append(str_val)
+                    else:
+                        # Convert to JSON then to string
+                        json_fn = _declare_runtime(ctx, "astra_to_json")
+                        boxed_arg = _coerce_value(ctx, state, arg.value, arg.ty, "Any", arg_node)
+                        json_val = b.call(json_fn, [boxed_arg])
+                        parts.append(json_val)
+                
+                # Add space between arguments (except last)
+                if i < len(call.args) - 1:
+                    space_str = _get_string_global(ctx, " ")
+                    space_ptr = b.gep(space_str, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+                    parts.append(space_ptr)
+            
+            # Concatenate all parts
+            if not parts:
+                empty_str = _get_string_global(ctx, "")
+                ptr = b.gep(empty_str, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+                return _Value(ptr, "String")
+            
+            # Start with the first part
+            result = parts[0]
+            for part in parts[1:]:
+                concat_fn = _declare_runtime(ctx, "astra_str_concat")
+                result = b.call(concat_fn, [result, part])
+            
+            return _Value(result, "String")
 
     if base == "alloc":
         if len(call.args) != 1:
@@ -1828,39 +2022,62 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
     if base == "atomic_load":
         if len(call.args) != 1:
             raise CodegenError(_diag(call, "atomic_load expects 1 argument"))
-        h = _compile_expr(ctx, state, call.args[0])
+        # Get the AtomicInt pointer
+        atomic_ptr = _compile_expr(ctx, state, call.args[0])
+        # Get the handle field directly
+        handle_ptr = b.gep(atomic_ptr.value, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+        handle_val = b.load(handle_ptr)
+        # Call runtime with the handle value
         fn = _declare_runtime(ctx, "astra_atomic_load")
-        out = b.call(fn, [_as_i64(h, call.args[0])])
+        out = b.call(fn, [handle_val])
         return _Value(out, "Int")
 
     if base == "atomic_store":
         if len(call.args) != 2:
             raise CodegenError(_diag(call, "atomic_store expects 2 arguments"))
-        h = _compile_expr(ctx, state, call.args[0])
+        # Get the AtomicInt pointer
+        atomic_ptr = _compile_expr(ctx, state, call.args[0])
+        # Get the handle field directly
+        handle_ptr = b.gep(atomic_ptr.value, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+        handle_val = b.load(handle_ptr)
+        # Get the value to store
         v = _compile_expr(ctx, state, call.args[1])
+        # Call runtime with the handle value and store value
         fn = _declare_runtime(ctx, "astra_atomic_store")
-        out = b.call(fn, [_as_i64(h, call.args[0]), _as_i64(v, call.args[1])])
+        out = b.call(fn, [handle_val, _as_i64(v, call.args[1])])
         return _Value(out, "Int")
 
     if base == "atomic_fetch_add":
         if len(call.args) != 2:
             raise CodegenError(_diag(call, "atomic_fetch_add expects 2 arguments"))
-        h = _compile_expr(ctx, state, call.args[0])
+        # Get the AtomicInt pointer
+        atomic_ptr = _compile_expr(ctx, state, call.args[0])
+        # Get the handle field directly
+        handle_ptr = b.gep(atomic_ptr.value, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+        handle_val = b.load(handle_ptr)
+        # Get the delta value
         d = _compile_expr(ctx, state, call.args[1])
+        # Call runtime with the handle value and delta
         fn = _declare_runtime(ctx, "astra_atomic_fetch_add")
-        out = b.call(fn, [_as_i64(h, call.args[0]), _as_i64(d, call.args[1])])
+        out = b.call(fn, [handle_val, _as_i64(d, call.args[1])])
         return _Value(out, "Int")
 
     if base == "atomic_compare_exchange":
         if len(call.args) != 3:
             raise CodegenError(_diag(call, "atomic_compare_exchange expects 3 arguments"))
-        h = _compile_expr(ctx, state, call.args[0])
+        # Get the AtomicInt pointer
+        atomic_ptr = _compile_expr(ctx, state, call.args[0])
+        # Get the handle field directly
+        handle_ptr = b.gep(atomic_ptr.value, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+        handle_val = b.load(handle_ptr)
+        # Get expected and desired values
         expected = _compile_expr(ctx, state, call.args[1])
         desired = _compile_expr(ctx, state, call.args[2])
+        # Call runtime with the handle value and expected/desired values
         fn = _declare_runtime(ctx, "astra_atomic_compare_exchange")
         out = b.call(
             fn,
-            [_as_i64(h, call.args[0]), _as_i64(expected, call.args[1]), _as_i64(desired, call.args[2])],
+            [handle_val, _as_i64(expected, call.args[1]), _as_i64(desired, call.args[2])],
         )
         return _Value(out, "Bool")
 
@@ -2432,6 +2649,8 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
             "vec_get",
             "vec_set",
             "vec_push",
+            "format",
+            "__format",
             "__print",
             "__len",
             "__read_file",
@@ -3067,6 +3286,20 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
         obj = _compile_expr(ctx, state, e.obj, overflow_mode=overflow_mode)
         obj_ty = _expr_type(state, e.obj)
         base_ty = _strip_ref_type(obj_ty)
+        
+        # Special handling for atomic operations - if field is 'handle' and base type is AtomicInt
+        if e.field == "handle":
+            # Check if obj.value is a pointer or a value
+            if isinstance(obj.value.type, ir.PointerType):
+                # Get the handle field directly from the pointer
+                handle_ptr = b.gep(obj.value, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+                handle_val = b.load(handle_ptr)
+                return _Value(handle_val, "Int")
+            else:
+                # obj.value is the AtomicInt struct itself, extract field 0
+                handle_val = b.extract_value(obj.value, [0])
+                return _Value(handle_val, "Int")
+        
         if base_ty not in ctx.structs:
             raise CodegenError(_diag(e, f"field access requires struct receiver, got {base_ty}"))
         sinfo = ctx.structs[base_ty]
@@ -3800,16 +4033,6 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
         _compile_expr(ctx, state, st.expr, overflow_mode=overflow_mode)
         return
 
-    if isinstance(st, DropStmt):
-        if getattr(st, "drop_free", False) and isinstance(st.expr, Name):
-            v = _compile_expr(ctx, state, st.expr, overflow_mode=overflow_mode)
-            pv = _coerce_value(ctx, state, v.value, v.ty, "usize", st.expr)
-            fn = _declare_runtime(ctx, "astra_free")
-            b.call(fn, [pv, ir.Constant(ir.IntType(64), 0), ir.Constant(ir.IntType(64), 8)])
-            return
-        _compile_expr(ctx, state, st.expr, overflow_mode=overflow_mode)
-        return
-
     if isinstance(st, DeferStmt):
         cnt_ptr = state.defer_counts.get(id(st))
         if cnt_ptr is None:
@@ -4035,45 +4258,6 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
         b.position_at_end(end_block)
         return
     
-    if isinstance(st, TryCatchStmt):
-        # Simplified try-catch implementation
-        # In a real implementation, this would use LLVM invoke and landingpad
-        try_block = fn.append_basic_block("try_body")
-        catch_block = fn.append_basic_block("catch_body")
-        end_block = fn.append_basic_block("try_end")
-        
-        b.branch(try_block)
-        
-        # Try body
-        b.position_at_end(try_block)
-        for sub in st.try_body:
-            _compile_stmt(ctx, state, sub, overflow_mode)
-            if _is_terminated(state):
-                break
-        if not _is_terminated(state):
-            b.branch(end_block)
-        
-        # Catch handlers (simplified - just execute first catch)
-        b.position_at_end(catch_block)
-        if st.catch_handlers:
-            error_name, catch_body = st.catch_handlers[0]
-            # Add error variable to scope (simplified)
-            error_ptr = b.alloca(_llvm_type(ctx, "String"), name=error_name)
-            b.store(_default_value(ctx, "String"), error_ptr)
-            state.vars[error_name] = error_ptr
-            state.var_types[error_name] = "String"
-            
-            for sub in catch_body:
-                _compile_stmt(ctx, state, sub, overflow_mode)
-                if _is_terminated(state):
-                    break
-        if not _is_terminated(state):
-            b.branch(end_block)
-        
-        # End block
-        b.position_at_end(end_block)
-        return
-
     raise CodegenError(_diag(st, f"internal: unexpected statement node {type(st).__name__}"))
 
 

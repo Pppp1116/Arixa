@@ -1062,6 +1062,8 @@ uintptr_t astra_join(uintptr_t tid) {
     return done_value;
   }
   bool has_thread = g_spawn[idx].has_thread;
+  // Mark as joining immediately to prevent reuse
+  g_spawn[idx].joined = true;
 #if defined(_WIN32)
   HANDLE th = g_spawn[idx].thread;
 #else
@@ -1072,8 +1074,12 @@ uintptr_t astra_join(uintptr_t tid) {
   uintptr_t worker_raw = 0;
   if (has_thread) {
 #if defined(_WIN32)
+    if (th == NULL) {
+      return astra_any_box_i64(0);
+    }
     DWORD wait_rc = WaitForSingleObject(th, INFINITE);
     if (wait_rc != WAIT_OBJECT_0) {
+      CloseHandle(th);
       return astra_any_box_i64(0);
     }
     DWORD code = 0;
@@ -1093,9 +1099,11 @@ uintptr_t astra_join(uintptr_t tid) {
   }
   uintptr_t boxed = astra_any_box_i64((int64_t)worker_raw);
   ASTRA_SPAWN_LOCK();
-  g_spawn[idx].value = boxed;
-  g_spawn[idx].joined = true;
-  g_spawn[idx].has_thread = false;
+  // Double-check that the entry is still valid and hasn't been reused
+  if (idx < g_spawn_cap && g_spawn[idx].used && g_spawn[idx].has_thread == has_thread) {
+    g_spawn[idx].value = boxed;
+    g_spawn[idx].has_thread = false;
+  }
   ASTRA_SPAWN_UNLOCK();
   return boxed;
 }
@@ -2531,6 +2539,19 @@ i128 astra_i128_mod_trap(i128 a, i128 b) {
     astra_trap();
   }
   return a % b;
+}
+
+// Backward compatibility print functions for stdlib
+void astra_print_int(int64_t x) {
+  printf("%lld", (long long)x);
+}
+
+void astra_print_bool(int8_t x) {
+  printf("%s", x ? "true" : "false");
+}
+
+void astra_print_float(double x) {
+  printf("%.6g", x);
 }
 
 u128 astra_u128_mod_wrap(u128 a, u128 b) {

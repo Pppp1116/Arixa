@@ -7,9 +7,9 @@ fn main() Int{
         return 1;
     }
     else {}
-    drop tcp_send(conn, "ping\\n");
+    tcp_send(conn, "ping\n");
     reply = tcp_recv(conn, 256);
     print(reply);
-    drop tcp_close(conn);
+    tcp_close(conn);
     return 0;
 }

@@ -1,0 +1,35 @@
+// Simple memory safety demonstration
+import std.io;
+
+struct Point {
+    x: Float,
+    y: Float,
+}
+
+fn test_ownership() Int {
+    p1 = Point(1.0, 2.0);
+    p2 = p1;
+    print("Point moved successfully");
+    print("x=");
+    print(p2.x);
+    print(" y=");
+    print(p2.y);
+    return 0;
+}
+
+fn test_borrowing() Int {
+    p = Point(3.0, 4.0);
+    
+    ref = &p;
+    print("Via immutable borrow: x=");
+    print(ref.x);
+    
+    return 0;
+}
+
+fn main() Int {
+    test_ownership();
+    test_borrowing();
+    print("Memory safety works!");
+    return 0;
+}

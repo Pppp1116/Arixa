@@ -1,0 +1,13 @@
+// Simple async/await test
+import std.time;
+
+async fn simple_async() String {
+    await sleep_ms(100);
+    return "Async completed!";
+}
+
+fn main() Int {
+    result = await simple_async();
+    print(result);
+    return 0;
+}

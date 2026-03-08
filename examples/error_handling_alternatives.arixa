@@ -1,0 +1,58 @@
+// Example showing simple union type error handling in ASTRA
+
+// Approach 1: Using union types (current ASTRA pattern)
+fn divide_result(a Int, b Int) Int | String {
+    if b == 0 {
+        return "Division by zero";
+    } else {
+        return a / b;
+    }
+}
+
+fn using_union_types() Int {
+    result = divide_result(10, 0);
+    
+    // Check result type using match
+    match result {
+        value => {
+            print("Result: " + to_string_int(value));
+            return value;
+        }
+        error => {
+            print("Error: " + error);
+            return 0;
+        }
+    }
+}
+
+// Approach 2: Using nullable types
+fn divide_nullable(a Int, b Int) Int | none {
+    if b == 0 {
+        return none;
+    } else {
+        return a / b;
+    }
+}
+
+fn using_nullable_types() Int {
+    result = divide_nullable(10, 0);
+    
+    if result == none {
+        print("Division failed");
+        return 0;
+    } else {
+        value = result as Int;
+        print("Result: " + to_string_int(value));
+        return value;
+    }
+}
+
+fn main() Int {
+    print("=== Using Union Types ===");
+    result1 = using_union_types();
+    
+    print("\n=== Using Nullable Types ===");
+    result2 = using_nullable_types();
+    
+    return result1 + result2;
+}

@@ -2,7 +2,7 @@ import std.time;
 
 fn main() Int{
     t0 = monotonic_ms();
-    drop sleep_ms(10);
+    sleep_ms(10);
     t1 = monotonic_ms();
     print(t1 - t0);
     print(now_unix());

@@ -602,6 +602,13 @@ def _friendly_message_for(message: str, code: str) -> str:
         return message + "; this cast type is not supported in Astra"
     
     if "borrow" in message and "cannot" in message:
+        # Enhanced borrow checker messages already contain detailed explanations
+        # Preserve them as-is instead of simplifying
+        if "because it is declared as immutable" in message or \
+           "because it is already borrowed" in message or \
+           "because it is mutably borrowed" in message:
+            return message
+        # Fallback for any remaining old-style borrow errors
         if "mutably borrow" in message:
             return "cannot create mutable reference while other references exist"
         if "immutably borrow" in message:
@@ -739,10 +746,20 @@ def _suggestions_for(
         out.append(DiagSuggestion(message="check if the cast is supported or use intermediate conversions"))
 
     if "borrow" in m and "cannot" in m:
-        if "mutably borrow" in m:
-            out.append(DiagSuggestion(message="reduce the scope of existing references or use interior mutability"))
-        if "immutably borrow" in m:
-            out.append(DiagSuggestion(message="wait for mutable references to go out of scope or clone the value"))
+        # Enhanced messages already contain detailed suggestions
+        if "because it is declared as immutable" in m or \
+           "because it is already borrowed" in m or \
+           "because it is mutably borrowed" in m or \
+           "while it is mutably borrowed" in m or \
+           "while it is immutably borrowed" in m:
+            # Enhanced messages already contain suggestions, don't add more
+            pass
+        else:
+            # Fallback for old-style borrow errors
+            if "mutably borrow" in m:
+                out.append(DiagSuggestion(message="reduce the scope of existing references or use interior mutability"))
+            if "immutably borrow" in m:
+                out.append(DiagSuggestion(message="wait for mutable references to go out of scope or clone the value"))
 
     if "use-after-" in m:
         if "move" in m:

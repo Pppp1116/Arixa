@@ -31,7 +31,6 @@ from astra.ast import (
     ComptimeStmt,
     ContinueStmt,
     DeferStmt,
-    DropStmt,
     EnumDecl,
     ExprStmt,
     ExternFnDecl,
@@ -589,7 +588,7 @@ def _dependency_native_link_data(src_file: Path) -> tuple[set[str], list[str]]:
 
 
 _STRICT_TOP_LEVEL = {FnDecl, StructDecl, EnumDecl, TraitDecl, TypeAliasDecl, ImportDecl, ExternFnDecl, LetStmt}
-_STRICT_STMTS = {LetStmt, AssignStmt, ReturnStmt, ExprStmt, DropStmt, IfStmt, MatchStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, ComptimeStmt, DeferStmt, UnsafeStmt}
+_STRICT_STMTS = {LetStmt, AssignStmt, ReturnStmt, ExprStmt, IfStmt, MatchStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, ComptimeStmt, DeferStmt, UnsafeStmt}
 _STRICT_EXPRS = {
     Literal,
     BoolLit,
@@ -727,9 +726,6 @@ def _strict_walk_stmt(st: object, errs: list[str]) -> None:
             _strict_walk_expr(st.expr, errs)
         return
     if isinstance(st, ExprStmt):
-        _strict_walk_expr(st.expr, errs)
-        return
-    if isinstance(st, DropStmt):
         _strict_walk_expr(st.expr, errs)
         return
     if isinstance(st, IfStmt):

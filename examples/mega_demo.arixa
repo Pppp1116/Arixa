@@ -1,7 +1,7 @@
 fn main() Int{
     mut v: Vec<Int> = vec_new() as Vec<Int>;
     for i in 1..=5 {
-        drop vec_push(v, i);
+        vec_push(v, i);
     }
     mut sum_v = 0;
     for x in v {
@@ -13,9 +13,9 @@ fn main() Int{
         sum_b += b as Int;
     }
     total = sum_v + sum_b;
-    payload = "{\"tool\":\"mega_demo\",\"total\":" + __to_json(total) + "}";
-    drop write_file("report_py.json", payload);
-    drop write_file("report_native.json", payload);
+    payload = format("\x7b\x22tool\x22:\x22mega_demo\x22,\x22total\x22:" + __to_json(total) + "\x7d");
+    write_file("report_py.json", payload);
+    write_file("report_native.json", payload);
     print(payload);
     return 0;
 }

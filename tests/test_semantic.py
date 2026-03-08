@@ -296,11 +296,6 @@ def test_expression_statement_allows_discarding_non_void_values():
     analyze(parse(src))
 
 
-def test_drop_statement_allows_discarding_values():
-    src = "fn id(x Int) Int{ return x; } fn main() Int{ drop id(1); return 0; }"
-    analyze(parse(src))
-
-
 def test_return_without_value_is_valid_for_void():
     src = "fn main() Void{ return; }"
     analyze(parse(src))
