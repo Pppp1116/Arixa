@@ -16,7 +16,7 @@ from astra.ast import (
     EnumDecl,
     ExternFnDecl,
     FnDecl,
-    ForStmt,
+    IteratorForStmt,
     IfStmt,
     ImportDecl,
     LetStmt,
@@ -33,13 +33,16 @@ from astra.parser import ParseError, parse
 from astra.semantic import BUILTIN_SIGS, SemanticError, analyze
 KEYWORDS = [
     "fn",
-    "return",
+    "mut",
     "if",
     "else",
     "while",
     "for",
+    "match",
+    "return",
     "break",
     "continue",
+    "unsafe",
     "struct",
     "enum",
     "type",
@@ -52,6 +55,9 @@ KEYWORDS = [
     "unsafe",
     "match",
     "none",
+    "f16",
+    "f80",
+    "f128",
 ]
 SNIPPETS = {
     "fn": "fn ${1:name}(${2}) ${3:Int} {\n    ${0}\n}",
@@ -603,7 +609,7 @@ class LSPServer:
                     break
                 if isinstance(st, LetStmt):
                     out[st.name] = (st.line, st.col)
-                if isinstance(st, ForStmt):
+                if isinstance(st, IteratorForStmt):
                     out[st.var] = (st.line, st.col)
                     walk(st.body)
                 if isinstance(st, IfStmt):

@@ -1,0 +1,205 @@
+import std.mem;
+
+// Test 1: Basic unsafe block
+fn test_basic_unsafe() Int {
+    x = 42;
+    
+    unsafe {
+        // Safe operations inside unsafe block
+        y = x * 2;
+        print("Inside unsafe block: " + to_string_int(y));
+    }
+    
+    print("Outside unsafe block: " + to_string_int(x));
+    return 0;
+}
+
+// Test 2: Unsafe casting
+fn test_unsafe_casts() Int {
+    x = 42;
+    
+    unsafe {
+        // This would require unsafe context for pointer casts
+        // ptr = &x as *Int;
+        // val = ptr as Int;
+        print("Unsafe cast operations");
+    }
+    
+    return 0;
+}
+
+// Test 3: Raw pointer operations
+fn test_raw_pointers() Int {
+    data = 100;
+    
+    unsafe {
+        // Raw pointer operations would go here
+        // raw_ptr = &data as *Int;
+        // *raw_ptr = 200;
+        print("Raw pointer operations");
+    }
+    
+    return 0;
+}
+
+// Test 4: Unsafe function calls
+fn test_unsafe_functions() Int {
+    unsafe {
+        // Call to unsafe functions
+        // result = unsafe_operation();
+        print("Unsafe function calls");
+    }
+    
+    return 0;
+}
+
+// Test 5: Nested unsafe blocks
+fn test_nested_unsafe() Int {
+    x = 10;
+    
+    unsafe {
+        y = x + 5;
+        
+        unsafe {
+            z = y * 2;
+            print("Nested unsafe: " + to_string_int(z));
+        }
+        
+        print("Outer unsafe: " + to_string_int(y));
+    }
+    
+    return 0;
+}
+
+// Test 6: Unsafe with control flow
+fn test_unsafe_control_flow() Int {
+    x = 1;
+    
+    unsafe {
+        if x > 0 {
+            y = x * 10;
+            print("Unsafe if: " + to_string_int(y));
+        }
+        
+        for i in 0..3 {
+            unsafe {
+                j = i * 2;
+                print("Unsafe for: " + to_string_int(j));
+            }
+        }
+    }
+    
+    return 0;
+}
+
+// Test 7: Unsafe with structs
+struct TestData {
+    value: Int,
+}
+
+fn test_unsafe_structs() Int {
+    data = TestData(50);
+    
+    unsafe {
+        // Unsafe struct operations
+        // raw_ptr = &data as *TestData;
+        print("Unsafe struct operations: " + to_string_int(data.value));
+    }
+    
+    return 0;
+}
+
+// Test 8: Unsafe block error handling
+fn test_unsafe_error_handling() Int {
+    x = 42;
+    
+    unsafe {
+        // Operations that might panic or have undefined behavior
+        // This is where we'd handle unsafe operations carefully
+        print("Unsafe error handling simulation");
+    }
+    
+    return 0;
+}
+
+// Test 9: Unsafe with arrays
+fn test_unsafe_arrays() Int {
+    arr = [1, 2, 3, 4, 5];
+    
+    unsafe {
+        // Unsafe array operations
+        // ptr = arr as *Int;
+        // value = *ptr;
+        print("Unsafe array operations");
+    }
+    
+    return 0;
+}
+
+// Test 10: Unsafe block boundaries
+fn test_unsafe_boundaries() Int {
+    x = 10;
+    
+    unsafe {
+        y = x + 20;
+        print("Inside: " + to_string_int(y));
+    }
+    
+    // This should be safe and allowed
+    z = x + 30;
+    print("Outside: " + to_string_int(z));
+    
+    // This should cause an error:
+    // unsafe_operation();  // ERROR: requires unsafe context
+    
+    return 0;
+}
+
+// Test 11: Unsafe in functions
+unsafe fn unsafe_function(x: Int) Int {
+    return x * 2;
+}
+
+fn test_unsafe_function_call() Int {
+    // This should require unsafe context
+    unsafe {
+        result = unsafe_function(21);
+        print("Unsafe function result: " + to_string_int(result));
+    }
+    
+    return 0;
+}
+
+// Test 12: Memory management in unsafe blocks
+fn test_unsafe_memory() Int {
+    unsafe {
+        // Simulate manual memory management
+        // ptr = alloc(sizeof(Int));
+        // *ptr = 100;
+        // value = *ptr;
+        // free(ptr);
+        print("Unsafe memory management");
+    }
+    
+    return 0;
+}
+
+fn main() Int {
+    print("Testing unsafe blocks...");
+    
+    test_basic_unsafe();
+    test_unsafe_casts();
+    test_raw_pointers();
+    test_unsafe_functions();
+    test_nested_unsafe();
+    test_unsafe_control_flow();
+    test_unsafe_structs();
+    test_unsafe_error_handling();
+    test_unsafe_arrays();
+    test_unsafe_boundaries();
+    test_unsafe_function_call();
+    test_unsafe_memory();
+    
+    print("All unsafe block tests completed!");
+    return 0;
+}

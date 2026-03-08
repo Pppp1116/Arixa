@@ -16,7 +16,7 @@ def lint_text(src: str):
         src: Astra source text to process.
     
     Returns:
-        Value produced by the routine, if any.
+        Value produced by the function, if any.
     """
     errs = []
     for i, l in enumerate(src.splitlines(), 1):
@@ -35,7 +35,7 @@ def lint_semantic(src: str, filename: str):
         filename: Filename context used for diagnostics or path resolution.
     
     Returns:
-        Value produced by the routine, if any.
+        Value produced by the function, if any.
     """
     try:
         prog = parse(src, filename=filename)
@@ -53,7 +53,7 @@ def main(argv=None):
         argv: Optional CLI arguments passed instead of process argv.
     
     Returns:
-        Value produced by the routine, if any.
+        Value produced by the function, if any.
     """
     p = argparse.ArgumentParser()
     p.add_argument("file")

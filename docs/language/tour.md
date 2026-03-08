@@ -32,8 +32,8 @@ fn main() Int{
 ```astra
 fn main() Int{
   mut v: Vec<Int> = vec_new() as Vec<Int>;
-  drop vec_push(v, 4);
-  drop vec_push(v, 5);
+  vec_push(v, 4);
+  vec_push(v, 5);
   mut sum = 0;
   for x in v {
     sum += x;

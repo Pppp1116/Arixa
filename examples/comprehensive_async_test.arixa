@@ -1,0 +1,248 @@
+// Comprehensive async/await test to identify missing features
+
+// Test 1: Basic async function
+async fn basic_async() String {
+    return "Basic async works!";
+}
+
+// Test 2: Async function with parameters
+async fn async_with_params(x: Int, y: String) String {
+    return y + to_string_int(x);
+}
+
+// Test 3: Nested async calls
+async fn nested_async() String {
+    result = await basic_async();
+    return result + " - nested!";
+}
+
+// Test 4: Async function returning different types
+async fn async_int() Int {
+    return 42;
+}
+
+async fn async_bool() Bool {
+    return true;
+}
+
+async fn async_float() Float {
+    return 3.14;
+}
+
+// Test 5: Async function with complex expressions
+async fn async_complex(x: Int, y: Int) Int {
+    temp = await async_int();
+    return x + y + temp;
+}
+
+// Test 6: Async function with conditional logic
+async fn async_conditional(flag: Bool) String {
+    if flag {
+        return await basic_async();
+    } else {
+        return "false branch";
+    }
+}
+
+// Test 7: Async function with loop
+async fn async_loop(n: Int) Int {
+    sum = 0;
+    i = 0;
+    while i < n {
+        sum = sum + i;
+        i = i + 1;
+    }
+    return sum;
+}
+
+// Test 8: Async function with match
+async fn async_match(value: Int) String {
+    match value {
+        1 => await basic_async(),
+        2 => "two",
+        _ => "other",
+    }
+}
+
+// Test 9: Generic async function
+async fn generic_async<T>(value: T) T {
+    return value;
+}
+
+// Test 10: Async function with union types
+async fn async_union() Int | String {
+    return if true { 42 } else { "hello" };
+}
+
+// Test 11: Async function in struct method
+struct AsyncStruct {
+    value: Int,
+}
+
+impl AsyncStruct {
+    async fn async_method(self) String {
+        return "Value: " + to_string_int(self.value);
+    }
+}
+
+// Test 12: Async function with error handling (if try is supported)
+async fn async_with_error() String | none {
+    return await basic_async();
+}
+
+// Test 13: Async function with array operations
+async fn async_array() [Int; 3] {
+    arr = [1, 2, 3];
+    return arr;
+}
+
+// Test 14: Async function with struct creation
+async fn async_struct() AsyncStruct {
+    return AsyncStruct(42);
+}
+
+// Test 15: Async function with multiple awaits
+async fn multiple_awaits() String {
+    result1 = await basic_async();
+    result2 = await async_with_params(10, "test");
+    return result1 + " " + result2;
+}
+
+// Test 16: Async function with async calls in expressions
+async fn async_in_expression() Int {
+    return (await async_int()) * 2;
+}
+
+// Test 17: Async function with complex control flow
+async fn async_complex_flow(x: Int) String {
+    if x > 0 {
+        if x < 10 {
+            return await basic_async();
+        } else {
+            return "large";
+        }
+    } else {
+        match x {
+            0 => "zero",
+            _ => "negative",
+        }
+    }
+}
+
+// Test 18: Async function with recursive calls
+async fn async_recursive(n: Int) Int {
+    if n <= 0 {
+        return 0;
+    }
+    return 1 + await async_recursive(n - 1);
+}
+
+// Test 19: Async function with tuple operations
+async fn async_tuple() (Int, String) {
+    return (42, "hello");
+}
+
+// Test 20: Async function with field access
+async fn async_field_access() String {
+    struct_obj = await async_struct();
+    return to_string_int(struct_obj.value);
+}
+
+// Test main function that uses all async features
+fn main() Int {
+    print("Testing comprehensive async/await features...");
+    
+    // Test basic async
+    result1 = await basic_async();
+    print(result1);
+    
+    // Test async with params
+    result2 = await async_with_params(10, "Hello ");
+    print(result2);
+    
+    // Test nested async
+    result3 = await nested_async();
+    print(result3);
+    
+    // Test different return types
+    int_result = await async_int();
+    bool_result = await async_bool();
+    float_result = await async_float();
+    print("Int: " + to_string_int(int_result));
+    print("Bool: " + if bool_result { "true" } else { "false" });
+    print("Float: " + to_string_int(float_result as Int));
+    
+    // Test complex expressions
+    complex_result = await async_complex(5, 10);
+    print("Complex: " + to_string_int(complex_result));
+    
+    // Test conditional
+    cond_result = await async_conditional(true);
+    print("Conditional: " + cond_result);
+    
+    // Test loop
+    loop_result = await async_loop(10);
+    print("Loop: " + to_string_int(loop_result));
+    
+    // Test match
+    match_result = await async_match(1);
+    print("Match: " + match_result);
+    
+    // Test generic async
+    generic_result = await generic_async<String>("generic");
+    print("Generic: " + generic_result);
+    
+    // Test union types
+    union_result = await async_union();
+    match union_result {
+        x if x is Int => print("Union Int: " + to_string_int(x)),
+        s if s is String => print("Union String: " + s),
+    }
+    
+    // Test struct method
+    struct_obj = AsyncStruct(100);
+    method_result = await struct_obj.async_method();
+    print("Method: " + method_result);
+    
+    // Test error handling
+    error_result = await async_with_error();
+    match error_result {
+        s if s is String => print("Error result: " + s),
+        none => print("No result"),
+    }
+    
+    // Test array operations
+    array_result = await async_array();
+    print("Array: " + to_string_int(array_result[0]));
+    
+    // Test struct creation
+    struct_result = await async_struct();
+    print("Struct: " + to_string_int(struct_result.value));
+    
+    // Test multiple awaits
+    multi_result = await multiple_awaits();
+    print("Multiple: " + multi_result);
+    
+    // Test async in expression
+    expr_result = await async_in_expression();
+    print("Expression: " + to_string_int(expr_result));
+    
+    // Test complex flow
+    flow_result = await async_complex_flow(5);
+    print("Complex flow: " + flow_result);
+    
+    // Test recursion
+    rec_result = await async_recursive(5);
+    print("Recursive: " + to_string_int(rec_result));
+    
+    // Test tuple
+    tuple_result = await async_tuple();
+    print("Tuple: " + to_string_int(tuple_result.0) + ", " + tuple_result.1);
+    
+    // Test field access
+    field_result = await async_field_access();
+    print("Field access: " + field_result);
+    
+    print("All async/await tests completed!");
+    return 0;
+}

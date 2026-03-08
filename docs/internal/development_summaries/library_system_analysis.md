@@ -56,9 +56,9 @@ Available bindings:
 
 ### 3. Package Registry
 
-**Location**: `/registry/packages.json`
+**Location**: `/registry/modules.json`
 
-Registered packages:
+Registered modules:
 - `c` - C standard library bindings
 - `curl` - libcurl bindings
 - `opengl` - OpenGL bindings
@@ -81,7 +81,7 @@ import "local_module.arixa";
 import "../shared/utils.arixa";
 
 // Package imports (future feature)
-import some_package;
+import some_module;
 ```
 
 ### Import Resolution
@@ -90,12 +90,12 @@ import some_package;
 1. **String imports** (`"path/file.arixa"`) - Relative to current file
 2. **Module imports** (`std.module`) - Resolved through module resolver
 3. **Stdlib imports** (`std.core`) - Mapped to stdlib root directory
-4. **Package imports** - Resolved through package cache
+4. **Package imports** - Resolved through module cache
 
 **Resolution Priority**:
 1. Check if path starts with `std` or `stdlib` → use stdlib root
 2. Check for relative file path from current directory
-3. Check for package root (`Astra.toml`)
+3. Check for module root (`Astra.toml`)
 4. Default to current working directory
 
 ### Import Behavior
@@ -166,16 +166,16 @@ error[E0202]: cannot resolve import std.nonexistent
 
 ### Package Cache
 
-**Location**: `~/.arixa/packages/` (configurable via `ARIXA_PKG_HOME`)
+**Location**: `~/.arixa/modules/` (configurable via `ARIXA_PKG_HOME`)
 
 **Package Structure**:
-- Each package in separate directory
+- Each module in separate directory
 - Version management through lock files
 - Dependency resolution via `Astra.toml`
 
 ### Registry Integration
 
-**Central Registry**: `/registry/packages.json`
+**Central Registry**: `/registry/modules.json`
 
 **Package Information**:
 - Repository URL
@@ -213,7 +213,7 @@ error[E0202]: cannot resolve import std.nonexistent
 - No circular dependency detection
 - Package management still in development
 - No version conflict resolution
-- Limited external package ecosystem
+- Limited external module ecosystem
 
 ### 🔄 Future Enhancements
 - Package manager with version resolution

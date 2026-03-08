@@ -1,4 +1,3 @@
-// Test just enhanced for loop
 import std.str;
 
 fn main() Int {

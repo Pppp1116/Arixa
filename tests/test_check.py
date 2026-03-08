@@ -8,7 +8,7 @@ def test_check_emits_structured_type_mismatch_diagnostic_with_notes():
     assert res.diagnostics
     first = res.diagnostics[0]
     assert first.code == "E0100"
-    assert first.message == "expected `Int` but found `String` in return value"
+    assert first.message == "expected `i64` but found `String` in return value"
     note_messages = {n.message for n in first.notes}
     assert any(msg.startswith("expected:") for msg in note_messages)
     assert any(msg.startswith("found:") for msg in note_messages)

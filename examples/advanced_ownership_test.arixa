@@ -1,0 +1,192 @@
+import std.mem;
+import std.str;
+
+// Advanced ownership tests with edge cases
+
+// Test 1: Partial moves
+fn test_partial_moves() Int {
+    data = ComplexData(10, 20, 30);
+    
+    // Move only part of the struct (if supported)
+    // partial = data.field1;  // This would partially move data
+    
+    // data.field2 and data.field3 should still be accessible
+    print("Remaining fields: " + to_string_int(data.field2) + 
+          ", " + to_string_int(data.field3));
+    
+    return 0;
+}
+
+// Test 2: Reference returning
+fn test_reference_returning() Int {
+    mut data = ComplexData(1, 2, 3);
+    
+    ref = get_reference(&mut data);
+    ref.field1 = 100;
+    
+    print("Modified via returned ref: " + to_string_int(data.field1));
+    return 0;
+}
+
+fn get_reference(ref: &mut ComplexData) &mut ComplexData {
+    return ref;
+}
+
+// Test 3: Borrowing in loops
+fn test_borrowing_in_loops() Int {
+    mut items = vec_new<ComplexData>();
+    vec_push(items, ComplexData(1, 2, 3));
+    vec_push(items, ComplexData(4, 5, 6));
+    
+    // Borrow each item in loop
+    for i in 0..2 {
+        item_ref = &items[i];
+        print("Item " + to_string_int(i) + ": " + 
+              to_string_int(item_ref.field1));
+    }
+    
+    return 0;
+}
+
+// Test 4: Nested borrowing
+fn test_nested_borrowing() Int {
+    mut outer = OuterData(ComplexData(10, 20, 30));
+    
+    // Borrow nested structure
+    inner_ref = &outer.inner;
+    print("Nested borrow: " + to_string_int(inner_ref.field1));
+    
+    // Can't borrow outer mutably while inner is borrowed
+    // outer_mut = &mut outer;  // ERROR
+    
+    return 0;
+}
+
+// Test 5: Lifetime annotations (conceptual)
+fn test_lifetime_annotations() Int {
+    data = ComplexData(5, 10, 15);
+    
+    // Simulate lifetime annotation
+    long_lived_ref = create_long_reference(&data);
+    print("Long-lived ref: " + to_string_int(long_lived_ref.field1));
+    
+    return 0;
+}
+
+fn create_long_reference(ref: &ComplexData) &ComplexData {
+    return ref;
+}
+
+// Test 6: Move in function calls
+fn test_move_in_calls() Int {
+    data = ComplexData(100, 200, 300);
+    
+    // Data is moved to function
+    consume_data(data);
+    
+    // Can't use data after move
+    // print(data.field1);  // ERROR: use-after-move
+    
+    return 0;
+}
+
+fn consume_data(data: ComplexData) {
+    print("Consumed data: " + to_string_int(data.field1));
+}
+
+// Test 7: Copy vs Move semantics
+fn test_copy_vs_move() Int {
+    // Copy types (primitives)
+    x = 42;
+    y = x;  // Copy, not move
+    print("Both available: " + to_string_int(x) + ", " + to_string_int(y));
+    
+    // Move types (structs)
+    move_data = ComplexData(1, 2, 3);
+    moved_data = move_data;  // Move
+    // print(move_data.field1);  // ERROR: use-after-move
+    print("Only moved: " + to_string_int(moved_data.field1));
+    
+    return 0;
+}
+
+// Test 8: Reference counting concepts
+fn test_reference_counting() Int {
+    data = ComplexData(7, 14, 21);
+    
+    {
+        ref1 = &data;
+        print("Ref1 count: 1");
+        
+        {
+            ref2 = &data;
+            print("Ref2 count: 2");
+        }  // ref2 dropped, count goes to 1
+        
+        print("Back to ref1 count: 1");
+    }  // ref1 dropped, count goes to 0
+    
+    return 0;
+}
+
+// Test 9: Unsafe ownership operations
+fn test_unsafe_ownership() Int {
+    mut data = ComplexData(50, 60, 70);
+    
+    unsafe {
+        // In unsafe blocks, we might allow more flexible operations
+        raw_ptr = &mut data as *mut ComplexData;
+        // operations on raw_ptr...
+    }
+    
+    print("Data still valid: " + to_string_int(data.field1));
+    return 0;
+}
+
+// Test 10: Ownership with generics
+fn test_generic_ownership() Int {
+    int_data = GenericData<Int>(42);
+    string_data = GenericData<string>("hello");
+    
+    process_generic(int_data);
+    process_generic(string_data);
+    
+    return 0;
+}
+
+fn process_generic<T>(data: GenericData<T>) {
+    print("Processing generic data");
+}
+
+// Supporting types
+struct ComplexData {
+    field1: Int,
+    field2: Int,
+    field3: Int,
+}
+
+struct OuterData {
+    inner: ComplexData,
+}
+
+struct GenericData<T> {
+    value: T,
+}
+
+fn main() Int {
+    print("Testing advanced ownership concepts...");
+    
+    test_partial_moves();
+    test_reference_returning();
+    test_borrowing_in_loops();
+    test_nested_borrowing();
+    test_lifetime_annotations();
+    test_move_in_calls();
+    test_copy_vs_move();
+    test_reference_counting();
+    test_unsafe_ownership();
+    test_generic_ownership();
+    
+    print("Advanced ownership tests completed!");
+    return 0;
+}

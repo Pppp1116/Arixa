@@ -1,11 +1,12 @@
 import "sdl2";
 
-fn main() i32{
-    rc = SDL_Init(0x00000020u32);
-    if rc != 0i32 {
-        return 1i32;
+fn main() i32 {
+    rc = SDL_Init(32 as u32);
+    if rc != 0 as i32 {
+        return 1 as i32;
     }
-    SDL_Delay(1000u32);
+    else {}
+    SDL_Delay(1000 as u32);
     SDL_Quit();
-    return 0i32;
+    return 0 as i32;
 }

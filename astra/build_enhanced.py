@@ -33,7 +33,7 @@ from astra.for_lowering import lower_for_loops
 from astra.gpu.kernel_lowering import lower_gpu_kernels
 from astra.comptime import run_comptime
 from astra.codegen import to_python
-from astra.optimizer_enhanced import optimize_program_enhanced
+from astra.optimizer.optimizer_enhanced import optimize_program_enhanced
 from astra.llvm_codegen_enhanced import to_llvm_ir_enhanced
 
 

@@ -1,0 +1,249 @@
+import std.mem;
+
+// Advanced unsafe block tests with edge cases
+
+// Test 1: Unsafe transmutation
+fn test_unsafe_transmute() Int {
+    x = 42;
+    
+    unsafe {
+        // Transmute between types (very unsafe!)
+        // y = transmute<Int, Float>(x);
+        print("Unsafe transmute operations");
+    }
+    
+    return 0;
+}
+
+// Test 2: Unsafe union access
+union IntFloatUnion {
+    int_val: Int,
+    float_val: Float,
+}
+
+fn test_unsafe_union() Int {
+    u = IntFloatUnion(int_val: 42);
+    
+    unsafe {
+        // Access union through different type
+        // float_val = u.float_val;
+        print("Unsafe union access");
+    }
+    
+    return 0;
+}
+
+// Test 3: Unsafe with generics
+fn test_unsafe_generics<T>(value: T) T {
+    unsafe {
+        // Generic unsafe operations
+        // ptr = &value as *T;
+        print("Unsafe generic operations");
+    }
+    
+    return value;
+}
+
+// Test 4: Unsafe with lifetimes
+fn test_unsafe_lifetimes() Int {
+    data = 100;
+    
+    unsafe {
+        // Lifetime-unsafe operations
+        // ref = &data;
+        // escaped_ref = ref;  // Potential lifetime violation
+        print("Unsafe lifetime operations");
+    }
+    
+    return 0;
+}
+
+// Test 5: Unsafe with threads (conceptual)
+fn test_unsafe_threads() Int {
+    data = 200;
+    
+    unsafe {
+        // Thread-unsafe operations
+        // shared_ptr = &data as *Int;
+        // spawn_thread(shared_ptr);
+        print("Unsafe thread operations");
+    }
+    
+    return 0;
+}
+
+// Test 6: Unsafe with FFI
+extern "C" {
+    unsafe fn external_function(x: Int) Int;
+}
+
+fn test_unsafe_ffi() Int {
+    unsafe {
+        // FFI calls require unsafe context
+        // result = external_function(50);
+        print("Unsafe FFI operations");
+    }
+    
+    return 0;
+}
+
+// Test 7: Unsafe with inline assembly
+fn test_unsafe_asm() Int {
+    x = 10;
+    
+    unsafe {
+        // Inline assembly would require unsafe context
+        // asm!("add $1, %0" : "+r"(x));
+        print("Unsafe assembly operations");
+    }
+    
+    return 0;
+}
+
+// Test 8: Unsafe with variadic functions
+fn test_unsafe_variadic() Int {
+    unsafe {
+        // Variadic function calls might be unsafe
+        // printf("Format string: %d\n", 42);
+        print("Unsafe variadic operations");
+    }
+    
+    return 0;
+}
+
+// Test 9: Unsafe with exception handling
+fn test_unsafe_exceptions() Int {
+    unsafe {
+        // Exception handling in unsafe context
+        // try {
+        //     unsafe_operation();
+        // } catch {
+        //     handle_error();
+        // }
+        print("Unsafe exception handling");
+    }
+    
+    return 0;
+}
+
+// Test 10: Unsafe with atomics
+fn test_unsafe_atomics() Int {
+    counter = 0;
+    
+    unsafe {
+        // Atomic operations might be unsafe
+        // atomic_add(&counter, 1);
+        print("Unsafe atomic operations");
+    }
+    
+    return 0;
+}
+
+// Test 11: Complex unsafe scenarios
+fn test_complex_unsafe() Int {
+    data = ComplexData(1, 2.5, "hello");
+    
+    unsafe {
+        // Multiple unsafe operations in sequence
+        // ptr1 = &data as *ComplexData;
+        // ptr2 = ptr1 as *u8;
+        // bytes = ptr2 as [u8; sizeof(ComplexData)];
+        print("Complex unsafe operations");
+    }
+    
+    return 0;
+}
+
+// Test 12: Unsafe block with error recovery
+fn test_unsafe_recovery() Int {
+    x = 42;
+    
+    unsafe {
+        // Operations that might fail
+        // result = unsafe_might_fail(x);
+        // if result.is_error {
+        //     handle_unsafe_error();
+        // }
+        print("Unsafe error recovery");
+    }
+    
+    return 0;
+}
+
+// Test 13: Unsafe with borrowing rules bypass
+fn test_unsafe_borrow_bypass() Int {
+    mut data = 100;
+    
+    unsafe {
+        // Bypass normal borrowing rules
+        // ref1 = &data;
+        // ref2 = &mut data;  // Normally not allowed
+        print("Unsafe borrow bypass");
+    }
+    
+    return 0;
+}
+
+// Test 14: Unsafe with memory layout
+fn test_unsafe_memory_layout() Int {
+    data = PackedData(1, 2, 3);
+    
+    unsafe {
+        // Access memory layout directly
+        // ptr = &data as *u8;
+        // offset = offset_of(PackedData, field2);
+        // field2_ptr = ptr + offset;
+        print("Unsafe memory layout access");
+    }
+    
+    return 0;
+}
+
+// Test 15: Unsafe with type punning
+fn test_unsafe_type_punning() Int {
+    x = 0x12345678;
+    
+    unsafe {
+        // Type punning through unions or pointers
+        // float_view = transmute<Float>(x);
+        print("Unsafe type punning");
+    }
+    
+    return 0;
+}
+
+// Supporting types
+struct ComplexData {
+    int_field: Int,
+    float_field: Float,
+    string_field: str,
+}
+
+struct PackedData {
+    field1: Int,
+    field2: Int,
+    field3: Int,
+}
+
+fn main() Int {
+    print("Testing advanced unsafe blocks...");
+    
+    test_unsafe_transmute();
+    test_unsafe_union();
+    test_unsafe_generics(42);
+    test_unsafe_lifetimes();
+    test_unsafe_threads();
+    test_unsafe_ffi();
+    test_unsafe_asm();
+    test_unsafe_variadic();
+    test_unsafe_exceptions();
+    test_unsafe_atomics();
+    test_complex_unsafe();
+    test_unsafe_recovery();
+    test_unsafe_borrow_bypass();
+    test_unsafe_memory_layout();
+    test_unsafe_type_punning();
+    
+    print("Advanced unsafe block tests completed!");
+    return 0;
+}

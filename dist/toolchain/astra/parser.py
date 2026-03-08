@@ -86,7 +86,7 @@ class Parser:
         """Return a lookahead token relative to the current cursor.
         
         Parameters:
-            n: Input value used by this routine.
+            n: Input value used by this function.
         
         Returns:
             Value described by the function return annotation.
@@ -102,7 +102,7 @@ class Parser:
         """Consume and return the expected token kind or raise ParseError.
         
         Parameters:
-            kind: Input value used by this routine.
+            kind: Input value used by this function.
         
         Returns:
             Value described by the function return annotation.
@@ -118,7 +118,7 @@ class Parser:
         """Consume and return a token when the expected kind is present.
         
         Parameters:
-            kind: Input value used by this routine.
+            kind: Input value used by this function.
         
         Returns:
             Value described by the function return annotation.
@@ -149,7 +149,6 @@ class Parser:
             ";",
             "}",
             "fn",
-            "impl",
             "struct",
             "enum",
             "type",
@@ -203,15 +202,14 @@ class Parser:
         """Parse the `top_level` grammar production from the token stream.
         
         Parameters:
-            doc: Input value used by this routine.
+            doc: Input value used by this function.
         
         Returns:
-            Value produced by the routine, if any.
+            Value produced by the function, if any.
         """
         is_pub = False
         is_unsafe = False
         is_async = False
-        is_impl = False
         is_packed = False
         link_libs: list[str] = []
         while True:
@@ -223,9 +221,6 @@ class Parser:
                 continue
             if self.opt("async"):
                 is_async = True
-                continue
-            if self.opt("impl"):
-                is_impl = True
                 continue
             if self.opt("@"):
                 attr = self.eat("IDENT").text
@@ -299,17 +294,14 @@ class Parser:
             if link_libs:
                 self._err("@link is only valid on extern function declarations")
                 raise ParseError(self.errors[-1])
-            return self.parse_fn(is_pub, is_async, doc, is_impl=is_impl, is_unsafe=is_unsafe)
+            return self.parse_fn(is_pub, is_async, doc, is_unsafe=is_unsafe)
         if self.cur().kind in {"let", "fixed"}:
-            if link_libs or is_packed or is_pub or is_unsafe or is_async or is_impl:
+            if link_libs or is_packed or is_pub or is_unsafe or is_async:
                 self._err("top-level bindings cannot use declaration modifiers or attributes")
                 raise ParseError(self.errors[-1])
             return self.parse_global_binding()
         if link_libs:
             self._err("@link is only valid on extern function declarations")
-            raise ParseError(self.errors[-1])
-        if is_impl:
-            self._err("impl must be followed by fn")
             raise ParseError(self.errors[-1])
         self._err(f"unexpected top-level token {self.cur().kind}")
         raise ParseError(self.errors[-1])
@@ -398,9 +390,9 @@ class Parser:
         """Parse the `extern_fn` grammar production from the token stream.
         
         Parameters:
-            is_pub: Input value used by this routine.
-            is_unsafe: Input value used by this routine.
-            doc: Input value used by this routine.
+            is_pub: Input value used by this function.
+            is_unsafe: Input value used by this function.
+            doc: Input value used by this function.
         
         Returns:
             Value described by the function return annotation.
@@ -437,17 +429,15 @@ class Parser:
         is_pub: bool = False,
         is_async: bool = False,
         doc: str = "",
-        is_impl: bool = False,
         is_unsafe: bool = False,
     ) -> FnDecl:
         """Parse the `fn` grammar production from the token stream.
         
         Parameters:
-            is_pub: Input value used by this routine.
-            is_async: Input value used by this routine.
-            doc: Input value used by this routine.
-            is_impl: Input value used by this routine.
-            is_unsafe: Input value used by this routine.
+            is_pub: Input value used by this function.
+            is_async: Input value used by this function.
+            doc: Input value used by this function.
+            is_unsafe: Input value used by this function.
         
         Returns:
             Value described by the function return annotation.
@@ -470,7 +460,6 @@ class Parser:
             params,
             ret,
             body,
-            is_impl=is_impl,
             pub=is_pub,
             async_fn=is_async,
             unsafe=is_unsafe,
@@ -484,9 +473,9 @@ class Parser:
         """Parse the `struct` grammar production from the token stream.
         
         Parameters:
-            is_pub: Input value used by this routine.
-            doc: Input value used by this routine.
-            packed: Input value used by this routine.
+            is_pub: Input value used by this function.
+            doc: Input value used by this function.
+            packed: Input value used by this function.
         
         Returns:
             Value described by the function return annotation.
@@ -506,8 +495,8 @@ class Parser:
         """Parse the `enum` grammar production from the token stream.
         
         Parameters:
-            is_pub: Input value used by this routine.
-            doc: Input value used by this routine.
+            is_pub: Input value used by this function.
+            doc: Input value used by this function.
         
         Returns:
             Value described by the function return annotation.
@@ -555,7 +544,7 @@ class Parser:
             none
         
         Returns:
-            Value produced by the routine, if any.
+            Value produced by the function, if any.
         """
         typ: str
         if self.opt("*"):
@@ -654,7 +643,7 @@ class Parser:
             none
         
         Returns:
-            Value produced by the routine, if any.
+            Value produced by the function, if any.
         """
         tok = self.cur()
         if self.cur().kind == "extern":
@@ -732,7 +721,7 @@ class Parser:
         """Parse the `for` grammar production from the token stream.
         
         Parameters:
-            tok: Input value used by this routine.
+            tok: Input value used by this function.
         
         Returns:
             Value described by the function return annotation.
@@ -756,7 +745,7 @@ class Parser:
         """Parse the `match` grammar production from the token stream.
         
         Parameters:
-            tok: Input value used by this routine.
+            tok: Input value used by this function.
         
         Returns:
             Value described by the function return annotation.
@@ -781,10 +770,10 @@ class Parser:
         """Parse the `expr` grammar production from the token stream.
         
         Parameters:
-            min_prec: Input value used by this routine.
+            min_prec: Input value used by this function.
         
         Returns:
-            Value produced by the routine, if any.
+            Value produced by the function, if any.
         """
         left = self.parse_cast()
         while self.cur().kind in BIN_PREC and BIN_PREC[self.cur().kind] >= min_prec:
@@ -801,7 +790,7 @@ class Parser:
             none
         
         Returns:
-            Value produced by the routine, if any.
+            Value produced by the function, if any.
         """
         expr = self.parse_unary()
         while self.opt("as"):
@@ -816,7 +805,7 @@ class Parser:
             none
         
         Returns:
-            Value produced by the routine, if any.
+            Value produced by the function, if any.
         """
         if self.opt("await"):
             tok = self.toks[self.i - 1]
@@ -837,7 +826,7 @@ class Parser:
             none
         
         Returns:
-            Value produced by the routine, if any.
+            Value produced by the function, if any.
         """
         expr = self.parse_atom()
         while True:
@@ -869,7 +858,7 @@ class Parser:
             none
         
         Returns:
-            Value produced by the routine, if any.
+            Value produced by the function, if any.
         """
         tok = self.cur()
         if self.opt("sizeof"):
@@ -936,13 +925,13 @@ class Parser:
 
 
 def parse(src: str, filename: str = "<input>"):
-    """Execute the `parse` routine.
+    """Execute the `Execute the function.` function.
     
     Parameters:
         src: Astra source text to process.
         filename: Filename context used for diagnostics or path resolution.
     
     Returns:
-        Value produced by the routine, if any.
+        Value produced by the function, if any.
     """
     return Parser(src, filename=filename).parse_program()

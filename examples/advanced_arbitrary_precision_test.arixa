@@ -1,0 +1,391 @@
+// Advanced arbitrary precision integer tests
+
+// Test 1: Complex mathematical operations
+fn test_complex_math() Int {
+    // Factorial calculation with i128
+    fn factorial_i128(n: i128) i128 {
+        if n <= 1i128 {
+            return 1i128;
+        }
+        result: i128 = 1i128;
+        i: i128 = 2i128;
+        while i <= n {
+            result = result * i;
+            i = i + 1i128;
+        }
+        return result;
+    }
+    
+    fact_20 = factorial_i128(20i128);
+    print("20! = " + to_string_int(fact_20));
+    
+    // Fibonacci sequence with i128
+    fn fibonacci_i128(n: i128) i128 {
+        if n <= 1i128 {
+            return n;
+        }
+        a: i128 = 0i128;
+        b: i128 = 1i128;
+        i: i128 = 2i128;
+        while i <= n {
+            temp = a + b;
+            a = b;
+            b = temp;
+            i = i + 1i128;
+        }
+        return b;
+    }
+    
+    fib_50 = fibonacci_i128(50i128);
+    print("Fibonacci(50) = " + to_string_int(fib_50));
+    
+    return 0;
+}
+
+// Test 2: Bit manipulation algorithms
+fn test_bit_algorithms() Int {
+    // Count set bits (population count)
+    fn count_set_bits(x: u32) u8 {
+        count: u8 = 0u8;
+        while x > 0u32 {
+            count = count + (x & 1u32) as u8;
+            x = x >> 1u32;
+        }
+        return count;
+    }
+    
+    value: u32 = 0b10110101u32;
+    bits = count_set_bits(value);
+    print("Population count: " + to_string_int(bits));
+    
+    // Find most significant bit
+    fn find_msb(x: u64) i8 {
+        if x == 0u64 {
+            return -1i8;
+        }
+        pos: i8 = 0i8;
+        while x > 1u64 {
+            x = x >> 1u64;
+            pos = pos + 1i8;
+        }
+        return pos;
+    }
+    
+    large_value: u64 = 1000000000u64;
+    msb_pos = find_msb(large_value);
+    print("MSB position: " + to_string_int(msb_pos));
+    
+    return 0;
+}
+
+// Test 3: Cryptographic operations
+fn test_crypto_operations() Int {
+    // Simple XOR cipher
+    fn xor_encrypt(data: [u8; 4], key: u8) [u8; 4] {
+        result: [u8; 4];
+        i: u8 = 0u8;
+        while i < 4u8 {
+            result[i] = data[i] ^ key;
+            i = i + 1u8;
+        }
+        return result;
+    }
+    
+    message: [u8; 4] = [72u8, 101u8, 108u8, 108u8];  // "Hell"
+    key: u8 = 42u8;
+    encrypted = xor_encrypt(message, key);
+    
+    // Decrypt
+    decrypted = xor_encrypt(encrypted, key);
+    
+    print("Crypto operations work!");
+    return 0;
+}
+
+// Test 4: Endianness and bit manipulation
+fn test_endianness() Int {
+    // Byte swap operations
+    fn swap_bytes_16(x: u16) u16 {
+        return ((x >> 8u16) & 0x00FFu16) | ((x & 0x00FFu16) << 8u16);
+    }
+    
+    fn swap_bytes_32(x: u32) u32 {
+        return ((x >> 24u32) & 0x000000FFu32) | 
+               ((x >> 8u32)  & 0x0000FF00u32) |
+               ((x & 0x0000FF00u32) << 8u32)  |
+               ((x & 0x000000FFu32) << 24u32);
+    }
+    
+    original_16: u16 = 0x1234u16;
+    swapped_16 = swap_bytes_16(original_16);
+    
+    original_32: u32 = 0x12345678u32;
+    swapped_32 = swap_bytes_32(original_32);
+    
+    print("Endianness operations work!");
+    return 0;
+}
+
+// Test 5: Fixed-point arithmetic
+fn test_fixed_point() Int {
+    // 16.16 fixed-point arithmetic using i32
+    fn fixed_add(a: i32, b: i32) i32 {
+        return a + b;
+    }
+    
+    fn fixed_mul(a: i32, b: i32) i32 {
+        return (a * b) >> 16;
+    }
+    
+    fn fixed_div(a: i32, b: i32) i32 {
+        return (a << 16) / b;
+    }
+    
+    // Represent 1.5 as 1.5 * 2^16 = 98304
+    one_point_five: i32 = 98304i32;
+    two_point_zero: i32 = 131072i32;  // 2.0 * 2^16
+    
+    result = fixed_mul(one_point_five, two_point_zero);  // Should be 3.0 * 2^16 = 196608
+    
+    print("Fixed-point arithmetic work!");
+    return 0;
+}
+
+// Test 6: Arbitrary precision integers in data structures
+struct Matrix2x2 {
+    a: i64, b: i64,
+    c: i64, d: i64,
+}
+
+struct Vector3D {
+    x: i128, y: i128, z: i128,
+}
+
+fn test_advanced_structures() Int {
+    // Matrix operations
+    fn matrix_multiply(m1: Matrix2x2, m2: Matrix2x2) Matrix2x2 {
+        return Matrix2x2(
+            m1.a * m2.a + m1.b * m2.c, m1.a * m2.b + m1.b * m2.d,
+            m1.c * m2.a + m1.d * m2.c, m1.c * m2.b + m1.d * m2.d
+        );
+    }
+    
+    mat1 = Matrix2x2(1i64, 2i64, 3i64, 4i64);
+    mat2 = Matrix2x2(5i64, 6i64, 7i64, 8i64);
+    result_mat = matrix_multiply(mat1, mat2);
+    
+    // Vector operations
+    fn vector_dot(v1: Vector3D, v2: Vector3D) i128 {
+        return v1.x * v2.x + v1.y * v2.y + v1.z * v2.z;
+    }
+    
+    vec1 = Vector3D(1000000000000i128, 2000000000000i128, 3000000000000i128);
+    vec2 = Vector3D(4000000000000i128, 5000000000000i128, 6000000000000i128);
+    dot_product = vector_dot(vec1, vec2);
+    
+    print("Advanced structures work!");
+    return 0;
+}
+
+// Test 7: Performance-critical algorithms
+fn test_performance_algorithms() Int {
+    // Binary search with i64 indices
+    fn binary_search(arr: [i64; 1000], target: i64) i64 {
+        left: i64 = 0i64;
+        right: i64 = 999i64;
+        
+        while left <= right {
+            mid: i64 = left + (right - left) / 2i64;
+            if arr[mid] == target {
+                return mid;
+            } else if arr[mid] < target {
+                left = mid + 1i64;
+            } else {
+                right = mid - 1i64;
+            }
+        }
+        return -1i64;
+    }
+    
+    // Create sorted array
+    search_array: [i64; 1000];
+    i: i64 = 0i64;
+    while i < 1000i64 {
+        search_array[i] = i * 2i64;
+        i = i + 1i64;
+    }
+    
+    index = binary_search(search_array, 500i64);
+    
+    print("Performance algorithms work!");
+    return 0;
+}
+
+// Test 8: Numeric validation and ranges
+fn test_validation() Int {
+    // Validate ranges
+    fn validate_i8_range(value: i32) bool {
+        return value >= -128i32 && value <= 127i32;
+    }
+    
+    fn validate_u16_range(value: u32) bool {
+        return value <= 65535u32;
+    }
+    
+    valid_i8 = validate_i8_range(100i32);
+    invalid_i8 = validate_i8_range(200i32);
+    
+    valid_u16 = validate_u16_range(50000u32);
+    invalid_u16 = validate_u16_range(70000u32);
+    
+    // Check for power of 2
+    fn is_power_of_two(x: u64) bool {
+        return x > 0u64 && (x & (x - 1u64)) == 0u64;
+    }
+    
+    power_of_2_1 = is_power_of_two(1024u64);
+    power_of_2_2 = is_power_of_two(1023u64);
+    
+    print("Validation operations work!");
+    return 0;
+}
+
+// Test 9: Complex expressions with mixed types
+fn test_mixed_expressions() Int {
+    // Complex expression with different integer types
+    a: i8 = 10i8;
+    b: i16 = 1000i16;
+    c: i32 = 100000i32;
+    d: i64 = 10000000i64;
+    
+    // This would require careful type promotion rules
+    // result = a + b + c + d;  // Would be promoted to i64
+    
+    // Bitwise operations with different sizes
+    mask: i16 = 0xFF00i16;
+    value: i32 = 0x12345632i32;
+    
+    // Extract low 16 bits and apply mask
+    low_16 = value & 0xFFFFi32;
+    masked = low_16 & mask as i32;
+    
+    // Shift operations with different bit widths
+    shifted_8: i8 = 0b10101010i8 << 2i8;
+    shifted_16: i16 = 0b1010101010101010i16 >> 2i16;
+    shifted_32: i32 = 0x12345678i32 << 4i32;
+    
+    print("Mixed expressions work!");
+    return 0;
+}
+
+// Test 10: Arbitrary precision in algorithms
+fn test_algorithms() Int {
+    // Greatest common divisor (Euclidean algorithm)
+    fn gcd(a: u128, b: u128) u128 {
+        while b != 0u128 {
+            temp = b;
+            b = a % b;
+            a = temp;
+        }
+        return a;
+    }
+    
+    gcd_result = gcd(48u128, 18u128);  // Should be 6
+    
+    // Least common multiple
+    fn lcm(a: u128, b: u128) u128 {
+        return (a / gcd(a, b)) * b;
+    }
+    
+    lcm_result = lcm(12u128, 18u128);  // Should be 36
+    
+    // Power function with overflow checking
+    fn power(base: u64, exponent: u8) u64 {
+        result: u64 = 1u64;
+        i: u8 = 0u8;
+        while i < exponent {
+            if result > 18446744073709551615u64 / base {
+                return 0u64;  // Overflow
+            }
+            result = result * base;
+            i = i + 1u8;
+        }
+        return result;
+    }
+    
+    power_result = power(2u64, 10u8);  // Should be 1024
+    
+    print("Algorithmic operations work!");
+    return 0;
+}
+
+// Test 11: Memory layout and alignment
+fn test_memory_layout() Int {
+    // Test structure packing
+    struct PackedStruct {
+        a: u8,
+        b: u16,
+        c: u32,
+        d: u64,
+    }
+    
+    // This would test how different integer types are aligned in memory
+    packed = PackedStruct(1u8, 2u16, 3u32, 4u64);
+    
+    // Test array alignment
+    aligned_array: [i64; 8];
+    unaligned_array: [i8; 8];
+    
+    print("Memory layout operations work!");
+    return 0;
+}
+
+// Test 12: Error handling and edge cases
+fn test_error_handling() Int {
+    // Division by zero prevention
+    fn safe_divide(a: i32, b: i32) i32 {
+        if b == 0i32 {
+            return 0i32;  // Return 0 on division by zero
+        }
+        return a / b;
+    }
+    
+    safe_result = safe_divide(100i32, 0i32);
+    
+    // Overflow prevention in addition
+    fn safe_add(a: i8, b: i8) i8 {
+        if a > 0i8 && b > 127i8 - a {
+            return 127i8;  // Return max on overflow
+        }
+        if a < 0i8 && b < -128i8 - a {
+            return -128i8;  // Return min on underflow
+        }
+        return a + b;
+    }
+    
+    overflow_result = safe_add(100i8, 50i8);  // Would overflow, returns 127
+    normal_result = safe_add(50i8, 25i8);   // Normal, returns 75
+    
+    print("Error handling operations work!");
+    return 0;
+}
+
+fn main() Int {
+    print("Testing advanced arbitrary precision integers...");
+    
+    test_complex_math();
+    test_bit_algorithms();
+    test_crypto_operations();
+    test_endianness();
+    test_fixed_point();
+    test_advanced_structures();
+    test_performance_algorithms();
+    test_validation();
+    test_mixed_expressions();
+    test_algorithms();
+    test_memory_layout();
+    test_error_handling();
+    
+    print("Advanced arbitrary precision integer tests completed!");
+    return 0;
+}

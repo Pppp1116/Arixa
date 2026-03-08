@@ -52,7 +52,7 @@ def to_python(
         prog: Program AST to read or mutate.
         freestanding: Whether hosted-runtime features are disallowed.
         overflow_mode: Integer overflow behavior mode requested by the caller.
-        emit_entrypoint: Input value used by this routine.
+        emit_entrypoint: Input value used by this function.
     
     Returns:
         Value described by the function return annotation.

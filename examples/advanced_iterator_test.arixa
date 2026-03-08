@@ -1,0 +1,35 @@
+import std.vec;
+import std.str;
+
+fn main() Int {
+    // Test Vec iteration
+    print("Testing Vec iteration:");
+    numbers = vec_new<Int>();
+    vec_push(numbers, 10);
+    vec_push(numbers, 20);
+    vec_push(numbers, 30);
+    
+    for num in numbers {
+        print("num = " + to_string_int(num));
+    }
+    
+    // Test with mutable Vec
+    print("Testing mutable Vec iteration:");
+    mut mutable_numbers = vec_new<Int>();
+    vec_push(mutable_numbers, 1);
+    vec_push(mutable_numbers, 2);
+    vec_push(mutable_numbers, 3);
+    
+    for num in mutable_numbers {
+        print("mutable num = " + to_string_int(num));
+    }
+    
+    // Test complex expressions in iterable
+    print("Testing complex iterable expressions:");
+    for i in (0 + 1)..(5 - 1) {
+        print("complex i = " + to_string_int(i));
+    }
+    
+    print("Advanced iterator tests completed!");
+    return 0;
+}

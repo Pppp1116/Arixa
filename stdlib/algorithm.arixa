@@ -1,14 +1,12 @@
 /// std.algorithm - pure algorithms for freestanding use.
-///
+/// 
 /// All functions in this module are pure and work in both hosted and freestanding modes.
-
 /// Binary search for `target` in sorted integer `data`.
-///
+/// 
 /// Returns index of `target` if found, `none` otherwise.
-fn binary_search_int(data Vec<Int>, target Int) Int? {
+fn binary_search_int(data Vec<Int>, target Int) Int | none {
     mut left = 0;
     mut right = vec_len(data) - 1;
-    
     while left <= right {
         mid = left + (right - left) / 2;
         mid_val_opt = vec_get(data, mid);
@@ -16,10 +14,9 @@ fn binary_search_int(data Vec<Int>, target Int) Int? {
             return none;
         }
         else {}
-        mid_val = (mid_val_opt as Int?) ?? 0 as Int;
-        
+        mid_val = mid_val_opt as Int | none ?? 0 as Int;
         if mid_val == target {
-            return mid;
+            return mid as Int | none;
         }
         else {}
         if mid_val < target {
@@ -29,101 +26,92 @@ fn binary_search_int(data Vec<Int>, target Int) Int? {
             right = mid - 1;
         }
     }
-    
     return none;
 }
 
 /// Linear search for `target` in integer `data`.
-///
+/// 
 /// Returns index of `target` if found, `none` otherwise.
-fn linear_search_int(data Vec<Int>, target Int) Int? {
+fn linear_search_int(data Vec<Int>, target Int) Int | none {
     mut i = 0;
     n = vec_len(data);
-    
     while i < n {
         val_opt = vec_get(data, i);
         if val_opt == none {
             return none;
         }
         else {}
-        val = (val_opt as Int?) ?? 0 as Int;
+        val = val_opt as Int | none ?? 0 as Int;
         if val == target {
-            return i;
+            return i as Int | none;
         }
         else {}
         i += 1;
     }
-    
     return none;
 }
 
 /// Find minimum value in integer `data`.
-///
+/// 
 /// Returns `none` if `data` is empty.
-fn find_min_int(data Vec<Int>) Int? {
+fn find_min_int(data Vec<Int>) Int | none {
     n = vec_len(data);
     if n == 0 {
         return none;
     }
     else {}
-    
     first_opt = vec_get(data, 0);
     if first_opt == none {
         return none;
     }
     else {}
-    mut min_val = (first_opt as Int?) ?? 0 as Int;
+    mut min_val = first_opt as Int | none ?? 0 as Int;
     mut i = 1;
-    
     while i < n {
         val_opt = vec_get(data, i);
         if val_opt == none {
             return none;
         }
         else {}
-        val = (val_opt as Int?) ?? 0 as Int;
+        val = val_opt as Int | none ?? 0 as Int;
         if val < min_val {
             min_val = val;
         }
         else {}
         i += 1;
     }
-    
     return min_val;
 }
 
 /// Find maximum value in integer `data`.
-///
+/// 
 /// Returns `none` if `data` is empty.
-fn find_max_int(data Vec<Int>) Int? {
+fn find_max_int(data Vec<Int>) Int | none {
     n = vec_len(data);
     if n == 0 {
         return none;
     }
     else {}
-    
     first_opt = vec_get(data, 0);
     if first_opt == none {
         return none;
     }
     else {}
-    mut max_val = (first_opt as Int?) ?? 0 as Int;
+    mut max_val = first_opt as Int | none ?? 0 as Int;
     mut i = 1;
-    
     while i < n {
         val_opt = vec_get(data, i);
         if val_opt == none {
             return none;
         }
         else {}
-        val = (val_opt as Int?) ?? 0 as Int;
+        val = val_opt as Int | none ?? 0 as Int;
         if val > max_val {
             max_val = val;
         }
         else {}
         i += 1;
     }
-    
     return max_val;
 }
 
@@ -131,21 +119,19 @@ fn find_max_int(data Vec<Int>) Int? {
 fn contains_int(data Vec<Int>, target Int) Bool {
     mut i = 0;
     n = vec_len(data);
-    
     while i < n {
         val_opt = vec_get(data, i);
         if val_opt == none {
             return false;
         }
         else {}
-        val = (val_opt as Int?) ?? 0 as Int;
+        val = val_opt as Int | none ?? 0 as Int;
         if val == target {
             return true;
         }
         else {}
         i += 1;
     }
-    
     return false;
 }
 
@@ -154,26 +140,24 @@ fn count_int(data Vec<Int>, target Int) Int {
     mut count = 0;
     mut i = 0;
     n = vec_len(data);
-    
     while i < n {
         val_opt = vec_get(data, i);
         if val_opt == none {
             return count;
         }
         else {}
-        val = (val_opt as Int?) ?? 0 as Int;
+        val = val_opt as Int | none ?? 0 as Int;
         if val == target {
             count += 1;
         }
         else {}
         i += 1;
     }
-    
     return count;
 }
 
 /// Bubble sort for integer data.
-///
+/// 
 /// Sorts `data` in ascending order in-place.
 fn bubble_sort_int(data &Vec<Int>) {
     n = vec_len(*data);
@@ -181,18 +165,15 @@ fn bubble_sort_int(data &Vec<Int>) {
         return;
     }
     else {}
-    
     mut i = 0;
     while i < n - 1 {
         mut j = 0;
         while j < n - i - 1 {
             val1_opt = vec_get(*data, j);
             val2_opt = vec_get(*data, j + 1);
-            
             if val1_opt != none && val2_opt != none {
-                val1 = (val1_opt as Int?) ?? 0 as Int;
-                val2 = (val2_opt as Int?) ?? 0 as Int;
-                
+                val1 = val1_opt as Int | none ?? 0 as Int;
+                val2 = val2_opt as Int | none ?? 0 as Int;
                 if val1 > val2 {
                     vec_set(*data, j, val2);
                     vec_set(*data, j + 1, val1);
@@ -207,7 +188,7 @@ fn bubble_sort_int(data &Vec<Int>) {
 }
 
 /// Selection sort for integer data.
-///
+/// 
 /// Sorts `data` in ascending order in-place.
 fn selection_sort_int(data &Vec<Int>) {
     n = vec_len(*data);
@@ -215,20 +196,16 @@ fn selection_sort_int(data &Vec<Int>) {
         return;
     }
     else {}
-    
     mut i = 0;
     while i < n - 1 {
         mut min_idx = i;
         mut j = i + 1;
-        
         while j < n {
             val1_opt = vec_get(*data, j);
             val2_opt = vec_get(*data, min_idx);
-            
             if val1_opt != none && val2_opt != none {
-                val1 = (val1_opt as Int?) ?? 0 as Int;
-                val2 = (val2_opt as Int?) ?? 0 as Int;
-                
+                val1 = val1_opt as Int | none ?? 0 as Int;
+                val2 = val2_opt as Int | none ?? 0 as Int;
                 if val1 < val2 {
                     min_idx = j;
                 }
@@ -237,16 +214,12 @@ fn selection_sort_int(data &Vec<Int>) {
             else {}
             j += 1;
         }
-        
-        // Swap elements
         if min_idx != i {
             val_i_opt = vec_get(*data, i);
             val_min_opt = vec_get(*data, min_idx);
-            
             if val_i_opt != none && val_min_opt != none {
-                val_i = (val_i_opt as Int?) ?? 0 as Int;
-                val_min = (val_min_opt as Int?) ?? 0 as Int;
-                
+                val_i = val_i_opt as Int | none ?? 0 as Int;
+                val_min = val_min_opt as Int | none ?? 0 as Int;
                 vec_set(*data, i, val_min);
                 vec_set(*data, min_idx, val_i);
             }
@@ -258,7 +231,7 @@ fn selection_sort_int(data &Vec<Int>) {
 }
 
 /// Insertion sort for integer data.
-///
+/// 
 /// Sorts `data` in ascending order in-place.
 fn insertion_sort_int(data &Vec<Int>) {
     n = vec_len(*data);
@@ -266,7 +239,6 @@ fn insertion_sort_int(data &Vec<Int>) {
         return;
     }
     else {}
-    
     mut i = 1;
     while i < n {
         key_opt = vec_get(*data, i);
@@ -275,8 +247,7 @@ fn insertion_sort_int(data &Vec<Int>) {
             continue;
         }
         else {}
-        key = (key_opt as Int?) ?? 0 as Int;
-        
+        key = key_opt as Int | none ?? 0 as Int;
         mut j = i - 1;
         while j >= 0 {
             val_opt = vec_get(*data, j);
@@ -285,8 +256,7 @@ fn insertion_sort_int(data &Vec<Int>) {
                 continue;
             }
             else {}
-            val = (val_opt as Int?) ?? 0 as Int;
-            
+            val = val_opt as Int | none ?? 0 as Int;
             if val > key {
                 vec_set(*data, j + 1, val);
                 j -= 1;
@@ -307,11 +277,9 @@ fn quick_sort_partition_int(data &Vec<Int>, low Int, high Int) Int {
         return low;
     }
     else {}
-    pivot = (pivot_opt as Int?) ?? 0 as Int;
-    
+    pivot = pivot_opt as Int | none ?? 0 as Int;
     mut i = low - 1;
     mut j = low;
-    
     while j < high {
         val_opt = vec_get(*data, j);
         if val_opt == none {
@@ -319,14 +287,12 @@ fn quick_sort_partition_int(data &Vec<Int>, low Int, high Int) Int {
             continue;
         }
         else {}
-        val = (val_opt as Int?) ?? 0 as Int;
-        
+        val = val_opt as Int | none ?? 0 as Int;
         if val <= pivot {
             i += 1;
-            // Swap data[i] and data[j]
             val_i_opt = vec_get(*data, i);
             if val_i_opt != none {
-                val_i = (val_i_opt as Int?) ?? 0 as Int;
+                val_i = val_i_opt as Int | none ?? 0 as Int;
                 vec_set(*data, i, val);
                 vec_set(*data, j, val_i);
             }
@@ -335,16 +301,13 @@ fn quick_sort_partition_int(data &Vec<Int>, low Int, high Int) Int {
         else {}
         j += 1;
     }
-    
-    // Swap data[i + 1] and data[high]
     val_i_opt = vec_get(*data, i + 1);
     if val_i_opt != none {
-        val_i = (val_i_opt as Int?) ?? 0 as Int;
+        val_i = val_i_opt as Int | none ?? 0 as Int;
         vec_set(*data, i + 1, pivot);
         vec_set(*data, high, val_i);
     }
     else {}
-    
     return i + 1;
 }
 
@@ -359,7 +322,7 @@ fn quick_sort_helper_int(data &Vec<Int>, low Int, high Int) {
 }
 
 /// Quick sort for integer data.
-///
+/// 
 /// Sorts `data` in ascending order in-place.
 fn quick_sort_int(data &Vec<Int>) {
     n = vec_len(*data);
@@ -367,6 +330,5 @@ fn quick_sort_int(data &Vec<Int>) {
         return;
     }
     else {}
-    
     quick_sort_helper_int(data, 0, n - 1);
 }

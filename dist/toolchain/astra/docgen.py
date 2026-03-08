@@ -20,7 +20,7 @@ def main(argv=None):
         argv: Optional CLI arguments passed instead of process argv.
     
     Returns:
-        Value produced by the routine, if any.
+        Value produced by the function, if any.
     """
     p = argparse.ArgumentParser()
     p.add_argument("input")
@@ -61,10 +61,9 @@ def main(argv=None):
             lines.append("")
         elif isinstance(item, FnDecl):
             pub = "pub " if item.pub else ""
-            impl_kw = "impl " if item.is_impl else ""
             async_kw = "async " if item.async_fn else ""
             sig = ", ".join(f"{n}: {t}" for n, t in item.params)
-            lines.append(f"- `{pub}{impl_kw}{async_kw}fn {item.name}({sig}) {item.ret}`")
+            lines.append(f"- `{pub}{async_kw}fn {item.name}({sig}) {item.ret}`")
             lines.extend(_doc_block(item.doc))
             lines.append("")
     Path(ns.output).write_text("\n".join(lines).rstrip() + "\n")

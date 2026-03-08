@@ -9,7 +9,7 @@
 - `astra test [--kind unit|integration|e2e]`
 - `astra fmt <files...> [--check]`
 - `astra doc <in> -o <out>`
-- `astra pkg <astpm-args...>` (package-manager passthrough)
+- `astra pkg <astpm-args...>` (module-manager passthrough)
 - `astra selfhost` (staged prototype: multi-stage pipeline exists but CLI remains gated)
 - `--target native` requires `clang` in `PATH` and links against bundled runtime source (override with `ASTRA_RUNTIME_C_PATH`).
 - `--kind exe` (default) requires an entrypoint:
@@ -35,16 +35,15 @@
 ## Standard library modules
 - core, vec, mem, collections, io, net, serde, process, time, crypto, str, thread, sync, channel, atomic
 - module import syntax:
-  - `import std.io;` (preferred, package-managed stdlib)
+  - `import std.io;` (preferred, module-managed stdlib)
   - `import stdlib::io;` (legacy supported)
   - `import "relative/path";` (relative to importing source file)
-- non-stdlib module imports resolve from nearest package root containing `Astra.toml`; if none exists, they resolve relative to the importing file directory.
-- stdlib lookup order: `ASTRA_STDLIB_PATH` -> repo `stdlib/` (dev checkout) -> bundled `astra/stdlib` (installed package)
+- non-stdlib module imports resolve from nearest module root containing `Astra.toml`; if none exists, they resolve relative to the importing file directory.
+- stdlib lookup order: `ASTRA_STDLIB_PATH` -> repo `stdlib/` (dev checkout) -> bundled `astra/stdlib` (installed module)
 - syntax guide: `docs/language-syntax-book.md`
 
 ## Language conveniences
 - `defer <expr>;`
-- `drop <expr>;` (consumes value and runs destructor immediately)
 - use `_ = <expr>;` to discard a value result
 - option coalescing: `<a> ?? <b>` where `<a>: T | none` (union-based nullable types)
 - propagation sugar: `<a>!` (propagates non-success union branches) 

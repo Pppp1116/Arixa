@@ -26,7 +26,7 @@ fn test_borrowing() Int {
         ref1 = &data;
         print(ref1.value);  // OK
     }
-
+    
     // After ref1 goes out of scope, we can mutably borrow
     ref2 = &mut data;
     ref2.value = 200;

@@ -1,0 +1,16 @@
+import std.str;
+
+fn main() Int {
+    // Iterator-style for loop with range
+    for i in 0..4 {
+        print("Count: " + to_string_int(i));
+    }
+    
+    // Iterator-style for loop with collection
+    items = [1, 2, 3, 4, 5];
+    for item in items {
+        print("Item: " + to_string_int(item));
+    }
+    
+    return 0;
+}

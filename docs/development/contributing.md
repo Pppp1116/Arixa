@@ -50,7 +50,7 @@ Before packaging the VS Code extension, refresh the bundled compiler/server snap
 ```bash
 python scripts/build_vscode_bundle.py
 cd editors/vscode
-npm run package
+npm run module
 ```
 
 ## Coding Expectations

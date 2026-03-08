@@ -11,7 +11,7 @@ pip install -e ".[dev]"
 Requirements:
 - `clang` for `--target native`
 - `llvmlite` (installed via project dependency) for LLVM IR generation
-- bundled stdlib/runtime assets are installed with the `astra-lang` package (override paths with `ASTRA_STDLIB_PATH` / `ASTRA_RUNTIME_C_PATH` if needed)
+- bundled stdlib/runtime assets are installed with the `astra-lang` module (override paths with `ASTRA_STDLIB_PATH` / `ASTRA_RUNTIME_C_PATH` if needed)
 
 Verify:
 ```bash

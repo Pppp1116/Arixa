@@ -1,19 +1,18 @@
 /// std.process - environment and process helpers (hosted only).
-
 /// Terminate the current process immediately with status `code`.
-fn exit(code Int) Never{
+fn exit(code Int) Never {
     return __proc_exit(code);
 }
 
 /// Read environment variable `name`.
-///
+/// 
 /// Returns an empty string when variable is missing.
-fn env(name String) String{
+fn env(name String) String {
     return __env_get(name);
 }
 
 /// Read environment variable `name` or return `fallback` when missing.
-fn env_or(name String, fallback String) String{
+fn env_or(name String, fallback String) String {
     value = env(name);
     if len(value) == 0 {
         return fallback;
@@ -23,25 +22,25 @@ fn env_or(name String, fallback String) String{
 }
 
 /// Return current working directory path.
-fn cwd() String{
+fn cwd() String {
     return __cwd();
 }
 
 /// Execute shell command `cmd`.
-///
+/// 
 /// Returns process exit code.
-fn run(cmd String) Int{
+fn run(cmd String) Int {
     return __proc_run(cmd);
 }
 
 /// Return true when shell command exits with status code `0`.
-fn run_ok(cmd String) Bool{
+fn run_ok(cmd String) Bool {
     return run(cmd) == 0;
 }
 
 /// Print a message to stderr using the host shell.
-///
+/// 
 /// This is a best-effort helper intended for diagnostics in hosted mode.
-fn eprintln(msg String) Int{
-    return run("printf \"%s\\n\" \"" + msg + "\" 1>&2");
+fn eprintln(msg String) Int {
+    return run("printf \\\"%s\\\\n\\\" \\\"" + msg + "\\\" 1>&2");
 }

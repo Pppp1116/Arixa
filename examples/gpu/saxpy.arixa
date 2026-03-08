@@ -1,21 +1,19 @@
-gpu fn saxpy(alpha Float, x GpuSlice<Float>, y GpuSlice<Float>, out GpuMutSlice<Float>) Void{
-  i = gpu.global_id();
-  if i < out.len() {
-    out[i] = alpha * x[i] + y[i];
-  }
+gpu fn saxpy(alpha Float, x GpuSlice<Float>, y GpuSlice<Float>, out GpuMutSlice<Float>) {
+    i = gpu.global_id();
+    if i < out.len() {
+        out[i] = alpha * x[i] + y[i];
+    }
+    else {}
 }
 
-fn main() Int{
-  alpha = 2.0;
-  x: Vec<Float> = vec_from([1.0, 2.0, 3.0, 4.0]);
-  y: Vec<Float> = vec_from([10.0, 20.0, 30.0, 40.0]);
-
-  dx = gpu.copy(x);
-  dy = gpu.copy(y);
-  dout: GpuBuffer<Float> = gpu.alloc(len(x));
-
-  gpu.launch(saxpy, len(x), 128, alpha, dx, dy, dout);
-
-  print(gpu.read(dout));
-  return 0;
+fn main() Int {
+    alpha = 2.0;
+    x: Vec<Float> = vec_from(vec(1.0, 2.0, 3.0, 4.0));
+    y: Vec<Float> = vec_from(vec(10.0, 20.0, 30.0, 40.0));
+    dx = gpu.copy(x);
+    dy = gpu.copy(y);
+    dout: GpuBuffer<Float> = gpu.alloc(len(x));
+    gpu.launch(saxpy, len(x), 128, alpha, dx, dy, dout);
+    print(gpu.read(dout));
+    return 0;
 }

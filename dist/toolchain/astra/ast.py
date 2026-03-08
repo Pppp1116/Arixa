@@ -18,10 +18,10 @@ class ArbitraryIntType:
 
 
 def type_text(typ: Any) -> str:
-    """Execute the `type_text` routine.
+    """Execute the `Execute the function.` function.
     
     Parameters:
-        typ: Input value used by this routine.
+        typ: Input value used by this function.
     
     Returns:
         Value described by the function return annotation.
@@ -52,7 +52,6 @@ class FnDecl:
     params: list[tuple[str, str]]
     ret: str
     body: list[Any]
-    is_impl: bool = False
     pub: bool = False
     async_fn: bool = False
     unsafe: bool = False

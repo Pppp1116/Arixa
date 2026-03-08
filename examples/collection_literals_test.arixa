@@ -1,24 +1,13 @@
-// Test collection literals
 fn main() Int {
-    // Vector literal
-    v = [1, 2, 3, 4, 5];
-    
-    // Map literal
-    m = { "key": "value" };
-    
-    // Set literal
+    v = vec(1, 2, 3, 4, 5);
+    m = {"key": "value"};
     s = {1, 2, 3};
-    
-    // Struct literal
     point = Point(3.0, 4.0);
-    
-    // If expression
     result = if true { 42 } else { 0 };
-    
     return result;
 }
 
 struct Point {
-    x: Float,
-    y: Float,
+    x Float,
+    y Float,
 }

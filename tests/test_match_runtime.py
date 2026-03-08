@@ -3,7 +3,7 @@ from golden_helpers import assert_same_stdout_and_exit, compile_and_run_program
 
 def test_match_or_pattern_and_guard_runtime_parity(tmp_path) -> None:
     src = """
-fn main() Int{
+fn main() Int {
   x = 2;
   match x {
     1 | 2 if x == 2 => {
@@ -28,7 +28,7 @@ fn main() Int{
 
 def test_match_guard_fallthrough_runtime_parity(tmp_path) -> None:
     src = """
-fn main() Int{
+fn main() Int {
   x = 1;
   match x {
     1 if false => { return 10; }
@@ -54,7 +54,7 @@ struct Pair {
   b Int,
 }
 
-fn main() Int{
+fn main() Int {
   p = Pair(9, 4);
   match p {
     Pair(x, y) => {

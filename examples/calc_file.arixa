@@ -1,7 +1,7 @@
 import std.io;
 
-fn main() Int{
-    text = read_or("input.txt", "6 7\\n");
+fn main() Int {
+    text = read_or("input.txt", "6 7\\\\n");
     out = "Loaded bytes: ";
     n = len(text);
     write("output.txt", out + __to_json(n));

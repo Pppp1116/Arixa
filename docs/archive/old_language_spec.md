@@ -20,12 +20,11 @@ primary_type = ident ["<" type {"," type} ">"]
              | "fn" "(" [type {"," type}] ")" type
              | "(" type ")" ;
 block     = "{" { stmt } [expr] "}" ;
-stmt      = bind_stmt | set_stmt | comptime_stmt | defer_stmt | drop_stmt | return_stmt | if_stmt | while_stmt | for_stmt | match_stmt | assign_stmt | expr ";" ;
+stmt      = bind_stmt | set_stmt | comptime_stmt | defer_stmt | return_stmt | if_stmt | while_stmt | for_stmt | match_stmt | assign_stmt | expr ";" ;
 comptime_stmt = "comptime" block ;
 bind_stmt = ["mut"] ident [":" type] "=" expr ";" ;
 set_stmt  = "set" expr ("=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=") expr ";" ;
 defer_stmt = "defer" expr ";" ;
-drop_stmt = "drop" expr ";" ;
 return_stmt = "return" [expr] ";" ;
 if_stmt   = "if" expr block ["else" block] ;
 while_stmt = "while" expr block ;
@@ -134,7 +133,6 @@ Conventions:
   - arrays roundtrip as list values
   - scalar JSON values roundtrip as scalar `Any` tags
 - Expression statements may discard values of any type.
-- `drop expr;` remains accepted for explicit consumption/destruction-style flows (legacy-compatible syntax).
 - `return;` is valid only in functions returning `Void`.
 - `return` is for early exit; a trailing expression returns implicitly from non-`Void` functions.
 - `for` uses only `for <ident> in <iterable-expr> { ... }` syntax; C-style `for init; cond; step { ... }` is invalid.
@@ -180,7 +178,7 @@ Conventions:
 - `spawn` enforces `Send`-like constraints on argument/return types in safe code.
 - Shared references passed across tasks require `Sync`-like compatibility of their pointee type.
 
-## Modules and packages
+## Modules and modules
 - File module = one `.astra` file.
 - Package root is directory with `Astra.toml`.
 - Dependency lockfile `Astra.lock` provides reproducible resolution.
@@ -189,15 +187,15 @@ Conventions:
   - string/path import: `import "relative/path";`
 - Module import resolution:
   - `std.*` / `stdlib::*` resolve from stdlib root
-  - other module paths resolve from nearest package root (`Astra.toml`) when present
-  - if no package root is found, module paths resolve relative to importing file directory
+  - other module paths resolve from nearest module root (`Astra.toml`) when present
+  - if no module root is found, module paths resolve relative to importing file directory
 - String/path import resolution:
   - absolute paths resolve as-is
   - relative paths resolve from the importing file directory
 - Stdlib root lookup order:
   - `ASTRA_STDLIB_PATH` environment override
   - repository `stdlib/` (dev checkout)
-  - bundled package path (`astra/stdlib`)
+  - bundled module path (`astra/stdlib`)
 
 ## Error handling
 - Recoverable errors are modeled with unions (`Value | ErrorType`).

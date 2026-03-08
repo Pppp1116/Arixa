@@ -8,7 +8,7 @@ def test_std_process_runtime_parity(tmp_path) -> None:
     src = """
 import "process";
 
-fn main() Int{
+fn main() Int {
   miss = env("ASTRA_PARITY_MISSING_KEY_7B9D1");
   if len(miss) != 0 {
     return 11;

@@ -1,13 +1,12 @@
 # VS Code Extension
 
-The ASTRA VS Code extension provides comprehensive language support with advanced features for GPU development, package management, and intelligent coding assistance.
+The ASTRA VS Code extension provides comprehensive language support with advanced features for GPU development, module management, and intelligent coding assistance.
 
 ## Features
 
 ### Enhanced Syntax Highlighting
 - **GPU Development**: `gpu fn`, kernel syntax, CUDA builtins
 - **Advanced Types**: Pointers (`*Type`), references (`&Type`), collections (`Vec<T>`)
-- **Option/Result**: `Type?`, `Result<T, E>` syntax
 - **Attributes**: `#[derive]`, `#[link]`, `#[packed]`
 - **Enhanced Literals**: Binary (`0b1010`), hex (`0xFF`), octal (`0o755`), underscores (`1_000_000`)
 - **Documentation Comments**: `///` doc comments
@@ -58,11 +57,11 @@ The ASTRA VS Code extension provides comprehensive language support with advance
 - `Astra: Show Language Server Status` - Show server status
 
 #### Package Management
-- `Astra: Initialize Package` - Create new package
+- `Astra: Initialize Package` - Create new module
 - `Astra: Publish Package` - Publish to registry
-- `Astra: Search Packages` - Search package registry
-- `Astra: Install Package` - Install package
-- `Astra: List Installed Packages` - Show installed packages
+- `Astra: Search Packages` - Search module registry
+- `Astra: Install Package` - Install module
+- `Astra: List Installed Packages` - Show installed modules
 
 #### Advanced Features
 - `Astra: Generate Documentation` - Generate docs
@@ -84,8 +83,8 @@ The ASTRA VS Code extension provides comprehensive language support with advance
 ### Package Management
 ```json
 {
-  "arixa.packageManager.autoInstall": false,
-  "arixa.packageManager.registryUrl": "https://registry.astra-lang.org"
+  "arixa.moduleManager.autoInstall": false,
+  "arixa.moduleManager.registryUrl": "https://registry.astra-lang.org"
 }
 ```
 
@@ -111,8 +110,8 @@ The ASTRA VS Code extension provides comprehensive language support with advance
 
 - `Ctrl+Shift+B` - Build current file
 - `Ctrl+Shift+R` - Run current file
-- `Ctrl+Shift+P` - Publish package
-- `Ctrl+Shift+S` - Search packages
+- `Ctrl+Shift+P` - Publish module
+- `Ctrl+Shift+S` - Search modules
 - `F5` - Run current file (debug style)
 
 ## Installation

@@ -1,40 +1,43 @@
-/// std.memory - advanced memory management for embedded systems.
-///
-/// This module provides memory pools, stack allocation, buddy allocators, and memory protection.
-/// All operations are designed for freestanding environments and bare-metal development.
-
 import std.hardware;
+
 import std.boot;
 
-/// Memory allocation strategies.
 type AllocationStrategy = Int;
 
 const ALLOC_STRATEGY_FIRST_FIT = 0;
+
 const ALLOC_STRATEGY_BEST_FIT = 1;
+
 const ALLOC_STRATEGY_WORST_FIT = 2;
+
 const ALLOC_STRATEGY_NEXT_FIT = 3;
 
-/// Memory pool types.
 type MemoryPoolType = Int;
 
 const POOL_TYPE_FIXED = 0;
+
 const POOL_TYPE_VARIABLE = 1;
+
 const POOL_TYPE_RING = 2;
 
-/// Memory protection levels.
 type MemoryProtectionLevel = Int;
 
 const MEM_PROT_NONE = 0;
+
 const MEM_PROT_READ = 1;
+
 const MEM_PROT_WRITE = 2;
+
 const MEM_PROT_EXECUTE = 4;
+
 const MEM_PROT_ALL = MEM_PROT_READ | MEM_PROT_WRITE | MEM_PROT_EXECUTE;
 
-/// Cache operations.
 type CacheOperation = Int;
 
 const CACHE_INVALIDATE = 0;
+
 const CACHE_CLEAN = 1;
+
 const CACHE_CLEAN_INVALIDATE = 2;
 
 /// Memory block structure.
@@ -53,7 +56,7 @@ struct MemoryPool {
     free_blocks u32,
     total_blocks u32,
     bitmap Vec<u8>,
-    pool_type Int,  // Use Int directly instead of MemoryPoolType
+    pool_type Int,
 }
 
 /// Buddy allocator structure.
@@ -89,88 +92,63 @@ struct MemoryRegion {
     bufferable Bool,
 }
 
-// Memory Pool Operations
-
 /// Initialize fixed-size memory pool.
-fn memory_pool_init_fixed(
-    base_address u32, 
-    total_size u32, 
-    block_size u32
-) MemoryPool {
+fn memory_pool_init_fixed(base_address u32, total_size u32, block_size u32) MemoryPool {
     block_count = total_size / block_size;
     bitmap_size = (block_count + 7) / 8;
-    
     mut bitmap = vec_new() as Vec<u8>;
     mut i = 0;
     while i < bitmap_size {
         vec_push(bitmap, 0 as u8);
         i += 1;
     }
-    
-    return MemoryPool(
-        base_address, 
-        total_size, 
-        block_size, 
-        block_count, 
-        block_count, 
-        bitmap, 
-        POOL_TYPE_FIXED
-    );
+    return MemoryPool(base_address, total_size, block_size, block_count, block_count, bitmap, POOL_TYPE_FIXED);
 }
 
 /// Allocate block from memory pool.
-fn memory_pool_alloc(pool MemoryPool) u32? {
+fn memory_pool_alloc(pool MemoryPool) u32 | none {
     if pool.free_blocks == 0 {
         return none;
     }
     else {}
-    
     mut i = 0;
     while i < pool.total_blocks {
         byte_index = i / 8;
         bit_index = i % 8;
-        
         byte_val = vec_get(pool.bitmap, byte_index);
-        if byte_val != none && ((byte_val as u8) & (1 << bit_index)) == 0 {
-            // Block is free, mark as allocated
-            new_byte = (byte_val as u8) | (1 << bit_index);
+        if byte_val != none && (byte_val as u8 & 1 << bit_index) == 0 {
+            new_byte = byte_val as u8 | 1 << bit_index;
             vec_set(pool.bitmap, byte_index, new_byte);
             pool.free_blocks -= 1;
-            
-            return pool.base_address + (i as u32) * pool.block_size;
+            return pool.base_address + i as u32 * pool.block_size;
         }
+        else {}
         i += 1;
     }
-    
     return none;
 }
 
 /// Free block back to memory pool.
 fn memory_pool_free(pool MemoryPool, address u32) Bool {
-    // Check if address is within pool range
-    if address < pool.base_address || 
-       address >= pool.base_address + pool.total_size {
+    if address < pool.base_address || address >= pool.base_address + pool.total_size {
         return false;
     }
-    
-    // Calculate block index
+    else {}
     offset = address - pool.base_address;
     if offset % pool.block_size != 0 {
-        return false; // Not aligned to block size
+        return false;
     }
-    
+    else {}
     block_index = offset / pool.block_size;
     if block_index >= pool.total_blocks {
         return false;
     }
-    
-    // Mark block as free
+    else {}
     byte_index = block_index / 8;
     bit_index = block_index % 8;
-    
     byte_val = vec_get(pool.bitmap, byte_index);
     if byte_val != none {
-        new_byte = (byte_val as u8) & ~(1 << bit_index);
+        new_byte = byte_val as u8 & ~(1 << bit_index);
         vec_set(pool.bitmap, byte_index, new_byte);
         pool.free_blocks += 1;
         return true;
@@ -192,187 +170,130 @@ fn memory_pool_get_stats(pool MemoryPool) MemoryPoolStats {
     used_blocks = pool.total_blocks - pool.free_blocks;
     used_memory = used_blocks * pool.block_size;
     free_memory = pool.free_blocks * pool.block_size;
-    
     return MemoryPoolStats(used_memory, free_memory, pool.total_size);
 }
 
-// Buddy Allocator Operations
-
 /// Initialize buddy allocator.
 fn buddy_allocator_init(base_address u32, total_size u32) BuddyAllocator {
-    // Ensure size is power of 2
     mut size = total_size;
     mut max_order = 0;
     while size > 1 {
         size = size / 2;
         max_order += 1;
     }
-    
     mut free_lists = vec_new() as Vec<u32>;
     mut block_info = vec_new() as Vec<Bool>;
-    
     mut i = 0;
     while i <= max_order {
-        vec_push(free_lists, 0); // Initialize empty lists
+        vec_push(free_lists, 0);
         i += 1;
     }
-    
-    // Initialize block info (true = free, false = allocated)
-    block_count = total_size / 4096; // Minimum block size
+    block_count = total_size / 4096;
     mut j = 0;
     while j < block_count {
         vec_push(block_info, true);
         j += 1;
     }
-    
-    // Add entire memory to highest order free list
     vec_set(free_lists, max_order, base_address);
-    
-    return BuddyAllocator(
-        base_address, 
-        total_size, 
-        max_order, 
-        free_lists, 
-        block_info
-    );
+    return BuddyAllocator(base_address, total_size, max_order, free_lists, block_info);
 }
 
 /// Allocate memory from buddy allocator.
-fn buddy_alloc(allocator &BuddyAllocator, size u32) u32? {
-    // Calculate required order
+fn buddy_alloc(allocator &BuddyAllocator, size u32) u32 | none {
     mut required_size = size;
     mut order = 0;
-    while required_size > (1 as u32) << order {
+    while required_size > 1 as u32 << order {
         order += 1;
     }
-    
     if order > allocator.max_order {
-        return none; // Request too large
+        return none;
     }
-    
-    // Find a free block of required order or larger
+    else {}
     mut current_order = order;
-    mut block_addr = 0 as u32?;
+    mut block_addr = 0 as u32 | none;
     while current_order <= allocator.max_order {
         block_addr = vec_get(allocator.free_lists, current_order);
-        if block_addr != none && (block_addr as u32) != 0 {
+        if block_addr != none && block_addr as u32 != 0 {
             break;
         }
+        else {}
         current_order += 1;
     }
-    
     if current_order > allocator.max_order {
-        return none; // No suitable block found
+        return none;
     }
-    
-    // Remove block from free list
+    else {}
     vec_set(allocator.free_lists, current_order, 0);
-    
-    // Split blocks if necessary
     mut block_address = block_addr as u32;
     while current_order > order {
         current_order -= 1;
-        buddy_address = block_address + ((1 as u32) << current_order);
-        
-        // Add buddy to free list
+        buddy_address = block_address + (1 as u32 << current_order);
         vec_set(allocator.free_lists, current_order, buddy_address);
     }
-    
-    // Mark block as allocated
     block_index = (block_address - allocator.base_address) / 4096;
     vec_set(allocator.block_info, block_index, false);
-    
     return block_address;
 }
 
 /// Free memory back to buddy allocator.
 fn buddy_free(allocator &BuddyAllocator, address u32, size u32) Bool {
-    // Calculate block order
     mut required_size = size;
     mut order = 0;
-    while required_size > (1 as u32) << order {
+    while required_size > 1 as u32 << order {
         order += 1;
     }
-    
-    // Mark block as free
     block_index = (address - allocator.base_address) / 4096;
     vec_set(allocator.block_info, block_index, true);
-    
-    // Try to merge with buddy
     mut current_address = address;
     mut current_order = order;
-    
     while current_order < allocator.max_order {
-        buddy_address = current_address ^ ((1 as u32) << current_order);
+        buddy_address = current_address ^ 1 as u32 << current_order;
         buddy_index = (buddy_address - allocator.base_address) / 4096;
-        
         buddy_free = vec_get(allocator.block_info, buddy_index);
         if buddy_free == none || !(buddy_free as Bool) {
-            break; // Buddy is allocated, cannot merge
+            break;
         }
-        
-        // Remove buddy from free list
+        else {}
         vec_set(allocator.free_lists, current_order, 0);
-        
-        // Merge with buddy
         if buddy_address < current_address {
             current_address = buddy_address;
         }
-        
+        else {}
         current_order += 1;
     }
-    
-    // Add merged block to free list
     vec_set(allocator.free_lists, current_order, current_address);
-    
     return true;
 }
 
-// Stack Allocator Operations
-
 /// Initialize stack allocator.
 fn stack_allocator_init(base_address u32, total_size u32) StackAllocator {
-    return StackAllocator(
-        base_address, 
-        total_size, 
-        0, 
-        0, 
-        vec_new() as Vec<AllocationEntry>
-    );
+    return StackAllocator(base_address, total_size, 0, 0, vec_new() as Vec<AllocationEntry>);
 }
 
 /// Allocate memory from stack allocator.
-fn stack_alloc(allocator StackAllocator, size u32, alignment u32) u32? {
-    // Align current offset
+fn stack_alloc(allocator StackAllocator, size u32, alignment u32) u32 | none {
     mut aligned_offset = allocator.current_offset;
     if alignment > 1 {
-        aligned_offset = (aligned_offset + alignment - 1) & ~(alignment - 1);
+        aligned_offset = aligned_offset + alignment - 1 & ~(alignment - 1);
     }
-    
-    // Check if enough space available
+    else {}
     if aligned_offset + size > allocator.total_size {
         return none;
     }
-    
-    // Allocate memory
+    else {}
     address = allocator.base_address + aligned_offset;
     allocator.current_offset = aligned_offset + size;
-    
-    // Update peak usage
     if allocator.current_offset > allocator.peak_usage {
         allocator.peak_usage = allocator.current_offset;
     }
-    
-    // Record allocation
+    else {}
     vec_push(allocator.allocation_stack, AllocationEntry(address, size));
-    
     return address;
 }
 
 /// Reset stack allocator (free all allocations).
-fn stack_reset(allocator &StackAllocator) Void {
+fn stack_reset(allocator &StackAllocator) {
     allocator.current_offset = 0;
-    // Clear the allocation stack
     allocator.allocation_stack = vec_new() as Vec<AllocationEntry>;
 }
 
@@ -388,18 +309,11 @@ fn stack_allocator_get_stats(allocator &StackAllocator) StackAllocatorStats {
     used_memory = allocator.current_offset;
     free_memory = allocator.total_size - allocator.current_offset;
     peak_usage = allocator.peak_usage;
-    
     return StackAllocatorStats(used_memory, free_memory, peak_usage);
 }
 
-// Memory Protection Operations
-
 /// Set memory protection for region.
-fn memory_set_protection(
-    address u32, 
-    size u32, 
-    protection MemoryProtectionLevel
-) Bool {
+fn memory_set_protection(address u32, size u32, protection MemoryProtectionLevel) Bool {
     return __memory_set_protection_impl(address, size, protection);
 }
 
@@ -415,10 +329,10 @@ fn memory_mpu_set_enabled(enabled Bool) Bool {
 
 /// Configure MPU region.
 fn memory_mpu_configure_region(
-    region_number u8, 
-    base_address u32, 
-    size u32, 
-    protection MemoryProtectionLevel
+    region_number u8,
+    base_address u32,
+    size u32,
+    protection MemoryProtectionLevel,
 ) Bool {
     return __memory_mpu_configure_region_impl(region_number, base_address, size, protection);
 }
@@ -427,8 +341,6 @@ fn memory_mpu_configure_region(
 fn memory_mpu_enable_region(region_number u8, enabled Bool) Bool {
     return __memory_mpu_enable_region_impl(region_number, enabled);
 }
-
-// Cache Operations
 
 /// Clean cache for memory region.
 fn cache_clean(address u32, size u32) Bool {
@@ -446,12 +358,12 @@ fn cache_clean_invalidate(address u32, size u32) Bool {
 }
 
 /// Enable/disable data cache.
-fn cache_set_data_enabled(enabled Bool) Void {
+fn cache_set_data_enabled(enabled Bool) {
     __cache_set_data_enabled_impl(enabled);
 }
 
 /// Enable/disable instruction cache.
-fn cache_set_instruction_enabled(enabled Bool) Void {
+fn cache_set_instruction_enabled(enabled Bool) {
     __cache_set_instruction_enabled_impl(enabled);
 }
 
@@ -465,8 +377,6 @@ fn cache_is_instruction_enabled() Bool {
     return __cache_is_instruction_enabled_impl();
 }
 
-// DMA Operations
-
 /// Initialize DMA controller.
 fn dma_init(channel_number u8) Bool {
     return __dma_init_impl(channel_number);
@@ -474,21 +384,14 @@ fn dma_init(channel_number u8) Bool {
 
 /// Configure DMA transfer.
 fn dma_configure(
-    channel_number u8, 
-    src_address u32, 
-    dst_address u32, 
-    size u32, 
-    increment_src Bool, 
-    increment_dst Bool
+    channel_number u8,
+    src_address u32,
+    dst_address u32,
+    size u32,
+    increment_src Bool,
+    increment_dst Bool,
 ) Bool {
-    return __dma_configure_impl(
-        channel_number, 
-        src_address, 
-        dst_address, 
-        size, 
-        increment_src, 
-        increment_dst
-    );
+    return __dma_configure_impl(channel_number, src_address, dst_address, size, increment_src, increment_dst);
 }
 
 /// Start DMA transfer.
@@ -502,13 +405,9 @@ fn dma_is_complete(channel_number u8) Bool {
 }
 
 /// Wait for DMA transfer to complete.
-fn dma_wait_complete(channel_number u8) Void {
-    while !dma_is_complete(channel_number) {
-        // Wait
-    }
+fn dma_wait_complete(channel_number u8) {
+    while !dma_is_complete(channel_number) {}
 }
-
-// Memory Utilities
 
 /// Copy memory with protection checks.
 fn memory_copy_safe(dst u32, src u32, size u32) Bool {
@@ -537,12 +436,12 @@ fn memory_get_alignment() u32 {
 
 /// Check if address is aligned.
 fn memory_is_aligned(address u32, alignment u32) Bool {
-    return (address & (alignment - 1)) == 0;
+    return (address & alignment - 1) == 0;
 }
 
 /// Align address up to boundary.
 fn memory_align_up(address u32, alignment u32) u32 {
-    return (address + alignment - 1) & ~(alignment - 1);
+    return address + alignment - 1 & ~(alignment - 1);
 }
 
 /// Align address down to boundary.
@@ -550,50 +449,60 @@ fn memory_align_down(address u32, alignment u32) u32 {
     return address & ~(alignment - 1);
 }
 
-// Constants
 const MIN_BLOCK_SIZE = 4096;
+
 const MAX_ALIGNMENT = 4096;
+
 const DEFAULT_ALIGNMENT = 8;
 
-// Runtime implementation functions
 extern fn __memory_set_protection_impl(
-    address u32, 
-    size u32, 
-    protection MemoryProtectionLevel
+    address u32,
+    size u32,
+    protection MemoryProtectionLevel,
 ) Bool;
+
 extern fn __memory_get_protection_impl(address u32) MemoryProtectionLevel;
+
 extern fn __memory_mpu_set_enabled_impl(enabled Bool) Bool;
+
 extern fn __memory_mpu_configure_region_impl(
-    region_number u8, 
-    base_address u32, 
-    size u32, 
-    protection MemoryProtectionLevel
+    region_number u8,
+    base_address u32,
+    size u32,
+    protection MemoryProtectionLevel,
 ) Bool;
+
 extern fn __memory_mpu_enable_region_impl(region_number u8, enabled Bool) Bool;
 
-extern fn __cache_operation_impl(
-    address u32, 
-    size u32, 
-    operation CacheOperation
-) Bool;
-extern fn __cache_set_data_enabled_impl(enabled Bool) Void;
-extern fn __cache_set_instruction_enabled_impl(enabled Bool) Void;
+extern fn __cache_operation_impl(address u32, size u32, operation CacheOperation) Bool;
+
+extern fn __cache_set_data_enabled_impl(enabled Bool);
+
+extern fn __cache_set_instruction_enabled_impl(enabled Bool);
+
 extern fn __cache_is_data_enabled_impl() Bool;
+
 extern fn __cache_is_instruction_enabled_impl() Bool;
 
 extern fn __dma_init_impl(channel_number u8) Bool;
+
 extern fn __dma_configure_impl(
-    channel_number u8, 
-    src_address u32, 
-    dst_address u32, 
-    size u32, 
-    increment_src Bool, 
-    increment_dst Bool
+    channel_number u8,
+    src_address u32,
+    dst_address u32,
+    size u32,
+    increment_src Bool,
+    increment_dst Bool,
 ) Bool;
+
 extern fn __dma_start_impl(channel_number u8) Bool;
+
 extern fn __dma_is_complete_impl(channel_number u8) Bool;
 
 extern fn __memory_copy_safe_impl(dst u32, src u32, size u32) Bool;
+
 extern fn __memory_fill_impl(address u32, size u32, pattern u8) Bool;
+
 extern fn __memory_compare_impl(addr1 u32, addr2 u32, size u32) Bool;
+
 extern fn __memory_get_alignment_impl() u32;

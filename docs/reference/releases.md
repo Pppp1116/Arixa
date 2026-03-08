@@ -39,10 +39,10 @@
 - Added `--freestanding` for `build` and `check`, plus freestanding x86 entrypoint support.
 - Replaced x86_64 stub with executable subset backend and explicit unsupported-feature diagnostics.
 - Expanded stdlib wrappers (collections/io/net/serde/crypto/process/time).
-- Reworked package manager to TOML-based manifest parsing and deterministic lock output.
+- Reworked module manager to TOML-based manifest parsing and deterministic lock output.
 - Improved formatter/linter/docgen/LSP behavior and expanded test coverage.
 - Fixed editable installs and added `dev` optional dependencies.
 
 ## v0.1.0
 - Initial end-to-end Arixa ecosystem release.
-- Deterministic build cache, package lockfile, and developer tooling included.
+- Deterministic build cache, module lockfile, and developer tooling included.

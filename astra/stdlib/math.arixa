@@ -1,9 +1,8 @@
 /// std.math - small numeric helpers.
-///
+/// 
 /// These utilities are pure and valid in both hosted and freestanding modes.
-
 /// Return the smaller of two integers.
-fn min_int(a Int, b Int) Int{
+fn min_int(a Int, b Int) Int {
     if a < b {
         return a;
     }
@@ -12,7 +11,7 @@ fn min_int(a Int, b Int) Int{
 }
 
 /// Return the larger of two integers.
-fn max_int(a Int, b Int) Int{
+fn max_int(a Int, b Int) Int {
     if a > b {
         return a;
     }
@@ -21,7 +20,7 @@ fn max_int(a Int, b Int) Int{
 }
 
 /// Clamp `x` into the inclusive range `[lo, hi]`.
-fn clamp_int(x Int, lo Int, hi Int) Int{
+fn clamp_int(x Int, lo Int, hi Int) Int {
     if x < lo {
         return lo;
     }
@@ -34,7 +33,7 @@ fn clamp_int(x Int, lo Int, hi Int) Int{
 }
 
 /// Return absolute value of `x`.
-fn abs_int(x Int) Int{
+fn abs_int(x Int) Int {
     if x < 0 {
         return -x;
     }
@@ -45,7 +44,7 @@ fn abs_int(x Int) Int{
 /// Return `x` raised to the power of `n` (integer exponent).
 /// 
 /// Returns `none` on overflow or invalid exponent.
-fn pow_int(base Int, exp Int) Int? {
+fn pow_int(base Int, exp Int) Int | none {
     if exp < 0 {
         return none;
     }
@@ -58,11 +57,9 @@ fn pow_int(base Int, exp Int) Int? {
         return none;
     }
     else {}
-    
     mut result = 1;
     mut current = base;
     mut remaining = exp;
-    
     while remaining > 0 {
         if remaining % 2 == 1 {
             result = result * current;
@@ -71,6 +68,7 @@ fn pow_int(base Int, exp Int) Int? {
             }
             else {}
         }
+        else {}
         current = current * current;
         if current / base != current {
             return none;
@@ -78,7 +76,6 @@ fn pow_int(base Int, exp Int) Int? {
         else {}
         remaining = remaining / 2;
     }
-    
     return result;
 }
 

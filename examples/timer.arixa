@@ -1,8 +1,8 @@
-fn ms() Int{
+fn ms() Int {
     return __monotonic_ms();
 }
 
-fn main() Int{
+fn main() Int {
     t0 = ms();
     mut i = 0;
     mut x = 0.0;

@@ -27,7 +27,7 @@ from astra.ast import (
 
 
 def lower_for_loops(prog: Program) -> Program:
-    """Execute the `lower_for_loops` routine.
+    """Execute the `lower_for_loops` function.
     
     Parameters:
         prog: Program AST to read or mutate.

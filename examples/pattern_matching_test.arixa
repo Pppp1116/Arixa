@@ -1,0 +1,212 @@
+// Test 1: Basic pattern matching
+fn test_basic_match() Int {
+    x = 42;
+    
+    match x {
+        0 => print("Zero"),
+        1 => print("One"),
+        42 => print("The answer"),
+        _ => print("Other"),
+    }
+    
+    return 0;
+}
+
+// Test 2: Pattern matching with guards
+fn test_guarded_match() Int {
+    x = 25;
+    
+    match x {
+        n if n < 10 => print("Small: " + to_string_int(n)),
+        n if n < 20 => print("Medium: " + to_string_int(n)),
+        n if n < 30 => print("Large: " + to_string_int(n)),
+        _ => print("Very large"),
+    }
+    
+    return 0;
+}
+
+// Test 3: Or-patterns
+fn test_or_patterns() Int {
+    x = 3;
+    
+    match x {
+        1 | 2 | 3 => print("One, two, or three"),
+        4 | 5 => print("Four or five"),
+        _ => print("Other"),
+    }
+    
+    return 0;
+}
+
+// Test 4: Range patterns
+fn test_range_patterns() Int {
+    x = 15;
+    
+    match x {
+        0..=10 => print("0 to 10"),
+        11..20 => print("11 to 20"),
+        21.. => print("21 and above"),
+    }
+    
+    return 0;
+}
+
+// Test 5: Struct patterns
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+fn test_struct_patterns() Int {
+    p1 = Point(0, 0);
+    p2 = Point(10, 20);
+    
+    match p1 {
+        Point { x: 0, y: 0 } => print("Origin"),
+        Point { x, y } => print("Point at " + to_string_int(x) + ", " + to_string_int(y)),
+    }
+    
+    match p2 {
+        Point { x: 10, y } => print("X is 10, Y is " + to_string_int(y)),
+        _ => print("Other point"),
+    }
+    
+    return 0;
+}
+
+// Test 6: Tuple patterns
+fn test_tuple_patterns() Int {
+    t1 = (1, 2);
+    t2 = (3, 4, 5);
+    
+    match t1 {
+        (0, 0) => print("Zero tuple"),
+        (x, y) => print("Tuple: " + to_string_int(x) + ", " + to_string_int(y)),
+    }
+    
+    match t2 {
+        (1, _, _) => print("First is 1"),
+        (_, 2, _) => print("Second is 2"),
+        (x, y, z) => print("Triple: " + to_string_int(x) + ", " + to_string_int(y) + ", " + to_string_int(z)),
+    }
+    
+    return 0;
+}
+
+// Test 7: Slice patterns
+fn test_slice_patterns() Int {
+    arr1 = [1, 2, 3];
+    arr2 = [4, 5, 6, 7];
+    
+    match arr1 {
+        [] => print("Empty"),
+        [x] => print("Single: " + to_string_int(x)),
+        [x, y] => print("Double: " + to_string_int(x) + ", " + to_string_int(y)),
+        [x, y, z] => print("Triple: " + to_string_int(x) + ", " + to_string_int(y) + ", " + to_string_int(z)),
+        _ => print("Many elements"),
+    }
+    
+    match arr2 {
+        [x, y, ..] => print("First two: " + to_string_int(x) + ", " + to_string_int(y)),
+        [.., y, z] => print("Last two: " + to_string_int(y) + ", " + to_string_int(z)),
+        [x, .., z] => print("First and last: " + to_string_int(x) + ", " + to_string_int(z)),
+        _ => print("Other slice"),
+    }
+    
+    return 0;
+}
+
+// Test 8: Simple Enum Patterns
+enum Status {
+    Success,
+    Error,
+    Pending,
+}
+
+fn test_enum_patterns() Int {
+    status: Status = Status::Success;
+    
+    match status {
+        Status::Success => print("Operation succeeded"),
+        Status::Error => print("Operation failed"),
+        Status::Pending => print("Operation pending"),
+    }
+    
+    return 0;
+}
+
+// Test 9: Nested patterns
+fn test_nested_patterns() Int {
+    data = (Point(1, 2), 3);
+    
+    match data {
+        (Point(x, y), value) => print("Point: ({}, {}) with value: {}", x, y, value),
+    }
+    
+    return 0;
+}
+
+// Test 10: Pattern matching in expressions
+fn test_pattern_expressions() Int {
+    result = match 42 {
+        0 => "zero",
+        1 => "one",
+        n if n > 10 => "big",
+        _ => "other",
+    };
+    
+    print("Result: " + result);
+    return 0;
+}
+
+// Test 11: Complex pattern combinations
+fn test_complex_patterns() Int {
+    value = (Point(5, 10), [1, 2, 3, 4]);
+    
+    match value {
+        (Point { x: 0, y: 0 }, _) => print("Origin point"),
+        (Point { x, y }, [a, b, ..]) if x + y == a + b => print("Coordinates match slice sum"),
+        (Point { x, y }, [.., last]) => print("Point " + to_string_int(x) + "," + to_string_int(y) + " with last " + to_string_int(last)),
+        _ => print("No match"),
+    }
+    
+    return 0;
+}
+
+// Test 12: Pattern matching with different types
+fn test_type_patterns() Int {
+    // Test with different literal types
+    match true {
+        true => print("Boolean true"),
+        false => print("Boolean false"),
+    }
+    
+    match "hello" {
+        "hello" => print("Hello world"),
+        "goodbye" => print("Goodbye"),
+        _ => print("Other greeting"),
+    }
+    
+    return 0;
+}
+
+fn main() Int {
+    print("Testing pattern matching...");
+    
+    test_basic_match();
+    test_guarded_match();
+    test_or_patterns();
+    test_range_patterns();
+    test_struct_patterns();
+    test_tuple_patterns();
+    test_slice_patterns();
+    test_enum_patterns();
+    test_nested_patterns();
+    test_pattern_expressions();
+    test_complex_patterns();
+    test_type_patterns();
+    
+    print("All pattern matching tests completed!");
+    return 0;
+}

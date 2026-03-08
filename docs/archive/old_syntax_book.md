@@ -123,7 +123,6 @@ Binding rules:
 - `set name = ...` reassigns an existing mutable binding.
 - Assignment operators: `=`, `+=`, `-=`, `*=`, `/=`, `%=`.
 - Bare expression statements must have type `Void` or `Never`.
-- `drop expr;` consumes `expr` and runs its destructor at that point.
 - Use `_ = expr;` to explicitly ignore/discard a produced value.
 - `return;` is valid only in `Void` functions.
 - `return` is for early exit; trailing expression returns implicitly in non-`Void` functions.
@@ -265,10 +264,9 @@ primary_type = ident ["<" type {"," type} ">"]
              | "[" type "]"
              | "fn" "(" [type {"," type}] ")" type
              | "(" type ")" ;
-stmt         = bind_stmt | set_stmt | comptime_stmt | defer_stmt | drop_stmt | return_stmt | if_stmt | while_stmt | for_stmt | match_stmt | assign_stmt | expr ";" ;
+stmt         = bind_stmt | set_stmt | comptime_stmt | defer_stmt | return_stmt | if_stmt | while_stmt | for_stmt | match_stmt | assign_stmt | expr ";" ;
 bind_stmt    = ["mut"] ident [":" type] "=" expr ";" ;
 set_stmt     = "set" expr ("=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=") expr ";" ;
-drop_stmt    = "drop" expr ";" ;
 for_stmt     = "for" ident "in" for_iterable block ;
 for_iterable = range_iterable | expr ;
 range_iterable = expr (".." | "..=") expr ;

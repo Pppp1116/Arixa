@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arixa-lang"
+version = "0.2.0"
+description = "Self-hosted-inspired toy programming language ecosystem"
+requires-python = ">=3.11"
+dependencies = [
+    "llvmlite>=0.44",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "hypothesis>=6.0",
+    "mutmut>=3.0",
+]
+
+[project.scripts]
+arixa = "astra.cli:main"
+arpm = "astra.pkg:main"
+arfmt = "astra.formatter:main"
+arlint = "astra.linter:main"
+ardoc = "astra.docgen:main"
+arlsp = "astra.lsp:main"
+ardbg = "astra.debugger:main"
+arprof = "astra.profiler:main"
+
+[tool.setuptools.packages.find]
+include = ["astra*"]
+exclude = ["tests*", "docs*", "benchmarks*", "stdlib*", "runtime*", "selfhost*"]
+
+[tool.setuptools.package-data]
+astra = ["stdlib/*.arixa", "stdlib/bindings/*.arixa", "assets/runtime/llvm_runtime.c"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mutmut]
+paths_to_mutate = ["astra/build.py"]
+tests_dir = []
+pytest_add_cli_args_test_selection = ["tests/test_build.py"]

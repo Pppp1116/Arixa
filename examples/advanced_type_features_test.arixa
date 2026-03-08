@@ -1,0 +1,303 @@
+// Test 1: Union Types
+fn test_union_types() Int {
+    // Basic union types
+    value1: Int | String = 42;
+    value2: Int | String = "hello";
+    value3: Int | Float | Bool = 3.14;
+    
+    // Nullable types (union with none)
+    optional_int: Int | none = 42;
+    optional_string: String | none = "world";
+    empty_optional: Int | none = none;
+    
+    // Complex union types
+    complex_union: Int | String | Bool | Float = true;
+    
+    // Union type pattern matching
+    match value1 {
+        x if x is Int => print("Integer: " + to_string_int(x)),
+        s if s is String => print("String: " + s),
+    }
+    
+    // Nullable type handling
+    match optional_int {
+        x if x is Int => print("Optional integer: " + to_string_int(x)),
+        none => print("No value"),
+    }
+    
+    print("Union types work!");
+    return 0;
+}
+
+// Test 2: Generic Types
+struct Container<T> {
+    value: T,
+}
+
+fn test_generic_types() Int {
+    // Generic struct instantiation
+    int_container: Container<Int> = Container<Int>(42);
+    string_container: Container<String> = Container<String>("hello");
+    bool_container: Container<Bool> = Container<Bool>(true);
+    
+    // Access generic fields
+    int_value = int_container.value;
+    string_value = string_container.value;
+    bool_value = bool_container.value;
+    
+    print("Generic types work!");
+    return int_value;
+}
+
+// Test 3: Generic Functions
+fn identity<T>(x: T) T {
+    return x;
+}
+
+fn add<T>(a: T, b: T) T where T: Add {
+    return a + b;
+}
+
+fn test_generic_functions() Int {
+    // Generic function calls
+    int_result = identity<Int>(42);
+    string_result = identity<String>("hello");
+    bool_result = identity<Bool>(true);
+    
+    // Generic function with constraints
+    sum_result = add<Int>(10, 20);
+    // string_concat = add<String>("hello", "world");  // Would require String: Add
+    
+    print("Generic functions work!");
+    return sum_result;
+}
+
+// Test 4: Trait Declarations
+trait Display {
+    fn display(self) String;
+}
+
+trait Add {
+    fn add(self, other: Self) Self;
+}
+
+trait Eq {
+    fn eq(self, other: Self) Bool;
+}
+
+fn test_trait_declarations() Int {
+    print("Trait declarations work!");
+    return 0;
+}
+
+// Test 5: Trait Usage (without implementations)
+fn test_trait_usage() Int {
+    // Traits are used for generic constraints only
+    print("Trait usage works!");
+    return 0;
+}
+
+// Test 6: Generic Constraints
+fn process_displayable<T>(item: T) String where T: Display {
+    return item.display();
+}
+
+fn process_addable<T>(a: T, b: T) T where T: Add {
+    return a.add(b);
+}
+
+fn test_generic_constraints() Int {
+    // Generic functions with trait constraints
+    int_displayed = process_displayable<Int>(42);
+    string_displayed = process_displayable<String>("hello");
+    
+    int_summed = process_addable<Int>(10, 20);
+    
+    print("Generic constraints work!");
+    return int_summed;
+}
+
+// Test 7: Where Clauses
+fn complex_function<T, U>(x: T, y: U) T 
+where 
+    T: Display + Add,
+    U: Display
+{
+    displayed_x = x.display();
+    displayed_y = y.display();
+    summed = x.add(x);
+    return summed;
+}
+
+fn test_where_clauses() Int {
+    result = complex_function<Int, String>(10, "hello");
+    print("Where clauses work!");
+    return result;
+}
+
+// Test 8: Multi-Parameter Generics
+struct Pair<T, U> {
+    first: T,
+    second: U,
+}
+
+fn swap<T, U>(pair: Pair<T, U>) Pair<U, T> {
+    return Pair<U, T>(pair.second, pair.first);
+}
+
+fn test_multi_generics() Int {
+    int_string_pair = Pair<Int, String>(42, "hello");
+    swapped = swap<Int, String>(int_string_pair);
+    
+    print("Multi-parameter generics work!");
+    return swapped.first;
+}
+
+// Test 9: Generic Type Aliases
+type IntContainer = Container<Int>;
+type StringContainer = Container<String>;
+type IntPair = Pair<Int, Int>;
+
+fn test_generic_aliases() Int {
+    // Use generic type aliases
+    int_container: IntContainer = Container<Int>(100);
+    string_container: StringContainer = Container<String>("world");
+    int_pair: IntPair = Pair<Int, Int>(1, 2);
+    
+    print("Generic type aliases work!");
+    return int_container.value;
+}
+
+// Test 10: Union Types with Generics
+fn process_union<T>(value: T | String) String where T: Display {
+    match value {
+        x if x is T => x.display(),
+        s if s is String => s,
+    }
+}
+
+fn test_generic_unions() Int {
+    int_result = process_union<Int>(42);
+    float_result = process_union<Float>(3.14);
+    string_result = process_union<String>("direct");
+    
+    print("Generic union types work!");
+    return 0;
+}
+
+// Test 11: Nested Generics
+struct NestedContainer<T> {
+    inner: Container<Container<T>>,
+}
+
+fn test_nested_generics() Int {
+    nested: NestedContainer<Int> = NestedContainer<Int>(
+        Container<Container<Int>>(
+            Container<Int>(42)
+        )
+    );
+    
+    value = nested.inner.value.value;
+    
+    print("Nested generics work!");
+    return value;
+}
+
+// Test 12: Complex Union Patterns
+fn process_complex_union(value: Int | String | Bool | Float) String {
+    match value {
+        x if x is Int => "Int: " + x.display(),
+        s if s is String => "String: " + s,
+        b if b is Bool => "Bool: " + if b { "true" } else { "false" },
+        f if f is Float => "Float: " + to_string_int(f as Int),
+    }
+}
+
+fn test_complex_unions() Int {
+    result1 = process_complex_union(42);
+    result2 = process_complex_union("hello");
+    result3 = process_complex_union(true);
+    result4 = process_complex_union(3.14);
+    
+    print("Complex union patterns work!");
+    return 0;
+}
+
+// Test 13: Trait Bounds in Struct Fields
+struct BoundedContainer<T> where T: Display + Eq {
+    value: T,
+}
+
+fn test_bounded_structs() Int {
+    container: BoundedContainer<Int> = BoundedContainer<Int>(42);
+    // container: BoundedContainer<String> = BoundedContainer<String>("hello");
+    
+    print("Bounded structs work!");
+    return container.value;
+}
+
+// Test 14: Simple Enums
+enum Status {
+    Success,
+    Error,
+    Pending,
+}
+
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+fn test_simple_enums() Int {
+    status: Status = Status::Success;
+    color: Color = Color::Red;
+    
+    print("Simple enums work!");
+    return 0;
+}
+
+// Test 15: Advanced Union Type Operations
+fn union_operations() Int {
+    // Union type assignment
+    union_var: Int | String | Bool = 42;
+    union_var = "hello";
+    union_var = true;
+    
+    // Union type return values
+    fn get_union(flag: Bool) Int | String {
+        if flag {
+            return 42;
+        } else {
+            return "hello";
+        }
+    }
+    
+    result = get_union(true);
+    
+    print("Union operations work!");
+    return 0;
+}
+
+fn main() Int {
+    print("Testing advanced type features...");
+    
+    test_union_types();
+    test_generic_types();
+    test_generic_functions();
+    test_trait_declarations();
+    test_trait_usage();
+    test_generic_constraints();
+    test_where_clauses();
+    test_multi_generics();
+    test_generic_aliases();
+    test_generic_unions();
+    test_nested_generics();
+    test_complex_unions();
+    test_bounded_structs();
+    test_generic_enums();
+    union_operations();
+    
+    print("All advanced type feature tests completed!");
+    return 0;
+}

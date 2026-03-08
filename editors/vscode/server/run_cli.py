@@ -1,4 +1,4 @@
-"""Bootstrap script for launching the bundled Astra CLI copy."""
+"""Bootstrap script for launching the Astra CLI."""
 
 from __future__ import annotations
 
@@ -6,10 +6,13 @@ import os
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+# Use the main project directory
+ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
-os.environ.setdefault("ASTRA_STDLIB_PATH", str(ROOT / "astra" / "stdlib"))
-os.environ.setdefault("ASTRA_RUNTIME_C_PATH", str(ROOT / "astra" / "assets" / "runtime" / "llvm_runtime.c"))
+
+# Set up environment paths for the main project
+os.environ.setdefault("ASTRA_STDLIB_PATH", str(ROOT / "stdlib"))
+os.environ.setdefault("ASTRA_RUNTIME_C_PATH", str(ROOT / "runtime" / "llvm_runtime.c"))
 
 from astra.cli import main
 

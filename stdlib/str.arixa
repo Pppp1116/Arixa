@@ -1,36 +1,35 @@
 /// std.str - basic string utilities (hosted).
-///
+/// 
 /// These helpers build on core `String` and JSON conversion builtins.
-
 /// Return string length in bytes.
-fn length(s String) Int{
+fn length(s String) Int {
     return len(s);
 }
 
 /// Return true when `s` is empty.
-fn is_empty(s String) Bool{
+fn is_empty(s String) Bool {
     return len(s) == 0;
 }
 
 /// Convert an Int to a String using JSON/text representation.
-fn to_string_int(x Int) String{
+fn to_string_int(x Int) String {
     return __to_json(x);
 }
 
 /// Convert a Bool to a String.
-fn to_string_bool(x Bool) String{
+fn to_string_bool(x Bool) String {
     return __to_json(x);
 }
 
 /// Convert a Float to a String.
-fn to_string_float(x Float) String{
+fn to_string_float(x Float) String {
     return __to_json(x);
 }
 
 /// Parse a decimal integer from a String.
-///
+/// 
 /// This will panic at runtime if the input is not a valid integer literal.
-fn parse_int(s String) Int{
+fn parse_int(s String) Int {
     return __from_json(s) as Int;
 }
 
@@ -40,19 +39,19 @@ fn from_char(c Char) String {
 }
 
 /// Get substring from start index with given length.
-///
+/// 
 /// Returns substring starting at start index with specified length.
 /// Returns empty string if indices are invalid.
 fn substring(s String, start Int, length Int) String {
     if start < 0 || length < 0 || start >= len(s) {
         return "";
     }
-    
+    else {}
     mut end = start + length;
     if end > len(s) {
         end = len(s);
     }
-    
+    else {}
     return __str_substring_impl(s, start, end - start);
 }
 
@@ -61,7 +60,7 @@ fn starts_with(s String, prefix String) Bool {
     if len(prefix) > len(s) {
         return false;
     }
-    
+    else {}
     return substring(s, 0, len(prefix)) == prefix;
 }
 
@@ -70,7 +69,7 @@ fn ends_with(s String, suffix String) Bool {
     if len(suffix) > len(s) {
         return false;
     }
-    
+    else {}
     start = len(s) - len(suffix);
     return substring(s, start, len(suffix)) == suffix;
 }
@@ -91,7 +90,7 @@ fn trim(s String) String {
 }
 
 /// Find first occurrence of substring.
-///
+/// 
 /// Returns index of first occurrence, or -1 if not found.
 fn find(s String, pattern String) Int {
     return __str_find_impl(s, pattern);
@@ -102,12 +101,18 @@ fn replace(s String, pattern String, replacement String) String {
     return __str_replace_impl(s, pattern, replacement);
 }
 
-// Runtime implementation functions
 extern fn __str_char_at_impl(s String, index Int) Char;
+
 extern fn __str_from_char_impl(c Char) String;
+
 extern fn __str_substring_impl(s String, start Int, length Int) String;
+
 extern fn __str_to_upper_impl(s String) String;
+
 extern fn __str_to_lower_impl(s String) String;
+
 extern fn __str_trim_impl(s String) String;
+
 extern fn __str_find_impl(s String, pattern String) Int;
+
 extern fn __str_replace_impl(s String, pattern String, replacement String) String;

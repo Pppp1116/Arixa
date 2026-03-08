@@ -1,12 +1,9 @@
-/// std.core - fundamental shared language types and checked arithmetic helpers.
-
-/// Byte-buffer alias used by APIs that exchange raw bytes.
 type Bytes = Vec<u8>;
 
 /// Add two integers with overflow detection.
-///
+/// 
 /// Returns `none` when signed overflow is detected.
-fn add_checked(a Int, b Int) Int? {
+fn add_checked(a Int, b Int) Int | none {
     r = a + b;
     if b > 0 && r < a {
         return none;
@@ -20,9 +17,9 @@ fn add_checked(a Int, b Int) Int? {
 }
 
 /// Subtract two integers with overflow detection.
-///
+/// 
 /// Returns `none` when signed overflow is detected.
-fn sub_checked(a Int, b Int) Int? {
+fn sub_checked(a Int, b Int) Int | none {
     r = a - b;
     if b > 0 && r > a {
         return none;
@@ -36,9 +33,9 @@ fn sub_checked(a Int, b Int) Int? {
 }
 
 /// Multiply two integers with overflow detection.
-///
+/// 
 /// Returns `none` on overflow.
-fn mul_checked(a Int, b Int) Int? {
+fn mul_checked(a Int, b Int) Int | none {
     if a == 0 || b == 0 {
         return 0;
     }
@@ -56,9 +53,9 @@ fn mul_checked(a Int, b Int) Int? {
 }
 
 /// Divide two integers with safety checks.
-///
+/// 
 /// Returns `none` on division by zero or signed overflow (`MIN / -1`).
-fn div_checked(a Int, b Int) Int? {
+fn div_checked(a Int, b Int) Int | none {
     if b == 0 {
         return none;
     }
@@ -71,9 +68,9 @@ fn div_checked(a Int, b Int) Int? {
 }
 
 /// Compute integer remainder with safety checks.
-///
+/// 
 /// Returns `none` on division by zero or signed overflow (`MIN % -1`).
-fn rem_checked(a Int, b Int) Int? {
+fn rem_checked(a Int, b Int) Int | none {
     if b == 0 {
         return none;
     }
@@ -86,9 +83,9 @@ fn rem_checked(a Int, b Int) Int? {
 }
 
 /// Shift left with bounds checks on shift amount.
-///
+/// 
 /// Returns `none` when `n` is negative or outside `[0, bitSizeOf(Int))`.
-fn shl_checked(a Int, n Int) Int? {
+fn shl_checked(a Int, n Int) Int | none {
     if n < 0 || n >= bitSizeOf(Int) {
         return none;
     }
@@ -97,9 +94,9 @@ fn shl_checked(a Int, n Int) Int? {
 }
 
 /// Shift right with bounds checks on shift amount.
-///
+/// 
 /// Returns `none` when `n` is negative or outside `[0, bitSizeOf(Int))`.
-fn shr_checked(a Int, n Int) Int? {
+fn shr_checked(a Int, n Int) Int | none {
     if n < 0 || n >= bitSizeOf(Int) {
         return none;
     }
@@ -125,7 +122,7 @@ fn leading_zeros(x Int) Int {
     }
     else {}
     mut count = 0;
-    mut mask = 1 << (bitSizeOf(Int) - 1);
+    mut mask = 1 << bitSizeOf(Int) - 1;
     while (x & mask) == 0 && count < bitSizeOf(Int) {
         count += 1;
         mask = mask >> 1;
@@ -151,13 +148,13 @@ fn trailing_zeros(x Int) Int {
 /// Rotate `x` left by `n` bits.
 fn rotl(x Int, n Int) Int {
     shift = n % bitSizeOf(Int);
-    return (x << shift) | (x >> (bitSizeOf(Int) - shift));
+    return x << shift | x >> bitSizeOf(Int) - shift;
 }
 
 /// Rotate `x` right by `n` bits.
 fn rotr(x Int, n Int) Int {
     shift = n % bitSizeOf(Int);
-    return (x >> shift) | (x << (bitSizeOf(Int) - shift));
+    return x >> shift | x << bitSizeOf(Int) - shift;
 }
 
 /// Reverse the byte order of `x`.
@@ -166,7 +163,7 @@ fn swap_bytes(x Int) Int {
     mut i = 0;
     mut current = x;
     while i < bitSizeOf(Int) {
-        result = (result << 8) | (current & 0xFF);
+        result = result << 8 | current & 255;
         current = current >> 8;
         i += 8;
     }

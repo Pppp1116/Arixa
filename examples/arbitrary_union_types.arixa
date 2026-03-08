@@ -1,6 +1,3 @@
-// Example showing completely arbitrary union types in ASTRA
-
-// Function that returns arbitrary union types
 fn get_fruit() banana | apple | orange | pear {
     return banana;
 }
@@ -14,67 +11,109 @@ fn get_complex_value() banana | whatever | empty | dontcare | something | nothin
 }
 
 fn process_arbitrary_unions() Int {
-    // You can create any combination of types
     value1 = get_fruit();
     value2 = get_mixed_value();
     value3 = get_complex_value();
-    
-    // Pattern matching on arbitrary unions
     match value1 {
-        banana => print("Got a banana!");
-        apple => print("Got an apple!");
-        orange => print("Got an orange!");
-        pear => print("Got a pear!");
+        banana => {
+            print("Got a banana!");
+        }
+        apple => {
+            print("Got an apple!");
+        }
+        orange => {
+            print("Got an orange!");
+        }
+        pear => {
+            print("Got a pear!");
+        }
     }
-    
     match value2 {
-        string => print("Got a string");
-        number => print("Got a number");
-        boolean => print("Got a boolean");
-        null => print("Got null");
+        string => {
+            print("Got a string");
+        }
+        number => {
+            print("Got a number");
+        }
+        boolean => {
+            print("Got a boolean");
+        }
+        null => {
+            print("Got null");
+        }
     }
-    
     match value3 {
-        banana => print("Complex: banana");
-        whatever => print("Complex: whatever");
-        empty => print("Complex: empty");
-        dontcare => print("Complex: dontcare");
-        something => print("Complex: something");
-        nothing => print("Complex: nothing");
+        banana => {
+            print("Complex: banana");
+        }
+        whatever => {
+            print("Complex: whatever");
+        }
+        empty => {
+            print("Complex: empty");
+        }
+        dontcare => {
+            print("Complex: dontcare");
+        }
+        something => {
+            print("Complex: something");
+        }
+        nothing => {
+            print("Complex: nothing");
+        }
     }
-    
     return 0;
 }
 
-// You can even use completely made up type names
 fn get_crazy_value() foo | bar | baz | qux | quux | corge | grault | garply | waldo | fred | plugh | xyzzy | thud {
     return baz;
 }
 
 fn main() Int {
     print("=== Arbitrary Union Types Demo ===");
-    
     result = process_arbitrary_unions();
-    
-    // Test the crazy union
     crazy = get_crazy_value();
     match crazy {
-        foo => print("Crazy: foo");
-        bar => print("Crazy: bar");
-        baz => print("Crazy: baz");
-        qux => print("Crazy: qux");
-        quux => print("Crazy: quux");
-        corge => print("Crazy: corge");
-        grault => print("Crazy: grault");
-        garply => print("Crazy: garply");
-        waldo => print("Crazy: waldo");
-        fred => print("Crazy: fred");
-        plugh => print("Crazy: plugh");
-        xyzzy => print("Crazy: xyzzy");
-        thud => print("Crazy: thud");
+        foo => {
+            print("Crazy: foo");
+        }
+        bar => {
+            print("Crazy: bar");
+        }
+        baz => {
+            print("Crazy: baz");
+        }
+        qux => {
+            print("Crazy: qux");
+        }
+        quux => {
+            print("Crazy: quux");
+        }
+        corge => {
+            print("Crazy: corge");
+        }
+        grault => {
+            print("Crazy: grault");
+        }
+        garply => {
+            print("Crazy: garply");
+        }
+        waldo => {
+            print("Crazy: waldo");
+        }
+        fred => {
+            print("Crazy: fred");
+        }
+        plugh => {
+            print("Crazy: plugh");
+        }
+        xyzzy => {
+            print("Crazy: xyzzy");
+        }
+        thud => {
+            print("Crazy: thud");
+        }
     }
-    
-    print("✅ ASTRA supports ANY union types you want!");
-    
+    print("\u2705 ASTRA supports ANY union types you want!");
     return result;
 }

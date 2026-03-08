@@ -5,6 +5,7 @@ from __future__ import annotations
 from astra.ast import *
 from astra.int_types import parse_int_type_name
 from astra.lexer import Token, lex
+from astra.error_reporting import ErrorReporter, EnhancedError
 
 
 class ParseError(SyntaxError):
@@ -12,7 +13,62 @@ class ParseError(SyntaxError):
     
     This type is part of Astra's public compiler/tooling surface.
     """
-    pass
+    
+    def __init__(self, message: str, enhanced_errors: Optional[List[EnhancedError]] = None):
+        super().__init__(message)
+        self.enhanced_errors = enhanced_errors
+    
+    def __str__(self) -> str:
+        if self.enhanced_errors:
+            reporter = ErrorReporter()
+            return reporter.format_multiple_errors(self.enhanced_errors)
+        return super().__str__()
+
+
+class EnhancedParser:
+    """Enhanced parser with improved error reporting."""
+    
+    def __init__(self, src: str, filename: str = "<input>"):
+        self.filename = filename
+        self.src = src
+        self.toks = lex(src, filename=filename)
+        self.i = 0
+        self.errors: List[str] = []
+        self.error_reporter = ErrorReporter()
+        self.source_lines = src.splitlines()
+    
+    def create_error(
+        self,
+        error_type: str,
+        message: str,
+        line: int,
+        col: int,
+        severity: str = "error",
+        error_code: Optional[str] = None
+    ) -> EnhancedError:
+        """Create an enhanced parser error."""
+        return self.error_reporter.create_enhanced_error(
+            error_type=error_type,
+            message=message,
+            filename=self.filename,
+            line=line,
+            col=col,
+            source_lines=self.source_lines,
+            severity=severity,
+            error_code=error_code
+        )
+    
+    def _err(self, msg: str, tok: Token | None = None) -> None:
+        """Add an error message with enhanced context."""
+        t = tok or self.cur()
+        error = self.create_error(
+            error_type="syntax_error",
+            message=msg,
+            line=t.line,
+            col=t.col,
+            error_code="PARSE001"
+        )
+        self.errors.append(str(error))
 
 
 BIN_PREC = {
@@ -29,6 +85,8 @@ BIN_PREC = {
     "<=": 8,
     ">": 8,
     ">=": 8,
+    "..": 8,
+    "..=": 8,
     "<<": 9,
     ">>": 9,
     "+": 10,
@@ -567,7 +625,7 @@ class Parser:
         return name, typ, is_mut
 
     def _starts_type(self) -> bool:
-        return self.cur().kind in {"IDENT", "INT_TYPE", "none", "*", "&", "[", "fn"}
+        return self.cur().kind in {"IDENT", "INT_TYPE", "none", "*", "&", "[", "fn", "f16", "f80", "f128"}
 
     def parse_extern_fn(
         self,
@@ -811,22 +869,30 @@ class Parser:
                 self.eat(")")
                 typ = f"fn({', '.join(args)}) {type_text(self.parse_type())}"
             else:
-                if self.cur().kind in {"IDENT", "INT_TYPE", "none"}:
+                if self.cur().kind in {"IDENT", "ARBITRARY_INT_TYPE", "INT_TYPE", "none", "f16", "f80", "f128"}:
                     tok_kind = self.cur().kind
-                    name = self.cur().text
-                    self.i += 1
-                else:
-                    self._err(f"expected type name, got {self.cur().kind}", self.cur())
-                    raise ParseError(self.errors[-1])
-                if tok_kind == "INT_TYPE":
-                    int_info = parse_int_type_name(name)
-                    if int_info is not None:
-                        bits, signed = int_info
-                        typ = str(ArbitraryIntType(signed=signed, width=bits))
-                    else:
+                    name = self.eat(tok_kind).text
+                    if tok_kind == "ARBITRARY_INT_TYPE":
+                        # Handle arbitrary precision integer types like i123, u456
+                        int_info = parse_int_type_name(name)
+                        if int_info is not None:
+                            bits, signed = int_info
+                            typ = str(ArbitraryIntType(signed=signed, width=bits))
+                        else:
+                            self._err(f"invalid arbitrary precision integer type: {name}")
+                            raise ParseError(self.errors[-1])
+                    elif tok_kind == "INT_TYPE":
+                        # Handle built-in integer types
                         typ = name
-                else:
-                    typ = name
+                    elif tok_kind in {"f16", "f80", "f128"}:
+                        typ = name
+                    else:
+                        int_info = parse_int_type_name(name)
+                        if int_info is not None:
+                            bits, signed = int_info
+                            typ = str(ArbitraryIntType(signed=signed, width=bits))
+                        else:
+                            typ = name
                 if self.opt("<"):
                     args = [type_text(self.parse_type())]
                     while self.opt(","):
@@ -941,11 +1007,6 @@ class Parser:
             if not allow_no_semicolon:
                 self.eat(";")
             return ContinueStmt(tok.pos, tok.line, tok.col)
-        if self.opt("defer"):
-            e = self.parse_expr()
-            if not allow_no_semicolon:
-                self.eat(";")
-            return DeferStmt(e, tok.pos, tok.line, tok.col)
         if self.opt("comptime"):
             body = self.parse_block()
             return ComptimeStmt(body, tok.pos, tok.line, tok.col)
@@ -963,7 +1024,7 @@ class Parser:
                     var_name = self.eat("IDENT").text
                     condition = self.parse_expr()
                     body = self.parse_block()
-                    # Create LetStmt for variable declaration
+                    # Create LetStmt for binding
                     var_decl = LetStmt(var_name, None, True, None, tok.pos, tok.line, tok.col)
                     return EnhancedWhileStmt(var_decl, condition, body, tok.pos, tok.line, tok.col)
                 else:
@@ -975,32 +1036,8 @@ class Parser:
                 body = self.parse_block()
                 return WhileStmt(cond, body, tok.pos, tok.line, tok.col)
         if self.opt("for"):
-            # Check for enhanced for loop with initialization
-            if self.opt("mut"):
-                if self.cur().kind == "IDENT":
-                    var_name = self.eat("IDENT").text
-                    self.eat("=")
-                    init_expr = self.parse_expr()
-                    self.eat(";")
-                    cond_expr = self.parse_expr()
-                    self.eat(";")
-                    # Parse step as assignment statement
-                    step_lhs = self.parse_expr()
-                    if self.cur().kind in ASSIGN_OPS:
-                        step_op = self.eat(self.cur().kind).kind
-                        step_rhs = self.parse_expr()
-                        step_expr = AssignStmt(step_lhs, step_op, step_rhs, tok.pos, tok.line, tok.col)
-                    else:
-                        self._err("expected assignment operator in for loop step")
-                        raise ParseError(self.errors[-1])
-                    body = self.parse_block()
-                    return EnhancedForStmt(var_name, init_expr, cond_expr, step_expr, body, tok.pos, tok.line, tok.col)
-                else:
-                    self._err("expected identifier after 'mut' in for loop")
-                    raise ParseError(self.errors[-1])
-            else:
-                # Fall back to existing for loop parsing (handles ranges)
-                return self.parse_for(tok)
+            # Iterator-style for loop only
+            return self.parse_for(tok)
         if self.opt("match"):
             return self.parse_match(tok)
         if self.opt("unsafe"):
@@ -1059,7 +1096,7 @@ class Parser:
             return body[:-1] + [new_tail]
         return body
 
-    def parse_for(self, tok: Token) -> ForStmt:
+    def parse_for(self, tok: Token) -> IteratorForStmt:
         """Parse the `for` grammar production from the token stream.
         
         Parameters:
@@ -1081,7 +1118,7 @@ class Parser:
             end_expr = self.parse_expr()
             iterable = RangeExpr(start_or_iter, end_expr, inclusive, dots_tok.pos, dots_tok.line, dots_tok.col)
         body = self.parse_block()
-        return ForStmt(ident.text, iterable, body, tok.pos, tok.line, tok.col)
+        return IteratorForStmt(ident.text, iterable, body, tok.pos, tok.line, tok.col)
 
     def parse_match(self, tok: Token) -> MatchStmt:
         """Parse the `match` grammar production from the token stream.
@@ -1157,8 +1194,119 @@ class Parser:
         if self.cur().kind == "IDENT" and self.cur().text == "_":
             wtok = self.eat("IDENT")
             return WildcardPattern(wtok.pos, wtok.line, wtok.col)
+        
+        # Parse literal patterns
+        if self.cur().kind in ("INT_LIT", "FLOAT_LIT", "STR_LIT", "TRUE", "FALSE"):
+            return self.parse_literal_pattern()
+        
+        # Parse range patterns
+        if self.cur().kind == "IDENT" and self.peek().kind == "..":
+            return self.parse_range_pattern()
+        
+        # Parse slice patterns
+        if self.cur().kind == "[":
+            return self.parse_slice_pattern()
+        
+        # Parse tuple patterns
+        if self.cur().kind == "(":
+            return self.parse_tuple_pattern()
+        
+        # Parse struct patterns
+        if self.cur().kind == "IDENT" and self.peek().kind == "{":
+            return self.parse_struct_pattern()
+        
         # Keep `|` available for match-pattern alternatives.
         return self.parse_expr(5)
+
+    def parse_literal_pattern(self):
+        """Parse literal patterns like 42, "hello", true."""
+        if self.cur().kind == "INT_LIT":
+            tok = self.eat("INT_LIT")
+            return LiteralPattern(IntLit(tok.text, tok.pos, tok.line, tok.col), tok.pos, tok.line, tok.col)
+        elif self.cur().kind == "FLOAT_LIT":
+            tok = self.eat("FLOAT_LIT")
+            return LiteralPattern(FloatLit(tok.text, tok.pos, tok.line, tok.col), tok.pos, tok.line, tok.col)
+        elif self.cur().kind == "STR_LIT":
+            tok = self.eat("STR_LIT")
+            return LiteralPattern(StringLit(tok.text, tok.pos, tok.line, tok.col), tok.pos, tok.line, tok.col)
+        elif self.cur().kind == "TRUE":
+            tok = self.eat("TRUE")
+            return LiteralPattern(BoolLit(True, tok.pos, tok.line, tok.col), tok.pos, tok.line, tok.col)
+        elif self.cur().kind == "FALSE":
+            tok = self.eat("FALSE")
+            return LiteralPattern(BoolLit(False, tok.pos, tok.line, tok.col), tok.pos, tok.line, tok.col)
+        else:
+            self._err("expected literal pattern", self.cur())
+            raise ParseError(self.errors[-1])
+
+    def parse_range_pattern(self):
+        """Parse range patterns like 1..10 or 1..=10."""
+        start_tok = self.eat("IDENT")  # This should be an expression, simplified for now
+        dots_tok = self.eat("..")
+        inclusive = bool(self.opt("="))
+        end_tok = self.eat("IDENT")  # This should be an expression, simplified for now
+        
+        return RangePattern(
+            start_tok, end_tok, inclusive, 
+            start_tok.pos, start_tok.line, start_tok.col
+        )
+
+    def parse_slice_pattern(self):
+        """Parse slice patterns like [a, b, ..]."""
+        lbrack = self.eat("[")
+        patterns = []
+        rest_pattern = None
+        
+        while self.cur().kind != "]":
+            if self.cur().kind == "..":
+                rest_pattern = WildcardPattern(self.cur().pos, self.cur().line, self.cur().col)
+                self.eat("..")
+                break
+            else:
+                patterns.append(self.parse_match_pattern_atom())
+                if not self.opt(","):
+                    break
+        
+        self.eat("]")
+        return SlicePattern(patterns, rest_pattern, lbrack.pos, lbrack.line, lbrack.col)
+
+    def parse_tuple_pattern(self):
+        """Parse tuple patterns like (a, b, c)."""
+        lparen = self.eat("(")
+        patterns = []
+        
+        if self.cur().kind != ")":
+            patterns.append(self.parse_match_pattern_atom())
+            while self.opt(","):
+                if self.cur().kind == ")":
+                    break
+                patterns.append(self.parse_match_pattern_atom())
+        
+        self.eat(")")
+        return TuplePattern(patterns, lparen.pos, lparen.line, lparen.col)
+
+    def parse_struct_pattern(self):
+        """Parse struct patterns like Point { x, y }."""
+        struct_name_tok = self.eat("IDENT")
+        self.eat("{")
+        
+        field_patterns = {}
+        
+        if self.cur().kind != "}":
+            while True:
+                field_name = self.eat("IDENT").text
+                if self.opt(":"):
+                    pattern = self.parse_match_pattern_atom()
+                    field_patterns[field_name] = pattern
+                else:
+                    # Shorthand: Point { x, y } means Point { x: x, y: y }
+                    field_patterns[field_name] = Name(field_name, 0, 0, 0)
+                
+                if not self.opt(","):
+                    break
+        
+        self.eat("}")
+        return StructPattern(struct_name_tok.text, field_patterns, struct_name_tok.pos, struct_name_tok.line, struct_name_tok.col)
 
     def parse_expr(self, min_prec: int = 1):
         """Parse the `expr` grammar production from the token stream.
@@ -1173,11 +1321,18 @@ class Parser:
         while self.cur().kind in BIN_PREC and BIN_PREC[self.cur().kind] >= min_prec:
             op_tok = self.eat(self.cur().kind)
             prec = BIN_PREC[op_tok.kind]
-            if op_tok.kind == "is":
+            
+            # Handle range expressions specially
+            if op_tok.kind in ("..", "..="):
+                right = self.parse_expr(prec + 1)
+                inclusive = op_tok.kind == "..="
+                left = RangeExpr(left, right, inclusive, op_tok.pos, op_tok.line, op_tok.col)
+            elif op_tok.kind == "is":
                 right = Name(self.parse_type(), op_tok.pos, op_tok.line, op_tok.col)
+                left = Binary(op_tok.kind, left, right, op_tok.pos, op_tok.line, op_tok.col)
             else:
                 right = self.parse_expr(prec + 1)
-            left = Binary(op_tok.kind, left, right, op_tok.pos, op_tok.line, op_tok.col)
+                left = Binary(op_tok.kind, left, right, op_tok.pos, op_tok.line, op_tok.col)
         return left
 
     def parse_cast(self):
@@ -1285,6 +1440,35 @@ class Parser:
                 self.i += 1
                 return CastExpr(lit, nxt.text, nxt.pos, nxt.line, nxt.col)
             return lit
+        if self.opt("TYPED_INT"):
+            # Handle typed integer literals like 123i64, 456u32
+            text = tok.text
+            # Extract the value and type
+            # Find where the type suffix starts (i or u)
+            suffix_start = -1
+            for i, ch in enumerate(text):
+                if ch in {"i", "u"} and i + 1 < len(text) and text[i + 1].isdigit():
+                    suffix_start = i
+                    break
+            
+            if suffix_start == -1:
+                self._err(f"invalid typed integer literal: {text}")
+                raise ParseError(self.errors[-1])
+            
+            value_str = text[:suffix_start]
+            type_suffix = text[suffix_start:]
+            
+            # Parse the integer value
+            value = _parse_int_literal(value_str)
+            lit = Literal(value, tok.pos, tok.line, tok.col)
+            
+            # Convert type suffix to actual type name
+            if type_suffix.startswith("i"):
+                type_name = f"i{type_suffix[1:]}"
+            else:  # u prefix
+                type_name = f"u{type_suffix[1:]}"
+            
+            return CastExpr(lit, type_name, tok.pos, tok.line, tok.col)
         if self.opt("FLOAT"):
             return Literal(_parse_float_literal(tok.text), tok.pos, tok.line, tok.col)
         if self.opt("STR"):

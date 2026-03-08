@@ -1,0 +1,149 @@
+import std.mem;
+
+// Test 1: Basic move semantics
+fn test_move_semantics() Int {
+    data1 = Data(42);
+    data2 = data1;  // data1 is moved
+    
+    // This would cause use-after-move error:
+    // print(data1.value);  // ERROR: use-after-move
+    
+    print("data2.value = " + to_string_int(data2.value));  // OK
+    return 0;
+}
+
+// Test 2: Borrow checking
+fn test_borrow_checking() Int {
+    mut data = Data(10);
+    
+    // Immutable borrow
+    ref1 = &data;
+    print("ref1.value = " + to_string_int(ref1.value));  // OK
+    
+    // Can't borrow mutably while immutable borrow exists
+    // ref2 = &mut data;  // ERROR: cannot borrow mutably while immutably borrowed
+    
+    // Can still read through owner
+    print("data.value = " + to_string_int(data.value));  // OK
+    
+    return 0;
+}
+
+// Test 3: Mutable borrowing
+fn test_mutable_borrowing() Int {
+    mut data = Data(20);
+    
+    // Mutable borrow
+    ref_mut = &mut data;
+    ref_mut.value = 30;  // OK
+    
+    // Can't borrow while mutable borrow exists
+    // ref2 = &data;  // ERROR: cannot borrow immutably while mutably borrowed
+    
+    // Can't use owner while mutably borrowed
+    // print(data.value);  // ERROR: cannot access while mutably borrowed
+    
+    return 0;
+}
+
+// Test 4: Multiple immutable borrows
+fn test_multiple_immutable_borrows() Int {
+    data = Data(5);
+    
+    ref1 = &data;
+    ref2 = &data;
+    ref3 = &data;  // All OK - multiple immutable borrows allowed
+    
+    print("Multiple refs: " + to_string_int(ref1.value) + 
+          ", " + to_string_int(ref2.value) + 
+          ", " + to_string_int(ref3.value));
+    
+    return 0;
+}
+
+// Test 5: Borrowing and moving
+fn test_borrow_and_move() Int {
+    data = Data(15);
+    
+    ref = &data;  // Borrow
+    
+    // Can't move while borrowed
+    // data2 = data;  // ERROR: cannot move while borrowed
+    
+    print("Borrowed value: " + to_string_int(ref.value));  // OK
+    
+    return 0;
+}
+
+// Test 6: Struct definition
+struct Data {
+    value: Int,
+}
+
+// Test 7: Function with ownership transfer
+fn test_ownership_transfer() Int {
+    data = create_data(100);
+    print("Transferred data: " + to_string_int(data.value));
+    return 0;
+}
+
+fn create_data(value: Int) Data {
+    return Data(value);
+}
+
+// Test 8: Reference parameters
+fn test_reference_parameters() Int {
+    mut data = Data(50);
+    modify_data(&mut data);
+    print("Modified data: " + to_string_int(data.value));
+    return 0;
+}
+
+fn modify_data(ref: &mut Data) {
+    ref.value = 75;
+}
+
+// Test 9: Lifetime analysis
+fn test_lifetime_analysis() Int {
+    data = Data(25);
+    ref = &data;
+    
+    // Reference must not outlive data
+    return ref.value;  // OK - ref and data have same lifetime
+}
+
+// Test 10: Complex ownership scenarios
+fn test_complex_scenarios() Int {
+    // Nested scopes
+    {
+        mut outer = Data(1);
+        
+        {
+            inner_ref = &outer;
+            print("Inner ref: " + to_string_int(inner_ref.value));
+        }  // inner_ref is dropped here
+        
+        // Can now borrow mutably again
+        mut_ref = &mut outer;
+        mut_ref.value = 2;
+    }  // outer is dropped here
+    
+    return 0;
+}
+
+fn main() Int {
+    print("Testing ownership system...");
+    
+    test_move_semantics();
+    test_borrow_checking();
+    test_mutable_borrowing();
+    test_multiple_immutable_borrows();
+    test_borrow_and_move();
+    test_ownership_transfer();
+    test_reference_parameters();
+    test_lifetime_analysis();
+    test_complex_scenarios();
+    
+    print("All ownership tests completed!");
+    return 0;
+}

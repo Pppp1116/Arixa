@@ -30,13 +30,12 @@ from astra.ast import (
     CastExpr,
     ComptimeStmt,
     ContinueStmt,
-    DeferStmt,
     EnumDecl,
     ExprStmt,
     ExternFnDecl,
     FieldExpr,
     FnDecl,
-    ForStmt,
+    IteratorForStmt,
     GuardedPattern,
     IfStmt,
     ImportDecl,
@@ -252,7 +251,7 @@ def _expand_serde_derives(prog: Program) -> None:
     known_type_names = {
         item.name
         for item in prog.items
-        if isinstance(item, (StructDecl, EnumDecl, TypeAliasDecl))
+        if isinstance(item, (StructDecl, EnumDecl, TraitDecl, TypeAliasDecl))
     }
     parse_error_available = "ParseError" in known_type_names
     generated: list[FnDecl] = []
@@ -587,36 +586,62 @@ def _dependency_native_link_data(src_file: Path) -> tuple[set[str], list[str]]:
     return libs, link_args
 
 
-_STRICT_TOP_LEVEL = {FnDecl, StructDecl, EnumDecl, TraitDecl, TypeAliasDecl, ImportDecl, ExternFnDecl, LetStmt}
-_STRICT_STMTS = {LetStmt, AssignStmt, ReturnStmt, ExprStmt, IfStmt, MatchStmt, WhileStmt, ForStmt, BreakStmt, ContinueStmt, ComptimeStmt, DeferStmt, UnsafeStmt}
-_STRICT_EXPRS = {
-    Literal,
-    BoolLit,
-    NilLit,
+from astra.ast import (
+    Program,
+    FnDecl,
+    ExternFnDecl,
+    ImportDecl,
+    ConstDecl,
+    StructDecl,
+    StructLit,
+    EnumDecl,
+    TraitDecl,
+    TryExpr,
+    TypeAliasDecl,
+    TypeAnnotated,
+    AssignStmt,
+    LetStmt,
+    ReturnStmt,
+    ExprStmt,
+    IfStmt,
+    MatchStmt,
+    WhileStmt,
+    IteratorForStmt,
+    BreakStmt,
+    ContinueStmt,
+    ComptimeStmt,
+    UnsafeStmt,
     Name,
+    Literal,
+    SizeOfValueExpr,
+    SizeOfTypeExpr,
+    AlignOfValueExpr,
+    AlignOfTypeExpr,
+    BitSizeOfTypeExpr,
+    MaxValTypeExpr,
+    MinValTypeExpr,
+    CastExpr,
     Unary,
     Binary,
     Call,
     IndexExpr,
     FieldExpr,
     ArrayLit,
-    StructLit,
-    AwaitExpr,
-    TryExpr,
-    TypeAnnotated,
-    CastExpr,
-    SizeOfTypeExpr,
-    AlignOfTypeExpr,
-    BitSizeOfTypeExpr,
-    MaxValTypeExpr,
-    MinValTypeExpr,
-    SizeOfValueExpr,
-    AlignOfValueExpr,
-    WildcardPattern,
+    RangeExpr,
+    StringInterpolation,
+    BoolLit,
+    NilLit,
     OrPattern,
     GuardedPattern,
+    RangePattern,
+    SlicePattern,
+    StructPattern,
+    TuplePattern,
+    LiteralPattern,
+    WildcardPattern,
+    EnhancedPattern,
     RangeExpr,
-}
+)
 _STRICT_UNARY_OPS = {"-", "!", "~", "&", "&mut", "*"}
 _STRICT_BINARY_OPS = {
     "+",
@@ -640,6 +665,8 @@ _STRICT_BINARY_OPS = {
     "??",
 }
 _STRICT_ASSIGN_OPS = {"=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="}
+
+_STRICT_TOP_LEVEL = {FnDecl, StructDecl, EnumDecl, TraitDecl, TypeAliasDecl, ImportDecl, ExternFnDecl, LetStmt}
 
 
 def _strict_walk_expr(e: object, errs: list[str]) -> None:
@@ -747,7 +774,7 @@ def _strict_walk_stmt(st: object, errs: list[str]) -> None:
         for x in st.body:
             _strict_walk_stmt(x, errs)
         return
-    if isinstance(st, ForStmt):
+    if isinstance(st, IteratorForStmt):
         _strict_walk_expr(st.iterable, errs)
         for x in st.body:
             _strict_walk_stmt(x, errs)
@@ -755,9 +782,6 @@ def _strict_walk_stmt(st: object, errs: list[str]) -> None:
     if isinstance(st, ComptimeStmt):
         for x in st.body:
             _strict_walk_stmt(x, errs)
-        return
-    if isinstance(st, DeferStmt):
-        _strict_walk_expr(st.expr, errs)
         return
     if isinstance(st, UnsafeStmt):
         for x in st.body:
@@ -1015,15 +1039,15 @@ def build(
     # Use enhanced optimizer for release builds
     if profile == "release":
         try:
-            from astra.optimizer_enhanced import optimize_program_enhanced
-            from astra.optimizer_advanced import optimize_program_advanced
-            from astra.optimizer_memory import optimize_memory_program
-            from astra.optimizer_controlflow import optimize_controlflow_program
-            from astra.optimizer_ssa import optimize_ssa_program
-            from astra.optimizer_loops_advanced import optimize_loops_advanced_program
-            from astra.optimizer_interprocedural import optimize_interprocedural_program
-            from astra.optimizer_target_specific import optimize_target_specific_program
-            from astra.optimizer_pgo import optimize_pgo_program
+            from astra.optimizer.optimizer_enhanced import optimize_program_enhanced
+            from astra.optimizer.optimizer_advanced import optimize_program_advanced
+            from astra.optimizer.optimizer_memory import optimize_memory_program
+            from astra.optimizer.optimizer_controlflow import optimize_controlflow_program
+            from astra.optimizer.optimizer_ssa import optimize_ssa_program
+            from astra.optimizer.optimizer_loops_advanced import optimize_loops_advanced_program
+            from astra.optimizer.optimizer_interprocedural import optimize_interprocedural_program
+            from astra.optimizer.optimizer_target_specific import optimize_target_specific_program
+            from astra.optimizer.optimizer_pgo import optimize_pgo_program
             
             # Apply comprehensive optimization pipeline
             optimize_program_enhanced(prog, overflow_mode=overflow_mode, profile=profile)
@@ -1041,22 +1065,22 @@ def build(
     elif profile in {"experimental", "beta"}:
         # Experimental/beta mode with cutting-edge optimizations
         try:
-            from astra.optimizer_experimental import optimize_experimental_program
+            from astra.optimizer.optimizer_experimental import optimize_experimental_program
             
             print("OPTIMIZE: Using experimental optimization pipeline (beta mode)")
             optimize_experimental_program(prog, overflow_mode=overflow_mode, profile=profile)
         except ImportError:
             # Fallback to release optimizations
             try:
-                from astra.optimizer_enhanced import optimize_program_enhanced
-                from astra.optimizer_advanced import optimize_program_advanced
-                from astra.optimizer_memory import optimize_memory_program
-                from astra.optimizer_controlflow import optimize_controlflow_program
-                from astra.optimizer_ssa import optimize_ssa_program
-                from astra.optimizer_loops_advanced import optimize_loops_advanced_program
-                from astra.optimizer_interprocedural import optimize_interprocedural_program
-                from astra.optimizer_target_specific import optimize_target_specific_program
-                from astra.optimizer_pgo import optimize_pgo_program
+                from astra.optimizer.optimizer_enhanced import optimize_program_enhanced
+                from astra.optimizer.optimizer_advanced import optimize_program_advanced
+                from astra.optimizer.optimizer_memory import optimize_memory_program
+                from astra.optimizer.optimizer_controlflow import optimize_controlflow_program
+                from astra.optimizer.optimizer_ssa import optimize_ssa_program
+                from astra.optimizer.optimizer_loops_advanced import optimize_loops_advanced_program
+                from astra.optimizer.optimizer_interprocedural import optimize_interprocedural_program
+                from astra.optimizer.optimizer_target_specific import optimize_target_specific_program
+                from astra.optimizer.optimizer_pgo import optimize_pgo_program
                 
                 optimize_program_enhanced(prog, overflow_mode=overflow_mode, profile=profile)
                 optimize_program_advanced(prog, overflow_mode=overflow_mode, profile=profile)

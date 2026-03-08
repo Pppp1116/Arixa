@@ -12,7 +12,7 @@ fn wrap(x T) T where T: Show{
   return x;
 }
 
-fn main() Int{
+fn main() Int {
   return wrap(7);
 }
 """

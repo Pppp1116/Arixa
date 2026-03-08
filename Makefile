@@ -6,7 +6,7 @@ PYTEST := $(ARIXA_BIN)/pytest
 
 ARIXA_SOURCES := $(shell find . -name '*.arixa' -print)
 
-.PHONY: help venv bootstrap fmt fmt-check lint test e2e bundle-vscode bundle-toolchain all
+.PHONY: help venv bootstrap fmt fmt-check lint test e2e bundle-vscode bundle-toolchain sync-editor-tools verify-editor-sync all
 
 help:
 	@echo "Available targets:"
@@ -18,6 +18,8 @@ help:
 	@echo "  e2e        - run e2e tests via 'arixa test --kind e2e' (if configured)"
 	@echo "  bundle-vscode   - refresh bundled compiler snapshot used by VS Code extension"
 	@echo "  bundle-toolchain - build portable compiler bundle into dist/toolchain/"
+	@echo "  sync-editor-tools - automatically sync VS Code extension syntax with language changes (LSP imports directly from main project)"
+	@echo "  verify-editor-sync - verify that editor tools are properly synchronized"
 	@echo "  all        - fmt-check, lint, and test"
 
 venv:
@@ -55,5 +57,11 @@ bundle-vscode:
 
 bundle-toolchain:
 	python scripts/build_toolchain_bundle.py --layout portable --clean --output dist/toolchain
+
+sync-editor-tools:
+	python scripts/sync_editor_tools.py
+
+verify-editor-sync:
+	python scripts/verify_editor_sync.py
 
 all: fmt-check lint test

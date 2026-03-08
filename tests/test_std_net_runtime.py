@@ -44,7 +44,7 @@ def test_std_net_runtime_roundtrip_parity(tmp_path) -> None:
     src = f"""
 import "net";
 
-fn main() Int{{
+fn main() Int {{
   conn = tcp_connect("127.0.0.1:{port}");
   if conn < 0 {{
     return 101;
@@ -75,7 +75,7 @@ def test_std_net_runtime_error_path_parity(tmp_path) -> None:
     src = """
 import "net";
 
-fn main() Int{
+fn main() Int {
   conn = tcp_connect("bad-address");
   sent = tcp_send(99999, "x");
   recv_len = len(tcp_recv(99999, 8));

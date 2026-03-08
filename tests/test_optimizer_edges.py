@@ -11,7 +11,7 @@ def test_dead_pure_lets_are_removed(tmp_path: Path):
     out = tmp_path / "dead_lets.py"
     src.write_text(
         """
-fn main() Int{
+fn main() Int {
   a = 1 + 2;
   b = 9 * 3;
   return 0;
@@ -29,7 +29,7 @@ def test_dead_let_with_side_effect_is_preserved_as_expr(tmp_path: Path):
     out = tmp_path / "dead_side.py"
     src.write_text(
         """
-fn main() Int{
+fn main() Int {
   x = print(7);
   return 0;
 }
@@ -48,7 +48,7 @@ def test_dead_trapping_expr_statement_is_not_removed(tmp_path: Path):
     out = tmp_path / "trap_expr.py"
     src.write_text(
         """
-fn main() Int{
+fn main() Int {
   drop 1 / 0;
   return 0;
 }
@@ -65,7 +65,7 @@ def test_dead_trapping_let_initializer_is_not_removed(tmp_path: Path):
     out = tmp_path / "trap_let.py"
     src.write_text(
         """
-fn main() Int{
+fn main() Int {
   x = 1 / 0;
   return 0;
 }
@@ -82,7 +82,7 @@ def test_mul_zero_does_not_drop_trapping_subexpression(tmp_path: Path):
     out = tmp_path / "mul_zero_trap.py"
     src.write_text(
         """
-fn main() Int{
+fn main() Int {
   return (1 / 0) * 0;
 }
 """
@@ -98,7 +98,7 @@ def test_short_circuit_false_and_still_short_circuits(tmp_path: Path):
     out = tmp_path / "short_and.py"
     src.write_text(
         """
-fn main() Int{
+fn main() Int {
   x = false && (1 / 0 == 0);
   if x { return 1; }
   return 0;
@@ -115,7 +115,7 @@ def test_optimizer_fixed_point_propagates_constant_chain(tmp_path: Path):
     out = tmp_path / "chain.py"
     src.write_text(
         """
-fn main() Int{
+fn main() Int {
   a = 1 + 2;
   b = a + 3;
   c = b * 2;
@@ -137,7 +137,7 @@ def test_local_cse_reuses_identical_pure_expression(tmp_path: Path):
     out = tmp_path / "cse.py"
     src.write_text(
         """
-fn main() Int{
+fn main() Int {
   mut x = 7;
   y = x * x;
   z = x * x;
@@ -157,7 +157,7 @@ def test_strength_reduction_mul_pow2_to_shift(tmp_path: Path):
     out = tmp_path / "strength.py"
     src.write_text(
         """
-fn main() Int{
+fn main() Int {
   mut x = 3;
   y = x * 8;
   return y;

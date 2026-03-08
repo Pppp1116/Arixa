@@ -24,7 +24,7 @@ fn get(b Box) Int{
   return b.x;
 }
 
-fn main() Int{
+fn main() Int {
   _ = log(1, 1) + log(2, 2);
   _ = add(log(3, 3), log(4, 4));
   _ = get(make());

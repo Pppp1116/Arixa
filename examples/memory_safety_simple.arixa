@@ -1,9 +1,8 @@
-// Simple memory safety demonstration
 import std.io;
 
 struct Point {
-    x: Float,
-    y: Float,
+    x Float,
+    y Float,
 }
 
 fn test_ownership() Int {
@@ -19,11 +18,9 @@ fn test_ownership() Int {
 
 fn test_borrowing() Int {
     p = Point(3.0, 4.0);
-    
     ref = &p;
     print("Via immutable borrow: x=");
     print(ref.x);
-    
     return 0;
 }
 

@@ -11,7 +11,7 @@ from astra.ast import (
     ContinueStmt,
     ExprStmt,
     FnDecl,
-    ForStmt,
+    IteratorForStmt,
     IfStmt,
     IndexExpr,
     LetStmt,
@@ -46,7 +46,7 @@ def lower_for_loops(prog: Program) -> Program:
     def _patch_continues(stmts: list[object], step: AssignStmt) -> list[object]:
         out: list[object] = []
         for st in stmts:
-            if isinstance(st, (WhileStmt, ForStmt)):
+            if isinstance(st, (WhileStmt, IteratorForStmt)):
                 out.append(st)
                 continue
             if isinstance(st, ContinueStmt):
@@ -99,7 +99,7 @@ def lower_for_loops(prog: Program) -> Program:
         if isinstance(st, ComptimeStmt):
             st.body = _lower_block(st.body)
             return [st]
-        if not isinstance(st, ForStmt):
+        if not isinstance(st, IteratorForStmt):
             return [st]
 
         lowered_body = _lower_block(st.body)

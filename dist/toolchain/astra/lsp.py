@@ -122,10 +122,10 @@ class SymbolInfo:
 
 
 def send(msg: dict[str, Any]) -> None:
-    """Execute the `send` routine.
+    """Execute the `send` function.
     
     Parameters:
-        msg: Input value used by this routine.
+        msg: Input value used by this function.
     
     Returns:
         Value described by the function return annotation.
@@ -165,7 +165,7 @@ def _read_msg_with_timeout(timeout: float | None) -> dict[str, Any] | None | obj
 
 
 def read_msg() -> dict[str, Any] | None:
-    """Execute the `read_msg` routine.
+    """Execute the `read_msg` function.
     
     Parameters:
         none
@@ -1003,7 +1003,7 @@ class LSPServer:
         """Process one incoming LSP request/notification and emit responses.
         
         Parameters:
-            msg: Input value used by this routine.
+            msg: Input value used by this function.
         
         Returns:
             Value described by the function return annotation.
@@ -1225,7 +1225,7 @@ def main(argv=None):
         argv: Optional CLI arguments passed instead of process argv.
     
     Returns:
-        Value produced by the routine, if any.
+        Value produced by the function, if any.
     """
     ap = argparse.ArgumentParser(prog="astlsp")
     ap.add_argument("--log-file")

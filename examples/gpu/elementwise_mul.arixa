@@ -1,20 +1,18 @@
-gpu fn elementwise_mul(a GpuSlice<Float>, b GpuSlice<Float>, out GpuMutSlice<Float>) Void{
-  i = gpu.global_id();
-  if i < out.len() {
-    out[i] = a[i] * b[i];
-  }
+gpu fn elementwise_mul(a GpuSlice<Float>, b GpuSlice<Float>, out GpuMutSlice<Float>) {
+    i = gpu.global_id();
+    if i < out.len() {
+        out[i] = a[i] * b[i];
+    }
+    else {}
 }
 
-fn main() Int{
-  lhs: Vec<Float> = vec_from([1.0, 3.0, 5.0, 7.0]);
-  rhs: Vec<Float> = vec_from([2.0, 4.0, 6.0, 8.0]);
-
-  dlhs = gpu.copy(lhs);
-  drhs = gpu.copy(rhs);
-  dout: GpuBuffer<Float> = gpu.alloc(len(lhs));
-
-  gpu.launch(elementwise_mul, len(lhs), 128, dlhs, drhs, dout);
-
-  print(gpu.read(dout));
-  return 0;
+fn main() Int {
+    lhs: Vec<Float> = vec_from(vec(1.0, 3.0, 5.0, 7.0));
+    rhs: Vec<Float> = vec_from(vec(2.0, 4.0, 6.0, 8.0));
+    dlhs = gpu.copy(lhs);
+    drhs = gpu.copy(rhs);
+    dout: GpuBuffer<Float> = gpu.alloc(len(lhs));
+    gpu.launch(elementwise_mul, len(lhs), 128, dlhs, drhs, dout);
+    print(gpu.read(dout));
+    return 0;
 }

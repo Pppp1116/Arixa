@@ -1,4 +1,4 @@
-# Arixa Language Spec (Implementation-Facing)
+# ASTRA Language Specification
 
 This document defines the current language contract in a single place for parser/semantic/codegen behavior.
 
@@ -25,21 +25,34 @@ str_multi_lit   = "\"\"\"" { any_char } "\"\"\"" ;
 char_lit        = "'" { char | escape } "'" ;
 bool_lit        = "true" | "false" ;
 
-keyword         = "fn" | "return" | "if" | "else" | "while"
-                | "for" | "break" | "continue" | "struct" | "enum" | "type"
-                | "import" | "mut" | "pub" | "extern" | "async" | "await"
-                | "unsafe" | "trait" | "match" | "defer" | "drop"
-                | "comptime" | "none" | "in" | "as" | "sizeof" | "alignof" ;
+keyword         = "fn" | "mut" | "if" | "else" | "while" | "for" | "match"
+                | "return" | "break" | "continue" | "unsafe" | "struct" | "enum"
+                | "trait" | "type" | "import" | "extern" | "comptime" | "none"
+                | "set" | "in" | "as" | "sizeof" | "alignof" | "f16" | "f80" | "f128"
+                | "pub" | "const" | "true" | "false" | "where" | "async" | "await" ;
 
-multi_op        = "::" | "=>" | "->" | "==" | "!="
-                | "<=" | ">=" | "&&" | "||" | "??"
-                | "+=" | "-=" | "*=" | "/=" | "%="
-                | "&=" | "|=" | "^=" | "<<=" | ">>="
-                | "<<" | ">>" | ".." ;
-single_op       = "{" | "}" | "(" | ")" | "<" | ">" | ";" | "," | "=" | "+"
-                | "-" | "*" | "/" | "%" | "!" | "?" | "[" | "]" | ":"
-                | "." | "&" | "|" | "^" | "~" | "@" ;
+multi_op        = "::" | "=>" | "->" | "==" | "!=" | "<=" | ">=" | "&&" | "||"
+                | "??"+ | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^="
+                | "<<=" | ">>=" | "<<" | ">>" | "..." | ".." ;
+single_op       = "{" | "}" | "(" | ")" | "<" | ">" | ";" | "," | "=" | "+" | "-"
+                | "*" | "/" | "%" | "!" | "?" | "[" | "]" | ":" | "." | "&" | "|"
+                | "^" | "~" | "@" ;
 ```
+
+**Current Keywords (34 total)**:
+- Control flow: `fn`, `return`, `if`, `else`, `while`, `for`, `match`, `break`, `continue`
+- Declarations: `struct`, `enum`, `trait`, `type`, `mut`, `pub`, `const`, `extern`
+- Memory management: `unsafe`, `defer`
+- Advanced features: `async`, `await`, `comptime`, `where`
+- Types: `none`, `set`, `in`, `as`, `sizeof`, `alignof`, `f16`, `f80`, `f128`
+- Literals: `true`, `false`
+
+**Important Notes**:
+- `for` loops now use iterator-style syntax (`for item in collection`)
+- `impl` blocks have been removed from the language
+- `IteratorForStmt` replaces the old `ForStmt` in the AST
+- Function signatures use `fn name() Type` syntax (no `->`)
+- Int literals default to `Int` type with automatic `i64` conversion
 
 Notes:
 - Unterminated block comments/strings/chars are lexer errors (`LEX file:line:col: ...`).
@@ -99,7 +112,7 @@ Associativity:
 block           = "{" { stmt } "}" ;
 stmt            = binding_stmt
                 | return_stmt | break_stmt | continue_stmt
-                | defer_stmt | drop_stmt | comptime_stmt
+                | defer_stmt | comptime_stmt
                 | if_stmt | while_stmt | for_stmt | match_stmt
                 | assign_stmt | expr_stmt ;
 
@@ -108,7 +121,6 @@ return_stmt     = "return" [ expr ] ";" ;
 break_stmt      = "break" ";" ;
 continue_stmt   = "continue" ";" ;
 defer_stmt      = "defer" expr ";" ;
-drop_stmt       = "drop" expr ";" ;
 comptime_stmt   = "comptime" block ;
 
 if_stmt         = "if" expr block [ "else" block ] ;
@@ -146,11 +158,11 @@ Rules:
 - `import std.io;` and `import stdlib::io;` both resolve through stdlib lookup.
 - `import "path/to/mod";` resolves relative to the importing file (absolute paths resolve as-is).
 - Non-stdlib module imports resolve from the nearest ancestor directory containing `Astra.toml`.
-- If no package root is present, non-stdlib module imports resolve relative to the importing file directory.
+- If no module root is present, non-stdlib module imports resolve relative to the importing file directory.
 - Stdlib lookup order is:
   - `ASTRA_STDLIB_PATH` (if set)
   - repository `stdlib/` (dev checkout)
-  - bundled package path `astra/stdlib` (installed package)
+  - bundled module path `astra/stdlib` (installed module)
 
 ## 5. Type System Rules
 
@@ -193,7 +205,7 @@ Borrowing:
 
 Owned-state checks:
 - Tracked owned allocations must not be used after `free`/move.
-- Reassignment of still-live tracked ownership without drop/move is rejected.
+- Reassignment of still-live tracked ownership without move is rejected.
 - Function-level live owned leaks are rejected.
 
 ## 7. Evaluation Order Guarantees

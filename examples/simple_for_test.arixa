@@ -1,9 +1,6 @@
-// Test enhanced for loop without external dependencies
 fn main() Int {
     for i in 0..2 {
-        // Simple expression without external dependencies
         result = i * 2;
-        // result = result;  // Just use the variable
     }
     return 0;
 }

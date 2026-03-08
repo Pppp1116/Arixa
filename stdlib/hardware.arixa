@@ -1,39 +1,33 @@
-/// std.hardware - low-level hardware interaction primitives.
-///
-/// All functions in this module are pure and work in both hosted and freestanding modes.
-/// These provide common hardware-level operations useful for embedded and kernel development.
-
 import std.atomic;
 
-/// Memory barrier types.
 type MemoryBarrier = Int;
 
 const MEMORY_BARRIER_FULL = 0;
+
 const MEMORY_BARRIER_READ = 1;
+
 const MEMORY_BARRIER_WRITE = 2;
 
 /// Memory barrier to ensure memory operation ordering.
-///
+/// 
 /// This is a compiler intrinsic that prevents reordering of memory operations.
-fn memory_barrier(barrier_type MemoryBarrier) {
-    // In freestanding environments, this would map to appropriate CPU instructions
-    // For now, this serves as a hint to the compiler and codegen
-}
+fn memory_barrier(barrier_type MemoryBarrier) {}
 
 /// Atomic memory operations without runtime dependencies.
 /// These use the built-in atomic operations but provide safer interfaces.
-
 /// Atomic compare-and-swap loop.
-///
+/// 
 /// Returns the old value and whether the swap succeeded.
-fn atomic_compare_exchange_loop(ptr &mut AtomicInt, mut expected Int, desired Int) Int {
+fn atomic_compare_exchange_loop(ptr &mut AtomicInt, expected Int, desired Int) Int {
     while true {
         old_val = atomic_load(ptr);
         if old_val == expected {
             if atomic_compare_exchange(ptr, expected, desired) {
                 return old_val;
             }
-        } else {
+            else {}
+        }
+        else {
             return old_val;
         }
         expected = old_val;
@@ -41,9 +35,9 @@ fn atomic_compare_exchange_loop(ptr &mut AtomicInt, mut expected Int, desired In
 }
 
 /// Atomic fetch-add with overflow checking.
-///
+/// 
 /// Returns `none` on overflow.
-fn atomic_fetch_add_checked(ptr &mut AtomicInt, delta Int) Int? {
+fn atomic_fetch_add_checked(ptr &mut AtomicInt, delta Int) Int | none {
     current = atomic_load(ptr);
     if delta > 0 && current > maxVal(Int) - delta {
         return none;
@@ -57,7 +51,7 @@ fn atomic_fetch_add_checked(ptr &mut AtomicInt, delta Int) Int? {
 }
 
 /// Spin-wait until `condition` becomes true or `timeout` cycles pass.
-///
+/// 
 /// Returns true if condition was met, false if timeout occurred.
 fn spin_wait(condition fn() Bool, timeout Int) Bool {
     mut cycles = 0;
@@ -69,27 +63,24 @@ fn spin_wait(condition fn() Bool, timeout Int) Bool {
 }
 
 /// CPU pause instruction to yield in spin loops.
-fn cpu_pause() {
-    // In freestanding environments, this maps to CPU-specific pause instructions
-    // (e.g., PAUSE on x86, YIELD on ARM)
-}
+fn cpu_pause() {}
 
 /// Read CPU cycle counter (if available).
-///
+/// 
 /// Returns `none` if cycle counter not supported.
-fn read_cycle_counter() Int? {
+fn read_cycle_counter() Int | none {
     return __read_cycle_counter_impl();
 }
 
 /// Read timestamp counter in nanoseconds (if available).
-///
+/// 
 /// Returns `none` if not supported.
-fn read_timestamp() Int? {
+fn read_timestamp() Int | none {
     return __read_timestamp_impl();
 }
 
 /// Get CPU information.
-///
+/// 
 /// Returns CPU vendor, model, and features if available.
 fn cpu_info() {
     return __cpu_info_impl();
@@ -102,12 +93,11 @@ fn cpu_has_feature(feature String) Bool {
         return false;
     }
     else {}
-    
     features = vec_new() as Vec<String>;
     mut i = 0;
     while i < vec_len(features) {
         f = vec_get(features, i);
-        if f != none && (f as String?) == feature {
+        if f != none && f as String | none == feature {
             return true;
         }
         else {}
@@ -116,16 +106,16 @@ fn cpu_has_feature(feature String) Bool {
     return false;
 }
 
-// Runtime implementation functions for hardware intrinsics
-extern fn __read_cycle_counter_impl() Int?;
-extern fn __read_timestamp_impl() Int?;
+extern fn __read_cycle_counter_impl() Int | none;
+
+extern fn __read_timestamp_impl() Int | none;
+
 extern fn __cpu_info_impl();
 
 /// Bit manipulation utilities for hardware registers.
-
 /// Set bit `n` in `value`.
 fn bit_set(value Int, n Int) Int {
-    return value | (1 << n);
+    return value | 1 << n;
 }
 
 /// Clear bit `n` in `value`.
@@ -135,28 +125,27 @@ fn bit_clear(value Int, n Int) Int {
 
 /// Toggle bit `n` in `value`.
 fn bit_toggle(value Int, n Int) Int {
-    return value ^ (1 << n);
+    return value ^ 1 << n;
 }
 
 /// Check if bit `n` is set in `value`.
 fn bit_is_set(value Int, n Int) Bool {
-    return (value & (1 << n)) != 0;
+    return (value & 1 << n) != 0;
 }
 
 /// Extract bits `hi:lo` from `value`.
 fn bit_extract(value Int, hi Int, lo Int) Int {
-    mask = (1 << (hi - lo + 1)) - 1;
-    return (value >> lo) & mask;
+    mask = (1 << hi - lo + 1) - 1;
+    return value >> lo & mask;
 }
 
 /// Insert `field` into bits `hi:lo` of `value`.
 fn bit_insert(value Int, field Int, hi Int, lo Int) Int {
-    mask = ((1 << (hi - lo + 1)) - 1) << lo;
-    return (value & ~mask) | ((field << lo) & mask);
+    mask = (1 << hi - lo + 1) - 1 << lo;
+    return value & ~mask | field << lo & mask;
 }
 
 /// Common hardware register field operations.
-
 /// Read a memory-mapped register.
 fn read_reg(addr &Int) Int {
     return *addr;
@@ -171,7 +160,7 @@ fn write_reg(addr &mut Int, value Int) {
 /// Read-modify-write a register with memory barriers.
 fn modify_reg(addr &mut Int, mask Int, value Int) {
     old = read_reg(addr);
-    new = (old & ~mask) | (value & mask);
+    new = old & ~mask | value & mask;
     write_reg(addr, new);
 }
 
@@ -182,31 +171,31 @@ fn wait_for_reg_field(addr &Int, mask Int, expected Int, timeout Int) Bool {
         return false;
     }
     else {}
-    # Perform initial read before any timestamp checks
     current = read_reg(addr);
     if (current & mask) == expected {
         return true;
     }
-    
+    else {}
     mut current_time = __read_timestamp_impl();
     if current_time == none {
-        # Fallback to counter-based approach for targets without timestamp support
         mut elapsed = 0;
         current = read_reg(addr);
         while elapsed < timeout {
             if (current & mask) == expected {
                 return true;
             }
+            else {}
             elapsed += 1;
             current = read_reg(addr);
         }
     }
     else {
         current = read_reg(addr);
-        while (current_time as Int - start as Int) < timeout {
+        while current_time as Int - start as Int < timeout {
             if (current & mask) == expected {
                 return true;
             }
+            else {}
             current = read_reg(addr);
             current_time = __read_timestamp_impl();
         }

@@ -7,16 +7,16 @@ _astra_threads = {}
 _astra_next_tid = 1
 _astra_atomics = {}
 _astra_next_atomic = 1
-_astra_atomic_lock = threading.Lock()
 _astra_mutexes = {}
 _astra_next_mutex = 1
 _astra_channels = {}
 _astra_next_chan = 1
 _astra_sockets = {}
 _astra_next_sock = 1
+_astra_registry_lock = threading.Lock()
 _astra_libs = {}
 def __astra_cast(v, t):
-    if t in ('Float', 'f32', 'f64'):
+    if t in ('Float', 'f16', 'f32', 'f64', 'f80', 'f128'):
         return float(v)
     if t in ('Int', 'isize'): bits, signed = 64, True
     elif t == 'usize': bits, signed = 64, False
@@ -69,17 +69,19 @@ def args(): return sys.argv
 def arg(i): return sys.argv[i] if 0 <= int(i) < len(sys.argv) else ''
 def alloc(n):
     global _astra_next_ptr
-    ptr = _astra_next_ptr
-    _astra_next_ptr += 1
-    _astra_heap[ptr] = bytearray(max(0, int(n)))
-    return ptr
+    with _astra_registry_lock:
+        ptr = _astra_next_ptr
+        _astra_next_ptr += 1
+        _astra_heap[ptr] = bytearray(max(0, int(n)))
+        return ptr
 def free(ptr):
     _astra_heap.pop(ptr, None)
     return None
 def spawn(fn, *a):
     global _astra_next_tid
-    tid = _astra_next_tid
-    _astra_next_tid += 1
+    with _astra_registry_lock:
+        tid = _astra_next_tid
+        _astra_next_tid += 1
     state = {'done': False, 'result': 0, 'thread': None}
     def _runner():
         try:
@@ -110,26 +112,26 @@ def await_result(v):
     return v
 def atomic_int_new(v):
     global _astra_next_atomic
-    with _astra_atomic_lock:
+    with _astra_registry_lock:
         h = _astra_next_atomic
         _astra_next_atomic += 1
         _astra_atomics[h] = int(v)
     return h
 def atomic_load(h):
-    with _astra_atomic_lock:
+    with _astra_registry_lock:
         return int(_astra_atomics.get(int(h), 0))
 def atomic_store(h, v):
-    with _astra_atomic_lock:
+    with _astra_registry_lock:
         _astra_atomics[int(h)] = int(v)
     return 0
 def atomic_fetch_add(h, delta):
-    with _astra_atomic_lock:
+    with _astra_registry_lock:
         key = int(h)
         old = int(_astra_atomics.get(key, 0))
         _astra_atomics[key] = old + int(delta)
     return old
 def atomic_compare_exchange(h, expected, desired):
-    with _astra_atomic_lock:
+    with _astra_registry_lock:
         key = int(h)
         cur = int(_astra_atomics.get(key, 0))
         if cur == int(expected):
@@ -138,10 +140,11 @@ def atomic_compare_exchange(h, expected, desired):
     return False
 def mutex_new():
     global _astra_next_mutex
-    mid = _astra_next_mutex
-    _astra_next_mutex += 1
-    _astra_mutexes[mid] = threading.Lock()
-    return mid
+    with _astra_registry_lock:
+        mid = _astra_next_mutex
+        _astra_next_mutex += 1
+        _astra_mutexes[mid] = threading.Lock()
+        return mid
 def mutex_lock(mid, owner_tid):
     lk = _astra_mutexes.get(int(mid))
     if lk is None:
@@ -159,11 +162,12 @@ def mutex_unlock(mid, owner_tid):
         return 1
 def chan_new():
     global _astra_next_chan
-    cid = _astra_next_chan
-    _astra_next_chan += 1
-    cv = threading.Condition()
-    _astra_channels[cid] = {'q': collections.deque(), 'closed': False, 'cv': cv}
-    return cid
+    with _astra_registry_lock:
+        cid = _astra_next_chan
+        _astra_next_chan += 1
+        cv = threading.Condition()
+        _astra_channels[cid] = {'q': collections.deque(), 'closed': False, 'cv': cv}
+        return cid
 def chan_send(cid, v):
     ch = _astra_channels.get(int(cid))
     if ch is None:
@@ -230,10 +234,11 @@ def file_remove(p):
         return 1
 def _sock_new(s):
     global _astra_next_sock
-    sid = _astra_next_sock
-    _astra_next_sock += 1
-    _astra_sockets[sid] = s
-    return sid
+    with _astra_registry_lock:
+        sid = _astra_next_sock
+        _astra_next_sock += 1
+        _astra_sockets[sid] = s
+        return sid
 def tcp_connect(addr):
     try:
         host, port = str(addr).rsplit(':', 1)
@@ -276,7 +281,16 @@ def proc_exit(code): raise SystemExit(int(code))
 def panic(msg): import sys; print(f'panic: {msg}', file=sys.stderr); sys.exit(101)
 def env_get(k): return os.environ.get(str(k), '')
 def cwd(): return os.getcwd()
-def proc_run(cmd): return subprocess.call(str(cmd), shell=True)
+def proc_run(cmd):
+    import shlex
+    try:
+        if isinstance(cmd, str):
+            cmd_list = shlex.split(str(cmd))
+        else:
+            cmd_list = list(str(arg) for arg in cmd)
+        return subprocess.call(cmd_list, shell=False)
+    except (ValueError, OSError, subprocess.SubprocessError):
+        return -1
 def now_unix(): return int(time.time())
 def monotonic_ms(): return int(time.monotonic() * 1000)
 def sleep_ms(ms): time.sleep(max(0, int(ms)) / 1000.0); return 0
@@ -319,31 +333,31 @@ class _AstraGpuNamespace:
     def __init__(self, runtime):
         self._runtime = runtime
     def available(self):
-        return self._runtime.available()
+        return self._runtime.available() if self._runtime is not None else False
     def device_count(self):
-        return self._runtime.device_count()
+        return self._runtime.device_count() if self._runtime is not None else 0
     def device_name(self, index):
-        return self._runtime.device_name(index)
+        return self._runtime.device_name(index) if self._runtime is not None else ''
     def alloc(self, size):
-        return self._runtime.alloc(size)
+        return self._runtime.alloc(size) if self._runtime is not None else None
     def copy(self, host_values):
-        return self._runtime.copy(host_values)
+        return self._runtime.copy(host_values) if self._runtime is not None else None
     def read(self, memory):
-        return self._runtime.read(memory)
+        return self._runtime.read(memory) if self._runtime is not None else None
     def launch(self, kernel, grid_size, block_size, *args):
-        return self._runtime.launch(kernel, grid_size, block_size, *args)
+        return self._runtime.launch(kernel, grid_size, block_size, *args) if self._runtime is not None else None
     def global_id(self):
-        return self._runtime.global_id()
+        return self._runtime.global_id() if self._runtime is not None else 0
     def thread_id(self):
-        return self._runtime.thread_id()
+        return self._runtime.thread_id() if self._runtime is not None else 0
     def block_id(self):
-        return self._runtime.block_id()
+        return self._runtime.block_id() if self._runtime is not None else 0
     def block_dim(self):
-        return self._runtime.block_dim()
+        return self._runtime.block_dim() if self._runtime is not None else 0
     def grid_dim(self):
-        return self._runtime.grid_dim()
+        return self._runtime.grid_dim() if self._runtime is not None else 0
     def barrier(self):
-        return self._runtime.barrier()
+        return self._runtime.barrier() if self._runtime is not None else None
 gpu = _AstraGpuNamespace(_astra_gpu_runtime)
 _astra_host_list_new = list_new
 _astra_host_list_push = list_push

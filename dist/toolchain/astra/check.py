@@ -97,8 +97,8 @@ _EXPECTS_ARGS_RE = re.compile(r"\bexpects (\d+) args, got (\d+)\b")
 _EXPECTS_ARGUMENT_RE = re.compile(r"\bexpects (\d+) arguments?\b")
 _EXPECTS_AT_LEAST_RE = re.compile(r"\bexpects at least (.+)$")
 _FREESTANDING_BUILTIN_RE = re.compile(r"\bfreestanding mode forbids builtin ([A-Za-z_][A-Za-z0-9_]*)\b")
-_NO_MATCHING_IMPL_RE = re.compile(r"^no matching impl for ([A-Za-z_][A-Za-z0-9_]*)\((.*)\)$")
-_ENTRY_SIG_RE = re.compile(r"^(main|_start)\(\) (must not take parameters|must return Int|cannot be declared with impl)$")
+_NO_MATCHING_FUNCTION_RE = re.compile(r"^no matching function for ([A-Za-z_][A-Za-z0-9_]*)\((.*)\)$")
+_ENTRY_SIG_RE = re.compile(r"^(main|_start)\(\) (must not take parameters|must return Int)$")
 _UNKNOWN_FIELD_RE = re.compile(r"\bunknown field ([A-Za-z_][A-Za-z0-9_]*)\b")
 _MISSING_FIELD_RE = re.compile(r"\bmissing field ([A-Za-z_][A-Za-z0-9_]*)\b")
 _EXPECTED_GOT_RE = re.compile(r"^expected (.+), got (.+)$")
@@ -122,7 +122,7 @@ def run_check_source(
         filename: Filename context used for diagnostics or path resolution.
         freestanding: Whether hosted-runtime features are disallowed.
         overflow: Integer overflow behavior mode requested by the caller.
-        collect_errors: Input value used by this routine.
+        collect_errors: Input value used by this function.
 
     Returns:
         Value described by the function return annotation.
@@ -184,7 +184,7 @@ def run_check_paths(
         paths: Filesystem path input used by this routine.
         freestanding: Whether hosted-runtime features are disallowed.
         overflow: Integer overflow behavior mode requested by the caller.
-        collect_errors: Input value used by this routine.
+        collect_errors: Input value used by this function.
 
     Returns:
         Value described by the function return annotation.
@@ -211,7 +211,7 @@ def diagnostics_to_json_list(diags: list[Diagnostic] | tuple[Diagnostic, ...]) -
     """Convert diagnostics to a JSON-serializable list of dictionaries.
 
     Parameters:
-        diags: Input value used by this routine.
+        diags: Input value used by this function.
 
     Returns:
         Value described by the function return annotation.
@@ -285,7 +285,7 @@ def format_diagnostic(d: Diagnostic) -> str:
     """Render one normalized diagnostic in human-readable text form.
 
     Parameters:
-        d: Input value used by this routine.
+        d: Input value used by this function.
 
     Returns:
         Value described by the function return annotation.
@@ -568,7 +568,6 @@ def _friendly_message_for(message: str, code: str) -> str:
             return f"`{name}` must not take parameters"
         if requirement == "must return Int":
             return "`main` must return `Int`"
-        return f"`{name}` cannot be declared with `impl`"
 
     field_m = _UNKNOWN_FIELD_RE.search(message)
     if field_m is not None:
@@ -669,7 +668,7 @@ def _suggestions_for(
         elif requirement == "must not take parameters":
             out.append(DiagSuggestion(message=f"remove all parameters from `{name}`"))
         else:
-            out.append(DiagSuggestion(message=f"remove `impl` from `{name}`; entrypoints must be plain functions"))
+            out.append(DiagSuggestion(message=f"fix `{name}` signature to meet requirements"))
 
     if "break used outside loop" in m:
         out.append(DiagSuggestion(message="move `break` inside a `while` or `for` loop"))

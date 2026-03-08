@@ -1,125 +1,124 @@
 /// std.collections - dynamic list and map helpers.
-///
+/// 
 /// These wrappers expose host runtime container primitives in a stable stdlib
 /// API shape.
-
 /// Create a new dynamic list.
-///
+/// 
 /// Parameters:
-///     none
-///
+/// none
+/// 
 /// Returns:
-///     Any - opaque list handle.
-fn list_new() Any{
+/// Any - opaque list handle.
+fn list_new() Any {
     return __list_new();
 }
 
 /// Append `value` to list `xs`.
-///
+/// 
 /// Parameters:
-///     xs: Any - list handle returned by `list_new`.
-///     value: Any - value to append.
-///
+/// xs: Any - list handle returned by `list_new`.
+/// value: Any - value to append.
+/// 
 /// Returns:
-///     Int - runtime status code.
-fn list_push(xs Any, value Any) Int{
+/// Int - runtime status code.
+fn list_push(xs Any, value Any) Int {
     return __list_push(xs, value);
 }
 
 /// Read one item from list `xs` at `index`.
-///
+/// 
 /// Parameters:
-///     xs: Any - list handle.
-///     index: Int - zero-based index.
-///
+/// xs: Any - list handle.
+/// index: Int - zero-based index.
+/// 
 /// Returns:
-///     Any - stored element value.
-fn list_get(xs Any, index Int) Any{
+/// Any - stored element value.
+fn list_get(xs Any, index Int) Any {
     return __list_get(xs, index);
 }
 
 /// Write one item into list `xs` at `index`.
-///
+/// 
 /// Parameters:
-///     xs: Any - list handle.
-///     index: Int - zero-based index.
-///     value: Any - new value.
-///
+/// xs: Any - list handle.
+/// index: Int - zero-based index.
+/// value: Any - new value.
+/// 
 /// Returns:
-///     Int - runtime status code.
-fn list_set(xs Any, index Int, value Any) Int{
+/// Int - runtime status code.
+fn list_set(xs Any, index Int, value Any) Int {
     return __list_set(xs, index, value);
 }
 
 /// Return current list length.
-///
+/// 
 /// Parameters:
-///     xs: Any - list handle.
-///
+/// xs: Any - list handle.
+/// 
 /// Returns:
-///     Int - element count.
-fn list_len(xs Any) Int{
+/// Int - element count.
+fn list_len(xs Any) Int {
     return __list_len(xs);
 }
 
 /// Create a new map/dictionary.
-///
+/// 
 /// Parameters:
-///     none
-///
+/// none
+/// 
 /// Returns:
-///     Any - opaque map handle.
-fn map_new() Any{
+/// Any - opaque map handle.
+fn map_new() Any {
     return __map_new();
 }
 
 /// Check whether `key` exists in map `m`.
-///
+/// 
 /// Parameters:
-///     m: Any - map handle.
-///     key: Any - lookup key.
-///
+/// m: Any - map handle.
+/// key: Any - lookup key.
+/// 
 /// Returns:
-///     Bool - true when key is present.
-fn map_has(m Any, key Any) Bool{
+/// Bool - true when key is present.
+fn map_has(m Any, key Any) Bool {
     return __map_has(m, key);
 }
 
 /// Read a value by `key` from map `m`.
-///
+/// 
 /// Parameters:
-///     m: Any - map handle.
-///     key: Any - lookup key.
-///
+/// m: Any - map handle.
+/// key: Any - lookup key.
+/// 
 /// Returns:
-///     Any - mapped value.
-fn map_get(m Any, key Any) Any{
+/// Any - mapped value.
+fn map_get(m Any, key Any) Any {
     return __map_get(m, key);
 }
 
 /// Store `value` in map `m` under `key`.
-///
+/// 
 /// Parameters:
-///     m: Any - map handle.
-///     key: Any - lookup key.
-///     value: Any - value to store.
-///
+/// m: Any - map handle.
+/// key: Any - lookup key.
+/// value: Any - value to store.
+/// 
 /// Returns:
-///     Int - runtime status code.
-fn map_set(m Any, key Any, value Any) Int{
+/// Int - runtime status code.
+fn map_set(m Any, key Any, value Any) Int {
     return __map_set(m, key, value);
 }
 
 /// Read a map value or return `fallback` when key is missing.
-///
+/// 
 /// Parameters:
-///     m: Any - map handle.
-///     key: Any - lookup key.
-///     fallback: Any - value returned when key is absent.
-///
+/// m: Any - map handle.
+/// key: Any - lookup key.
+/// fallback: Any - value returned when key is absent.
+/// 
 /// Returns:
-///     Any - existing map value or fallback.
-fn map_get_or(m Any, key Any, fallback Any) Any{
+/// Any - existing map value or fallback.
+fn map_get_or(m Any, key Any, fallback Any) Any {
     if map_has(m, key) {
         return map_get(m, key);
     }
@@ -136,27 +135,27 @@ struct Map<K, V> {
     raw Any,
 }
 
-fn list_new_typed() List<T>{
+fn list_new_typed() List<T> {
     return list_new() as List<T>;
 }
 
-fn map_new_typed() Map<K, V>{
+fn map_new_typed() Map<K, V> {
     return map_new() as Map<K, V>;
 }
 
-fn push(xs List<T>, value T) Int{
+fn push(xs List<T>, value T) Int {
     return list_push(xs.raw, value);
 }
 
-fn put(xs List<T>, index i32, value T) Int{
+fn put(xs List<T>, index i32, value T) Int {
     return list_set(xs.raw, index, value);
 }
 
-fn len(xs List<T>) Int{
+fn len(xs List<T>) Int {
     return list_len(xs.raw);
 }
 
-fn get(xs List<T>, index i32) T?{
+fn get(xs List<T>, index i32) T | none {
     if index < 0 || index >= list_len(xs.raw) {
         return none;
     }
@@ -164,15 +163,15 @@ fn get(xs List<T>, index i32) T?{
     return list_get(xs.raw, index) as T;
 }
 
-fn has(m Map<K, V>, key K) Bool{
+fn has(m Map<K, V>, key K) Bool {
     return map_has(m.raw, key);
 }
 
-fn put(m Map<K, V>, key K, value V) Int{
+fn put(m Map<K, V>, key K, value V) Int {
     return map_set(m.raw, key, value);
 }
 
-fn get(m Map<K, V>, key K) V?{
+fn get(m Map<K, V>, key K) V | none {
     if !map_has(m.raw, key) {
         return none;
     }

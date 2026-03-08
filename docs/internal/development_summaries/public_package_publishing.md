@@ -2,14 +2,14 @@
 
 ## Overview
 
-ASTRA now supports comprehensive public package publishing with GitHub integration, similar to Rust's crates.io but with direct GitHub repository linking.
+ASTRA now supports comprehensive public module publishing with GitHub integration, similar to Rust's crates.io but with direct GitHub repository linking.
 
 ## 🚀 Quick Start
 
 ### 1. Create a Package
 
 ```bash
-# Initialize a new package
+# Initialize a new module
 python astra/pkg_cli.py init my_awesome_library --description "My awesome ASTRA library"
 
 # Or manually create:
@@ -26,7 +26,7 @@ my_library/
 ### 2. Package Manifest (Astra.toml)
 
 ```toml
-[package]
+[module]
 name = "my_awesome_library"
 version = "0.1.0"
 description = "My awesome ASTRA library for data processing"
@@ -55,7 +55,7 @@ core = []
 serde = ["core", "serde_json"]
 advanced = ["serde", "math"]
 
-[package.metadata]
+[module.metadata]
 publish = true
 auto-publish = false
 build-targets = ["x86_64", "arm64"]
@@ -65,10 +65,10 @@ minimum-astra-version = "1.0.0"
 ### 3. Publish Your Package
 
 ```bash
-# Validate package structure
+# Validate module structure
 python astra/pkg_cli.py publish --directory . --dry-run
 
-# Publish to GitHub (creates release and uploads package)
+# Publish to GitHub (creates release and uploads module)
 python astra/pkg_cli.py publish --directory . --target github --create-release
 
 # Publish to ASTRA registry
@@ -85,7 +85,7 @@ python astra/pkg_cli.py search "game development"
 python astra/pkg_cli.py search "math"
 python astra/pkg_cli.py search "http client"
 
-# Get package information
+# Get module information
 python astra/pkg_cli.py info raylib
 python astra/pkg_cli.py info serde_json
 ```
@@ -116,7 +116,7 @@ python astra/pkg_cli.py install raylib
 python astra/pkg_cli.py install raylib@5.0.0
 
 # Install with custom directory
-python astra/pkg_cli.py install serde_json --install-dir ~/my_packages
+python astra/pkg_cli.py install serde_json --install-dir ~/my_modules
 ```
 
 ### Install from GitHub
@@ -134,7 +134,7 @@ import serde_json;
 import raylib;
 
 fn main() Int {
-    // Use functions from installed packages
+    // Use functions from installed modules
     data = serialize_to_json(my_data);
     return 0;
 }
@@ -147,8 +147,8 @@ fn main() Int {
 **Enhanced Registry Format**:
 ```json
 {
-  "package_name": {
-    "repo": "https://github.com/user/package",
+  "module_name": {
+    "repo": "https://github.com/user/module",
     "description": "Package description",
     "version": "1.0.0",
     "license": "MIT",
@@ -158,7 +158,7 @@ fn main() Int {
     "categories": ["Category1", "Category2"],
     "dependencies": {
       "std": "1.0.0",
-      "other_package": "2.0.0"
+      "other_module": "2.0.0"
     },
     "targets": {
       "freestanding": true,
@@ -177,7 +177,7 @@ fn main() Int {
 ### Registry Statistics
 
 **Current Registry Packages**:
-- **11 packages** available across multiple categories
+- **11 modules** available across multiple categories
 - **Core libraries**: C bindings, OpenGL, SDL2, SQLite
 - **Community libraries**: JSON serialization, regex, HTTP client
 - **Game development**: Raylib, game engine
@@ -203,7 +203,7 @@ fn main() Int {
    ```
 
 3. **Automatic Features**:
-   - GitHub release creation with package archive
+   - GitHub release creation with module archive
    - Automatic checksum generation
    - Download links in registry
    - Version management through Git tags
@@ -231,12 +231,12 @@ your_library/
 
 ```bash
 # Package Management
-astra-pkg init <name>                 # Initialize new package
-astra-pkg publish [--target TARGET]   # Publish package
-astra-pkg search <query>              # Search packages
-astra-pkg install <package>          # Install package
-astra-pkg list                        # List installed packages
-astra-pkg info <package>             # Package information
+astra-pkg init <name>                 # Initialize new module
+astra-pkg publish [--target TARGET]   # Publish module
+astra-pkg search <query>              # Search modules
+astra-pkg install <module>          # Install module
+astra-pkg list                        # List installed modules
+astra-pkg info <module>             # Package information
 
 # Publishing Options
 --target github                       # Publish to GitHub releases
@@ -277,7 +277,7 @@ astra-pkg info <package>             # Package information
 
 1. **Pre-Publish Checklist**:
    ```bash
-   # Validate package
+   # Validate module
    astra-pkg publish --directory . --dry-run
    
    # Run tests
@@ -348,8 +348,8 @@ jobs:
 **Registry Analytics**:
 - Download counts per version
 - Dependency graphs
-- Popular packages by category
-- Trending packages
+- Popular modules by category
+- Trending modules
 
 **GitHub Integration**:
 - Stars and forks
@@ -363,17 +363,17 @@ jobs:
 
 1. **Advanced Package Management**:
    - Dependency resolution with version conflicts
-   - Private package registries
+   - Private module registries
    - Package signing and verification
 
 2. **Enhanced Registry**:
-   - Web interface for browsing packages
+   - Web interface for browsing modules
    - Package quality metrics
    - Automated testing integration
    - Documentation hosting
 
 3. **Development Tools**:
-   - IDE integration for package management
+   - IDE integration for module management
    - Automatic dependency updates
    - Package templates and scaffolding
    - Performance benchmarking
@@ -390,12 +390,12 @@ jobs:
 ### Contributing
 
 1. Fork the registry repository
-2. Add your package to `packages.json`
+2. Add your module to `modules.json`
 3. Submit a pull request
 4. Join the community discussions
 
 ## 🎉 Conclusion
 
-The ASTRA public package publishing system provides a complete ecosystem for creating, sharing, and discovering libraries. With GitHub integration, comprehensive registry features, and developer-friendly tools, it offers a modern package management experience similar to the best language ecosystems.
+The ASTRA public module publishing system provides a complete ecosystem for creating, sharing, and discovering libraries. With GitHub integration, comprehensive registry features, and developer-friendly tools, it offers a modern module management experience similar to the best language ecosystems.
 
-Start publishing your packages today and join the growing ASTRA community!
+Start publishing your modules today and join the growing ASTRA community!

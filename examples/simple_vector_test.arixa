@@ -1,5 +1,4 @@
-// Test just vector literal
 fn main() Int {
-    v = [1, 2, 3];
+    v = vec(1, 2, 3);
     return 0;
 }

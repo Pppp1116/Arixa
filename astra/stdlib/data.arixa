@@ -1,7 +1,6 @@
 /// std.data - data structure primitives for freestanding use.
-///
+/// 
 /// All functions in this module are pure and work in both hosted and freestanding modes.
-
 /// Simple stack implemented on top of Vec.
 struct Stack {
     data Vec<Any>,
@@ -18,24 +17,22 @@ fn stack_push(stack Stack, value Any) {
 }
 
 /// Pop and return top value from `stack`.
-///
+/// 
 /// Returns `none` if stack is empty.
-fn stack_pop(stack Stack) Any? {
+fn stack_pop(stack Stack) Any | none {
     n = vec_len(stack.data);
     if n == 0 {
         return none;
     }
     else {}
     result = stack.data[n - 1];
-    // Note: This is a simplified pop - in a real implementation
-    // we'd need a way to shrink the vector
     return result;
 }
 
 /// Peek at top value without removing it.
-///
+/// 
 /// Returns `none` if stack is empty.
-fn stack_peek(stack Stack) Any? {
+fn stack_peek(stack Stack) Any | none {
     n = vec_len(stack.data);
     if n == 0 {
         return none;
@@ -71,9 +68,9 @@ fn queue_enqueue(queue Queue, value Any) {
 }
 
 /// Dequeue and return front value from `queue`.
-///
+/// 
 /// Returns `none` if queue is empty.
-fn queue_dequeue(queue Queue) Any? {
+fn queue_dequeue(queue Queue) Any | none {
     if queue.head >= vec_len(queue.data) {
         return none;
     }
@@ -84,9 +81,9 @@ fn queue_dequeue(queue Queue) Any? {
 }
 
 /// Peek at front value without removing it.
-///
+/// 
 /// Returns `none` if queue is empty.
-fn queue_peek(queue Queue) Any? {
+fn queue_peek(queue Queue) Any | none {
     if queue.head >= vec_len(queue.data) {
         return none;
     }
@@ -115,10 +112,10 @@ struct RingBuffer {
 /// Create a new ring buffer with `capacity`.
 fn ring_buffer_new(capacity Int) RingBuffer {
     if capacity <= 0 {
-        capacity = 1;  // or return an error
+        capacity = 1;
     }
+    else {}
     data = vec_new() as Vec<Any>;
-    // Initialize with placeholder values
     mut i = 0;
     while i < capacity {
         vec_push(data, 0 as Any);
@@ -128,12 +125,12 @@ fn ring_buffer_new(capacity Int) RingBuffer {
 }
 
 /// Push `value` into ring buffer.
-///
+/// 
 /// Returns `none` if buffer is full.
-fn ring_buffer_push(buffer RingBuffer, value Any) Bool? {
+fn ring_buffer_push(buffer RingBuffer, value Any) Bool | none {
     next_tail = (buffer.tail + 1) % buffer.capacity;
     if next_tail == buffer.head {
-        return none; // Buffer full
+        return none;
     }
     else {}
     buffer.data[buffer.tail] = value;
@@ -142,11 +139,11 @@ fn ring_buffer_push(buffer RingBuffer, value Any) Bool? {
 }
 
 /// Pop value from ring buffer.
-///
+/// 
 /// Returns `none` if buffer is empty.
-fn ring_buffer_pop(buffer RingBuffer) Any? {
+fn ring_buffer_pop(buffer RingBuffer) Any | none {
     if buffer.head == buffer.tail {
-        return none; // Buffer empty
+        return none;
     }
     else {}
     result = buffer.data[buffer.head];

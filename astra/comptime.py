@@ -332,7 +332,7 @@ class _Evaluator:
             if isinstance(expr.value, int):
                 return "Int"
             if isinstance(expr.value, float):
-                return "Float"
+                return "Float"  # Default to Float for float literals, type inference will handle specific types
             return "String"
         if isinstance(expr, Name):
             if expr.value in env_types:
@@ -561,8 +561,6 @@ class _Evaluator:
             return _LoopSignal("break")
         if isinstance(st, ContinueStmt):
             return _LoopSignal("continue")
-        if isinstance(st, DeferStmt):
-            return None
         if isinstance(st, IfStmt):
             branch = st.then_body if bool(self.eval_expr(st.cond, env, env_types)) else st.else_body
             for s in branch:
@@ -784,9 +782,6 @@ def _collect_runtime_name_uses_stmt(stmt: Any, out: set[str]) -> None:
             _collect_runtime_name_uses_expr(stmt.expr, out)
         return
     if isinstance(stmt, ExprStmt):
-        _collect_runtime_name_uses_expr(stmt.expr, out)
-        return
-    if isinstance(stmt, DeferStmt):
         _collect_runtime_name_uses_expr(stmt.expr, out)
         return
     if isinstance(stmt, IfStmt):

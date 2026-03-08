@@ -59,11 +59,11 @@ _SCALAR_LAYOUTS: dict[str, TypeLayout] = {
 
 
 def align_to(value: int, align: int) -> int:
-    """Execute the `align_to` routine.
+    """Execute the `Execute the function.` function.
     
     Parameters:
-        value: Input value used by this routine.
-        align: Input value used by this routine.
+        value: Input value used by this function.
+        align: Input value used by this function.
     
     Returns:
         Value described by the function return annotation.
@@ -75,10 +75,10 @@ def align_to(value: int, align: int) -> int:
 
 
 def canonical_type(typ: str) -> str:
-    """Execute the `canonical_type` routine.
+    """Execute the `Execute the function.` function.
     
     Parameters:
-        typ: Input value used by this routine.
+        typ: Input value used by this function.
     
     Returns:
         Value described by the function return annotation.
@@ -128,14 +128,14 @@ def layout_of_type(
     _cache: dict[str, StructLayout] | None = None,
     _stack: set[str] | None = None,
 ) -> TypeLayout:
-    """Execute the `layout_of_type` routine.
+    """Execute the `Execute the function.` function.
     
     Parameters:
-        typ: Input value used by this routine.
-        structs: Input value used by this routine.
-        mode: Input value used by this routine.
-        _cache: Input value used by this routine.
-        _stack: Input value used by this routine.
+        typ: Input value used by this function.
+        structs: Input value used by this function.
+        mode: Input value used by this function.
+        _cache: Input value used by this function.
+        _stack: Input value used by this function.
     
     Returns:
         Value described by the function return annotation.
@@ -176,14 +176,14 @@ def layout_of_struct(
     _cache: dict[str, StructLayout] | None = None,
     _stack: set[str] | None = None,
 ) -> StructLayout:
-    """Execute the `layout_of_struct` routine.
+    """Execute the `Execute the function.` function.
     
     Parameters:
-        name: Input value used by this routine.
-        structs: Input value used by this routine.
-        mode: Input value used by this routine.
-        _cache: Input value used by this routine.
-        _stack: Input value used by this routine.
+        name: Input value used by this function.
+        structs: Input value used by this function.
+        mode: Input value used by this function.
+        _cache: Input value used by this function.
+        _stack: Input value used by this function.
     
     Returns:
         Value described by the function return annotation.

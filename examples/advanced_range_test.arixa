@@ -1,0 +1,343 @@
+// Advanced range expressions tests
+
+// Test 1: Range expressions in complex data structures
+struct RangeContainer {
+    start: Int,
+    end: Int,
+    inclusive: Bool,
+}
+
+fn test_range_structures() Int {
+    // Create range container
+    container = RangeContainer(10, 20, false);
+    
+    // Create range from struct
+    range_from_struct = container.start..container.end;
+    print("Range from struct: " + to_string_int(container.start) + ".." + to_string_int(container.end));
+    
+    if container.inclusive {
+        inclusive_range = container.start..=container.end;
+        print("Inclusive range from struct");
+    }
+    
+    return 0;
+}
+
+// Test 2: Range expressions with function parameters
+fn sum_range(start: Int, end: Int, inclusive: Bool) Int {
+    total = 0;
+    
+    if inclusive {
+        for i in start..=end {
+            total = total + i;
+        }
+    } else {
+        for i in start..end {
+            total = total + i;
+        }
+    }
+    
+    return total;
+}
+
+fn test_range_functions() Int {
+    result1 = sum_range(1, 10, false);
+    print("Sum 1..10: " + to_string_int(result1));
+    
+    result2 = sum_range(1, 10, true);
+    print("Sum 1..=10: " + to_string_int(result2));
+    
+    return 0;
+}
+
+// Test 3: Range expressions in conditional logic
+fn test_range_conditionals() Int {
+    x = 42;
+    
+    // Complex range conditions
+    if x >= 0 and x <= 100 {
+        print("x in range 0..=100");
+    }
+    
+    if x >= 10 and x < 50 {
+        print("x in range 10..<50");
+    }
+    
+    // Nested range checks
+    y = 25;
+    if (x >= 0 and x <= 50) and (y >= 0 and y <= 50) {
+        print("Both x and y in range 0..=50");
+    }
+    
+    return 0;
+}
+
+// Test 4: Range expressions with enums
+enum Status {
+    Loading,
+    Processing,
+    Complete,
+    Error,
+}
+
+fn test_range_enums() Int {
+    // Map enum values to ranges for processing
+    status = Status::Processing;
+    
+    match status {
+        Status::Loading => print("Status in range: initializing"),
+        Status::Processing => print("Status in range: working"),
+        Status::Complete => print("Status in range: done"),
+        Status::Error => print("Status in range: failed"),
+    }
+    
+    return 0;
+}
+
+// Test 5: Range expressions in mathematical operations
+fn test_range_math() Int {
+    // Range-based calculations
+    start = 1;
+    end = 10;
+    
+    // Calculate sum using range
+    sum = 0;
+    for i in start..=end {
+        sum = sum + i;
+    }
+    print("Sum of 1..=10: " + to_string_int(sum));
+    
+    // Calculate product
+    product = 1;
+    for i in 1..=5 {
+        product = product * i;
+    }
+    print("Product of 1..=5: " + to_string_int(product));
+    
+    // Range with step (simulated)
+    step_sum = 0;
+    for i in 0..10 {
+        if i % 2 == 0 {  // Every 2nd number
+            step_sum = step_sum + i;
+        }
+    }
+    print("Sum of even numbers 0..=10: " + to_string_int(step_sum));
+    
+    return 0;
+}
+
+// Test 6: Range expressions with arrays and slices
+fn test_range_arrays() Int {
+    data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    
+    // Process subrange
+    subrange_sum = 0;
+    for i in 2..=7 {
+        if i < len(data) {
+            subrange_sum = subrange_sum + data[i];
+        }
+    }
+    print("Sum of elements 2..=7: " + to_string_int(subrange_sum));
+    
+    // Reverse range processing
+    reverse_sum = 0;
+    for i in 9..=0 {
+        if i >= 0 and i < len(data) {
+            reverse_sum = reverse_sum + data[i];
+        }
+    }
+    print("Reverse sum (conceptual): " + to_string_int(reverse_sum));
+    
+    return 0;
+}
+
+// Test 7: Range expressions in recursion
+fn factorial_range(n: Int) Int {
+    if n <= 1 {
+        return 1;
+    }
+    
+    // Calculate factorial using range
+    result = 1;
+    for i in 2..=n {
+        result = result * i;
+    }
+    return result;
+}
+
+fn test_range_recursion() Int {
+    fact5 = factorial_range(5);
+    print("5! = " + to_string_int(fact5));
+    
+    fact10 = factorial_range(10);
+    print("10! = " + to_string_int(fact10));
+    
+    return 0;
+}
+
+// Test 8: Range expressions with string processing
+fn test_range_strings() Int {
+    text = "Hello, World!";
+    
+    // Process character range (conceptual)
+    char_count = 0;
+    for i in 0..len(text) {
+        if i < 5 {  // First 5 characters
+            char_count = char_count + 1;
+        }
+    }
+    print("First 5 characters count: " + to_string_int(char_count));
+    
+    return 0;
+}
+
+// Test 9: Range expressions in validation
+fn validate_input(value: Int, min: Int, max: Int) Bool {
+    return (value >= min) and (value <= max);
+}
+
+fn test_range_validation() Int {
+    // Valid inputs
+    valid1 = validate_input(50, 0, 100);
+    print("50 in 0..=100: " + to_string_int(if valid1 { 1 } else { 0 }));
+    
+    valid2 = validate_input(25, 10, 30);
+    print("25 in 10..=30: " + to_string_int(if valid2 { 1 } else { 0 }));
+    
+    // Invalid inputs
+    invalid1 = validate_input(150, 0, 100);
+    print("150 in 0..=100: " + to_string_int(if invalid1 { 1 } else { 0 }));
+    
+    return 0;
+}
+
+// Test 10: Range expressions with complex logic
+fn complex_range_check(value: Int, ranges: [Range[Int]]) Bool {
+    for range in ranges {
+        // Check if value is in range (simplified)
+        if value >= 0 and value <= 100 {  // Placeholder logic
+            return true;
+        }
+    }
+    return false;
+}
+
+fn test_complex_ranges() Int {
+    ranges = [0..=50, 51..=100, 101..=150];
+    
+    in_ranges = complex_range_check(75, ranges);
+    print("75 in ranges: " + to_string_int(if in_ranges { 1 } else { 0 }));
+    
+    return 0;
+}
+
+// Test 11: Range expressions in optimization scenarios
+fn optimized_sum(start: Int, end: Int) Int {
+    // Use mathematical formula for range sum instead of iteration
+    n = end - start + 1;
+    return n * (start + end) / 2;
+}
+
+fn test_range_optimization() Int {
+    iterative_sum = 0;
+    for i in 1..=100 {
+        iterative_sum = iterative_sum + i;
+    }
+    
+    optimized_result = optimized_sum(1, 100);
+    
+    print("Iterative sum 1..=100: " + to_string_int(iterative_sum));
+    print("Optimized sum 1..=100: " + to_string_int(optimized_result));
+    
+    return 0;
+}
+
+// Test 12: Range expressions with type inference
+fn test_range_inference() Int {
+    // Let the compiler infer types
+    range1 = 1..10;        // Should infer Int
+    range2 = 1i8..10i8;    // Explicit Int8
+    range3 = 1i64..100i64; // Explicit Int64
+    
+    print("Type inferred ranges created");
+    
+    // Mixed types should be coerced
+    mixed_range = 1..100i32;
+    print("Mixed type range created");
+    
+    return 0;
+}
+
+// Test 13: Range expressions in error handling
+fn process_with_range_check(value: Int) Int {
+    if value < 0 or value > 1000 {
+        print("Value out of valid range 0..=1000");
+        return -1;
+    }
+    
+    // Process value in valid range
+    result = value * 2;
+    print("Processed value: " + to_string_int(result));
+    return result;
+}
+
+fn test_range_error_handling() Int {
+    result1 = process_with_range_check(500);
+    print("Valid result: " + to_string_int(result1));
+    
+    result2 = process_with_range_check(1500);
+    print("Invalid result: " + to_string_int(result2));
+    
+    return 0;
+}
+
+// Test 14: Range expressions in algorithms
+fn fibonacci_range(n: Int) Int {
+    if n <= 1 {
+        return n;
+    }
+    
+    // Calculate Fibonacci using range
+    a = 0;
+    b = 1;
+    
+    for i in 2..=n {
+        temp = a + b;
+        a = b;
+        b = temp;
+    }
+    
+    return b;
+}
+
+fn test_range_algorithms() Int {
+    fib10 = fibonacci_range(10);
+    print("Fibonacci(10): " + to_string_int(fib10));
+    
+    fib15 = fibonacci_range(15);
+    print("Fibonacci(15): " + to_string_int(fib15));
+    
+    return 0;
+}
+
+fn main() Int {
+    print("Testing advanced range expressions...");
+    
+    test_range_structures();
+    test_range_functions();
+    test_range_conditionals();
+    test_range_enums();
+    test_range_math();
+    test_range_arrays();
+    test_range_recursion();
+    test_range_strings();
+    test_range_validation();
+    test_complex_ranges();
+    test_range_optimization();
+    test_range_inference();
+    test_range_error_handling();
+    test_range_algorithms();
+    
+    print("Advanced range expression tests completed!");
+    return 0;
+}

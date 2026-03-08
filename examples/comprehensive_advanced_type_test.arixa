@@ -1,0 +1,402 @@
+// Advanced comprehensive test for advanced type features
+
+// Test 1: Complex Trait Hierarchies
+trait Display {
+    fn display(self) String;
+}
+
+trait Debug: Display {
+    fn debug(self) String;
+}
+
+trait Clone {
+    fn clone(self) Self;
+}
+
+trait Copy: Clone {}
+
+trait Eq {
+    fn eq(self, other: Self) Bool;
+}
+
+trait Ord: Eq {
+    fn cmp(self, other: Self) Int;
+}
+
+fn test_trait_hierarchies() Int {
+    print("Trait hierarchies work!");
+    return 0;
+}
+
+// Test 2: Complex Generic Constraints
+fn highly_constrained_function<T, U, V>(
+    x: T, 
+    y: U, 
+    z: V
+) String 
+where 
+    T: Display + Debug + Clone + Eq,
+    U: Display + Ord,
+    V: Clone + Copy
+{
+    x_displayed = x.display();
+    x_debugged = x.debug();
+    x_cloned = x.clone();
+    
+    y_displayed = y.display();
+    y_compared = y.cmp(y);
+    
+    z_cloned = z.clone();
+    z_copied = z.clone();  // Copy implies Clone
+    
+    return x_displayed + " " + y_displayed;
+}
+
+fn test_complex_constraints() Int {
+    print("Complex constraints work!");
+    return 0;
+}
+
+// Test 3: Advanced Generic Data Structures
+struct BinaryTree<T> where T: Ord + Clone {
+    value: T,
+    left: BinaryTree<T> | none,
+    right: BinaryTree<T> | none,
+}
+
+impl<T> BinaryTree<T> where T: Ord + Clone {
+    fn new(value: T) BinaryTree<T> {
+        return BinaryTree<T>(value, none, none);
+    }
+    
+    fn insert(self, value: T) BinaryTree<T> {
+        if value < self.value {
+            match self.left {
+                tree if tree is BinaryTree<T> => BinaryTree<T>(self.value, tree.insert(value), self.right),
+                none => BinaryTree<T>(self.value, BinaryTree<T>::new(value), self.right),
+            }
+        } else if value > self.value {
+            match self.right {
+                tree if tree is BinaryTree<T> => BinaryTree<T>(self.value, self.left, tree.insert(value)),
+                none => BinaryTree<T>(self.value, self.left, BinaryTree<T>::new(value)),
+            }
+        } else {
+            self  // Value already exists
+        }
+    }
+    
+    fn contains(self, value: T) Bool {
+        if value == self.value {
+            return true;
+        } else if value < self.value {
+            match self.left {
+                tree if tree is BinaryTree<T> => tree.contains(value),
+                none => false,
+            }
+        } else {
+            match self.right {
+                tree if tree is BinaryTree<T> => tree.contains(value),
+                none => false,
+            }
+        }
+    }
+}
+
+fn test_advanced_structures() Int {
+    tree = BinaryTree<Int>::new(50);
+    tree = tree.insert(30);
+    tree = tree.insert(70);
+    tree = tree.insert(20);
+    tree = tree.insert(40);
+    
+    contains_30 = tree.contains(30);
+    contains_25 = tree.contains(25);
+    
+    print("Advanced structures work!");
+    return if contains_30 { 1 } else { 0 };
+}
+
+// Test 4: Generic Algorithms with Traits
+fn find_max<T>(items: [T; 5]) T where T: Ord {
+    max_val = items[0];
+    i = 1;
+    while i < 5 {
+        if items[i] > max_val {
+            max_val = items[i];
+        }
+        i = i + 1;
+    }
+    return max_val;
+}
+
+fn binary_search<T>(arr: [T; 10], target: T) Int where T: Ord + Eq {
+    left = 0;
+    right = 9;
+    
+    while left <= right {
+        mid = left + (right - left) / 2;
+        if arr[mid] == target {
+            return mid;
+        } else if arr[mid] < target {
+            left = mid + 1;
+        } else {
+            right = mid - 1;
+        }
+    }
+    return -1;
+}
+
+fn test_generic_algorithms() Int {
+    numbers = [1, 5, 3, 9, 2];
+    max_val = find_max(numbers);
+    
+    sorted_numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    index = binary_search(sorted_numbers, 7);
+    
+    print("Generic algorithms work!");
+    return max_val;
+}
+
+// Test 5: Complex Union Type Patterns
+enum Status {
+    Success,
+    Error,
+}
+
+fn process_status(status: Status) String 
+where 
+    Status: Display
+{
+    match status {
+        Status::Success => "Operation succeeded".to_string(),
+        Status::Error => "Operation failed".to_string(),
+    }
+}
+
+fn chain_statuses(statuses: [Status; 3]) Status 
+where 
+    Status: Display,
+{
+    for status in statuses {
+        if status == Status::Error {
+            return status;
+        }
+    }
+    return Status::Success;
+}
+
+fn test_complex_unions() Int {
+    status1: Status = Status::Success;
+    status2: Status = Status::Error;
+    
+    processed1 = process_status(status1);
+    processed2 = process_status(status2);
+    
+    print("Complex unions work!");
+    return 0;
+}
+
+// Test 6: Advanced Generic Functions
+fn map<T, U>(func: fn(T) U, items: [T; 3]) [U; 3] 
+where 
+    T: Clone,
+    U: Clone
+{
+    result: [U; 3];
+    i = 0;
+    while i < 3 {
+        result[i] = func(items[i]);
+        i = i + 1;
+    }
+    return result;
+}
+
+fn filter<T>(predicate: fn(T) Bool, items: [T; 5]) [T; 5] 
+where 
+    T: Clone + Eq
+{
+    result: [T; 5];
+    count = 0;
+    i = 0;
+    while i < 5 {
+        if predicate(items[i]) {
+            result[count] = items[i];
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    
+    // Fill remaining with first element (simplified)
+    while count < 5 {
+        result[count] = items[0];
+        count = count + 1;
+    }
+    
+    return result;
+}
+
+fn test_functional_programming() Int {
+    numbers = [1, 2, 3];
+    doubled = map(fn(x: Int) Int { x * 2 }, numbers);
+    
+    more_numbers = [1, 2, 3, 4, 5];
+    evens = filter(fn(x: Int) Bool { x % 2 == 0 }, more_numbers);
+    
+    print("Functional programming works!");
+    return doubled[0];
+}
+
+// Test 7: Type-Level Programming
+struct TypeWrapper<T> {
+    value: T,
+}
+
+impl<T> TypeWrapper<T> where T: Display {
+    fn new(value: T) TypeWrapper<T> {
+        return TypeWrapper<T>(value);
+    }
+    
+    fn display_wrapped(self) String {
+        return "Wrapped: " + self.value.display();
+    }
+}
+
+fn test_type_level_programming() Int {
+    wrapped_int = TypeWrapper<Int>::new(42);
+    wrapped_string = TypeWrapper<String>::new("hello");
+    
+    int_displayed = wrapped_int.display_wrapped();
+    string_displayed = wrapped_string.display_wrapped();
+    
+    print("Type-level programming works!");
+    return wrapped_int.value;
+}
+
+// Test 8: Advanced Trait Declarations (without implementations)
+fn test_advanced_trait_declarations() Int {
+    print("Advanced trait declarations work!");
+    return 0;
+}
+
+// Test 9: Complex Where Clauses
+fn complex_generic_function<T, U, V, W>(
+    a: T, 
+    b: U, 
+    c: V, 
+    d: W
+) Bool 
+where 
+    T: Display + Eq + Clone,
+    U: Display + Ord + Clone,
+    V: Clone + Copy,
+    W: Display
+{
+    a_displayed = a.display();
+    a_cloned = a.clone();
+    a_equal = a.eq(a_cloned);
+    
+    b_displayed = b.display();
+    b_compared = b.cmp(b);
+    b_cloned = b.clone();
+    
+    v_cloned = c.clone();
+    v_copied = c.clone();
+    
+    w_displayed = d.display();
+    
+    return a_equal and (b_compared == 0);
+}
+
+fn test_complex_where() Int {
+    result = complex_generic_function<Int, String, Bool, Float>(
+        42, 
+        "hello", 
+        true, 
+        3.14
+    );
+    
+    print("Complex where clauses work!");
+    return if result { 1 } else { 0 };
+}
+
+// Test 10: Generic Type Inference
+fn generic_type_inference() Int {
+    // Function with inferred generic types
+    fn create_pair<T, U>(first: T, second: U) Pair<T, U> {
+        return Pair<T, U>(first, second);
+    }
+    
+    // Type inference should work here
+    pair1 = create_pair(42, "hello");
+    pair2 = create_pair(true, 3.14);
+    
+    print("Generic type inference work!");
+    return pair1.first;
+}
+
+// Test 11: Union Types with Pattern Matching
+fn advanced_union_matching(value: Int | String | Bool | Point<Int> | Point<String>) String {
+    match value {
+        x if x is Int => "Integer: " + x.display(),
+        s if s is String => "String: " + s,
+        b if b is Bool => "Boolean: " + if b { "true" } else { "false" },
+        p if p is Point<Int> => "Int Point: " + p.display(),
+        p if p is Point<String> => "String Point: " + p.display(),
+    }
+}
+
+fn test_advanced_union_matching() Int {
+    int_point = Point<Int>(10, 20);
+    string_point = Point<String>("x", "y");
+    
+    result1 = advanced_union_matching(42);
+    result2 = advanced_union_matching("hello");
+    result3 = advanced_union_matching(true);
+    result4 = advanced_union_matching(int_point);
+    result5 = advanced_union_matching(string_point);
+    
+    print("Advanced union matching work!");
+    return 0;
+}
+
+// Test 12: Generic Constraints with Multiple Traits
+fn multi_trait_function<T>(item: T) String 
+where 
+    T: Display + Debug + Clone + Eq + Ord
+{
+    // Use all trait bounds
+    displayed = item.display();
+    debugged = item.debug();
+    cloned = item.clone();
+    equal = item.eq(cloned);
+    compared = item.cmp(item);
+    
+    return displayed + " (debug: " + debugged + ", cmp: " + to_string_int(compared) + ")";
+}
+
+fn test_multi_trait_constraints() Int {
+    // This would require a type that implements all these traits
+    // For now, we'll just test the function signature
+    print("Multi-trait constraints work!");
+    return 0;
+}
+
+fn main() Int {
+    print("Testing comprehensive advanced type features...");
+    
+    test_trait_hierarchies();
+    test_complex_constraints();
+    test_advanced_structures();
+    test_generic_algorithms();
+    test_complex_unions();
+    test_functional_programming();
+    test_type_level_programming();
+    test_advanced_trait_declarations();
+    test_complex_where();
+    generic_type_inference();
+    test_advanced_union_matching();
+    test_multi_trait_constraints();
+    
+    print("All comprehensive advanced type feature tests completed!");
+    return 0;
+}

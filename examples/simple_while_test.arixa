@@ -1,4 +1,3 @@
-// Test enhanced while loop syntax - simpler
 import std.str;
 
 fn main() Int {
@@ -7,6 +6,5 @@ fn main() Int {
         print("Count: " + to_string_int(i));
         i += 1;
     }
-    
     return 0;
 }

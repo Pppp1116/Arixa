@@ -25,7 +25,6 @@ KEYWORDS = {
     "async",
     "await",
     "unsafe",
-    "impl",
     "match",
     "defer",
     "drop",

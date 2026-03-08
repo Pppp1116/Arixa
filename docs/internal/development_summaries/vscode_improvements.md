@@ -138,13 +138,13 @@ class AstraCodeGenerator {
 ### 5. **Integrated Package Manager UI**
 
 #### **Current Limitations**:
-- Command-line only package management
-- No visual package browser
+- Command-line only module management
+- No visual module browser
 
 #### **Suggested UI Components**:
 ```typescript
 interface PackageExplorer {
-    // Visual package browser
+    // Visual module browser
     // Search and filter capabilities
     // Dependency graph visualization
     // Version management interface
@@ -254,9 +254,9 @@ class AstraAIAssistant {
 
 // Add missing icons for views
 {
-  "id": "arixa-packages",
+  "id": "arixa-modules",
   "name": "Packages",
-  "icon": "$(package)" // Add missing icon
+  "icon": "$(module)" // Add missing icon
 }
 ```
 
@@ -275,14 +275,14 @@ class AstraAIAssistant {
 ## 📊 **Implementation Roadmap**
 
 ### **Phase 1 (Next 3 Months)**:
-1. Fix package.json linting issues
+1. Fix module.json linting issues
 2. Implement advanced debugging support
 3. Enhance language server capabilities
 4. Add performance profiler integration
 
 ### **Phase 2 (3-6 Months)**:
 1. Advanced code generation features
-2. Integrated package manager UI
+2. Integrated module manager UI
 3. Enhanced error analysis and fixes
 4. Performance optimizations
 
@@ -304,13 +304,13 @@ class AstraAIAssistant {
 - **Developer Productivity**: Measured through user surveys
 - **Feature Completeness**: Coverage of all ASTRA features
 - **Community Adoption**: Active user base growth
-- **Ecosystem Integration**: Seamless package management
+- **Ecosystem Integration**: Seamless module management
 
 ## 💡 **Innovation Opportunities**
 
 ### **Unique Selling Points**:
 1. **GPU Development Integration**: Best-in-class GPU development tools
-2. **Package Management**: Seamless integration with ASTRA package ecosystem
+2. **Package Management**: Seamless integration with ASTRA module ecosystem
 3. **Enhanced Error System**: Industry-leading error diagnostics
 4. **Performance Profiling**: Built-in performance optimization tools
 

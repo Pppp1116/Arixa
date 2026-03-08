@@ -46,9 +46,9 @@ def test_line_col_and_block_comment_and_error():
 def test_lexes_dynamic_integer_type_tokens():
     toks = lex("a: u4 = 1u4; b: i127 = 2;")
     kinds = [t.kind for t in toks]
-    assert kinds.count("INT_TYPE") >= 3
-    assert any(t.kind == "INT_TYPE" and t.text == "u4" for t in toks)
-    assert any(t.kind == "INT_TYPE" and t.text == "i127" for t in toks)
+    assert kinds.count("ARBITRARY_INT_TYPE") >= 2
+    assert any(t.kind == "ARBITRARY_INT_TYPE" and t.text == "u4" for t in toks)
+    assert any(t.kind == "ARBITRARY_INT_TYPE" and t.text == "i127" for t in toks)
 
 
 def test_invalid_integer_width_tokens_emit_lex_error():

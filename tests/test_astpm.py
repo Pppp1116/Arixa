@@ -149,7 +149,7 @@ def test_import_resolution_uses_installed_package_cache(monkeypatch, tmp_path: P
     project.mkdir(parents=True)
     cache = tmp_path / "cache"
     (project / "Astra.toml").write_text('name = "demo"\n[dependencies]\npkgdemo = "2.0.0"\n')
-    (project / "main.astra").write_text('import "pkgdemo";\nfn main() Int{ return 0; }\n')
+    (project / "main.astra").write_text('import "pkgdemo";\nfn main() Int { return 0; }\n')
     pkg_dir = cache / "pkgdemo" / "2.0.0"
     pkg_dir.mkdir(parents=True)
     (pkg_dir / "pkgdemo.arixa").write_text('@link("pkgdemo") extern fn demo_init(flags u32) i32;\n')
@@ -180,7 +180,7 @@ def test_import_resolution_prefers_lockfile_version(monkeypatch, tmp_path: Path)
             }
         )
     )
-    (project / "main.astra").write_text('import "pkgdemo";\nfn main() Int{ return 0; }\n')
+    (project / "main.astra").write_text('import "pkgdemo";\nfn main() Int { return 0; }\n')
     pkg_dir = cache / "pkgdemo" / "1.9.3"
     pkg_dir.mkdir(parents=True)
     (pkg_dir / "pkgdemo.arixa").write_text("fn ping() Int{ return 0; }\n")
@@ -198,14 +198,14 @@ def test_build_with_dependency_auto_adds_native_link_flags(monkeypatch, tmp_path
     (project / "Astra.toml").write_text(
         '[project]\nname = "app"\nversion = "0.1.0"\n[dependencies]\npkgdemo = "2.0.0"\n'
     )
-    (project / "main.astra").write_text('import "pkgdemo";\nfn main() Int{ return demo_init(0u32); }\n')
+    (project / "main.astra").write_text('import "pkgdemo";\nfn main() Int { return demo_init(0u32); }\n')
 
     pkg_dir = cache / "pkgdemo" / "2.0.0"
     pkg_dir.mkdir(parents=True)
     (pkg_dir / "Astra.toml").write_text(
         "[package]\nname = \"pkgdemo\"\nversion = \"2.0.0\"\n[native]\nlibs = [\"demoffi\"]\n"
     )
-    (pkg_dir / "pkgdemo.arixa").write_text('@link("demoffi") extern fn demo_init(flags u32) i32;\n')
+    (pkg_dir / "pkgdemo.arixa").write_text('@link("demoffi") extern fn demo_init(flags u32) Int;\n')
 
     seen_cmds: list[list[str]] = []
 
@@ -240,7 +240,7 @@ def test_build_uses_project_package_link_overrides(monkeypatch, tmp_path: Path):
         '[dependencies]\npkgdemo = "2.0.0"\n'
         '[package.pkgdemo]\nlink.linux = ["demo_override"]\npkg_config = "demoffi"\n'
     )
-    (project / "main.astra").write_text('import "pkgdemo";\nfn main() Int{ return demo_init(0u32); }\n')
+    (project / "main.astra").write_text('import "pkgdemo";\nfn main() Int { return demo_init(0u32); }\n')
 
     pkg_dir = cache / "pkgdemo" / "2.0.0"
     pkg_dir.mkdir(parents=True)

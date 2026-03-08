@@ -166,12 +166,12 @@ class Span:
 
     @classmethod
     def at(cls, filename: str, line: int, col: int) -> "Span":
-        """Execute the `at` routine.
+        """Execute the `at` function.
         
         Parameters:
             filename: Filename context used for diagnostics or path resolution.
-            line: Input value used by this routine.
-            col: Input value used by this routine.
+            line: Input value used by this function.
+            col: Input value used by this function.
         
         Returns:
             Value described by the function return annotation.
@@ -984,12 +984,12 @@ def _choose_impl(
         if sc is not None:
             ranked.append((sc, d))
     if not ranked:
-        raise SemanticError(_diag(filename, line, col, f"no matching impl for {name}({', '.join(arg_types)})"))
+        raise SemanticError(_diag(filename, line, col, f"no matching function for {name}({', '.join(arg_types)})"))
     ranked.sort(key=lambda x: x[0], reverse=True)
     best_score = ranked[0][0]
     best = [d for s, d in ranked if s == best_score]
     if len(best) > 1:
-        raise SemanticError(_diag(filename, line, col, f"ambiguous impl for {name}({', '.join(arg_types)})"))
+        raise SemanticError(_diag(filename, line, col, f"ambiguous function for {name}({', '.join(arg_types)})"))
     return best[0]
 
 
@@ -1070,11 +1070,11 @@ def analyze(
         prog: Program AST to read or mutate.
         filename: Filename context used for diagnostics or path resolution.
         freestanding: Whether hosted-runtime features are disallowed.
-        require_entrypoint: Input value used by this routine.
-        collect_errors: Input value used by this routine.
+        require_entrypoint: Input value used by this function.
+        collect_errors: Input value used by this function.
     
     Returns:
-        Value produced by the routine, if any.
+        Value produced by the function, if any.
     """
     _FREESTANDING_MODE_STACK.append(freestanding)
     try:
@@ -1206,8 +1206,6 @@ def analyze(
                         )
                     )
                 entry = entries[0]
-                if entry.is_impl:
-                    raise SemanticError(_diag(filename, entry.line, entry.col, f"{require_entrypoint}() cannot be declared with impl"))
                 if entry.params:
                     raise SemanticError(_diag(filename, entry.line, entry.col, f"{require_entrypoint}() must not take parameters"))
                 if require_entrypoint == "main" and _canonical_type(entry.ret) != "Int":

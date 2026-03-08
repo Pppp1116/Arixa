@@ -4,10 +4,10 @@
 
 Build metadata is defined in `pyproject.toml`:
 
-- package: `arixa-lang`
+- module: `arixa-lang`
 - Python requirement: `>=3.11`
 - scripts: `arixa`, `arpm`, `arfmt`, `arlint`, `ardoc`, `arlsp`, `ardbg`, `arprof`
-- package data: bundled stdlib and runtime C asset
+- module data: bundled stdlib and runtime C asset
 
 ## Compiler Build Command
 

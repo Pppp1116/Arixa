@@ -1,238 +1,61 @@
 import std.str;
+
 import std.data;
+
 import std.algorithm;
+
 import std.math;
 
 fn main() Int {
     print("Testing enhanced standard library...");
-    
-    // Test string utilities
     test_string_utilities();
-    
-    // Test data structures (disabled due to move semantics issues)
-    // test_data_structures();
-    
-    // Test algorithms (disabled due to move semantics issues)
-    // test_algorithms();
-    
-    // Test math functions
     test_math_functions();
-    
-    // Test heap operations (disabled due to parsing issues)
-    // test_heap_operations();
-    
     print("All tests completed!");
     return 0;
 }
 
 fn test_string_utilities() {
     print("Testing string utilities...");
-    
-    // Test length
     str_len = length("Hello, World!");
     print("Length: " + to_string_int(str_len));
-    
-    // Test substring
     sub = substring("Hello, World!", 7, 5);
     print("Substring: " + sub);
-    
-    // Test starts_with
     starts = starts_with("Hello, World!", "Hello");
     print("Starts with 'Hello': " + to_string_bool(starts));
-    
-    // Test ends_with
     ends = ends_with("Hello, World!", "World!");
     print("Ends with 'World!': " + to_string_bool(ends));
-    
-    // Test to_upper
     upper = to_upper("Hello, World!");
     print("Uppercase: " + upper);
-    
-    // Test to_lower
     lower = to_lower("Hello, World!");
     print("Lowercase: " + lower);
 }
 
-// fn test_data_structures() {
-//     print("Testing data structures...");
-//     
-//     // Test Stack
-//     stack1 = stack_new();
-//     stack_push(stack1, 10);
-//     stack_push(stack1, 20);
-//     stack_push(stack1, 30);
-//     
-//     top = stack_peek(stack1);
-//     if top != none {
-//         print("Stack top: " + to_string_int(top as Int?));
-//     }
-//     else {}
-//     
-//     popped = stack_pop(stack1);
-//     if popped != none {
-//         print("Popped: " + to_string_int(popped as Int?));
-//     }
-//     else {}
-//     
-//     print("Stack size: " + to_string_int(stack_size(stack1)));
-//     
-//     // Test Queue
-//     queue = queue_new();
-//     queue_enqueue(queue, 100);
-//     queue_enqueue(queue, 200);
-//     queue_enqueue(queue, 300);
-//     
-//     front = queue_peek(queue);
-//     if front != none {
-//         print("Queue front: " + to_string_int(front as Int?));
-//     }
-//     else {}
-//     
-//     dequeued = queue_dequeue(queue);
-//     if dequeued != none {
-//         print("Dequeued: " + to_string_int(dequeued as Int?));
-//     }
-//     else {}
-//     
-//     print("Queue size: " + to_string_int(queue_size(queue)));
-// }
-
-// fn test_algorithms() {
-//     print("Testing algorithms...");
-//     
-//     // Create test data
-//     data = vec_new() as Vec<Int>;
-//     vec_push(data, 5);
-//     vec_push(data, 2);
-//     vec_push(data, 8);
-//     vec_push(data, 1);
-//     vec_push(data, 9);
-//     vec_push(data, 3);
-//     
-//     print("Original data: " + vec_to_string(data));
-//     
-//     // Test sorting
-//     sorted_data = vec_new() as Vec<Int>;
-//     mut i = 0;
-//     while i < vec_len(data) {
-//         val = vec_get(data, i);
-//         if val != none {
-//             vec_push(sorted_data, (val as Int?));
-//         }
-//         else {}
-//         i += 1;
-//     }
-//     
-//     bubble_sort_int(sorted_data);
-//     print("Sorted data: " + vec_to_string(sorted_data));
-//     
-//     // Test binary search
-//     index = binary_search_int(sorted_data, 8);
-//     if index != none {
-//         print("Found 8 at index: " + to_string_int(index as Int?));
-//     }
-//     else {
-//         print("8 not found");
-//     }
-//     
-//     // Test min/max
-//     min_val = find_min_int(sorted_data);
-//     max_val = find_max_int(sorted_data);
-//     
-//     if min_val != none {
-//         print("Min value: " + to_string_int(min_val as Int?));
-//     }
-//     else {}
-//     
-//     if max_val != none {
-//         print("Max value: " + to_string_int(max_val as Int?));
-//     }
-//     else {}
-// }
-
 fn test_math_functions() {
     print("Testing math functions...");
-    
-    // Test basic operations
     a = 10;
     b = 3;
-    
     print("min_int(10, 3): " + to_string_int(min_int(a, b)));
     print("max_int(10, 3): " + to_string_int(max_int(a, b)));
     print("abs_int(-5): " + to_string_int(abs_int(-5)));
     print("clamp_int(15, 0, 10): " + to_string_int(clamp_int(15, 0, 10)));
-    
-    // Test float operations
     x = 3.14159;
     y = 2.71828;
-    
     print("min_float(3.14159, 2.71828): " + to_string_float(min_float(x, y)));
     print("max_float(3.14159, 2.71828): " + to_string_float(max_float(x, y)));
     print("abs_float(-2.5): " + to_string_float(abs_float(-2.5)));
-    
-    // Test trigonometric functions
-    angle = PI / 4.0; // 45 degrees
+    angle = PI / 4.0;
     sin_val = sin(angle);
     cos_val = cos(angle);
-    
-    print("sin(π/4): " + to_string_float(sin_val));
-    print("cos(π/4): " + to_string_float(cos_val));
+    print("sin(\u03c0/4): " + to_string_float(sin_val));
+    print("cos(\u03c0/4): " + to_string_float(cos_val));
     print("PI: " + to_string_float(PI));
     print("E: " + to_string_float(E));
 }
 
-// fn test_heap_operations() {
-//     print("Testing heap operations...");
-//     
-//     // Test min-heap
-//     min_heap = heap_new_min();
-//     heap_insert(min_heap, 5);
-//     heap_insert(min_heap, 2);
-//     heap_insert(min_heap, 8);
-//     heap_insert(min_heap, 1);
-//     heap_insert(min_heap, 9);
-//     
-//     print("Min-heap size: " + to_string_int(heap_size(min_heap)));
-//     
-//     min_val = heap_peek(min_heap);
-//     if min_val != none {
-//         print("Min-heap peek: " + to_string_int(min_val as Int?));
-//     }
-//     else {}
-//     
-//     // Extract all elements
-//     print("Extracting from min-heap:");
-//     while !heap_is_empty(min_heap) {
-//         val = heap_extract(min_heap);
-//         if val != none {
-//             print("  " + to_string_int(val as Int?));
-//         }
-//         else {}
-//     }
-//     
-//     // Test max-heap
-//     max_heap = heap_new_max();
-//     heap_insert(max_heap, 5);
-//     heap_insert(max_heap, 2);
-//     heap_insert(max_heap, 8);
-//     heap_insert(max_heap, 1);
-//     heap_insert(max_heap, 9);
-//     
-//     print("Max-heap size: " + to_string_int(heap_size(max_heap)));
-//     
-//     max_val = heap_peek(max_heap);
-//     if max_val != none {
-//         print("Max-heap peek: " + to_string_int(max_val as Int?));
-//     }
-//     else {}
-// }
-
-// Utility function to convert vector to string
 fn vec_to_string(vec Vec<Int>) String {
     mut result = "[";
     mut i = 0;
     mut first = true;
-    
     while i < vec_len(vec) {
         val = vec_get(vec, i);
         if val != none {
@@ -242,13 +65,12 @@ fn vec_to_string(vec Vec<Int>) String {
             else {
                 first = false;
             }
-            val_int = (val as Int?) ?? 0;
+            val_int = val as Int | none ?? 0;
             result += to_string_int(val_int);
         }
         else {}
         i += 1;
     }
-    
     result += "]";
     return result;
 }

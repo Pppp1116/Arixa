@@ -118,18 +118,6 @@ class LetStmt:
     reassign_if_exists: bool = False
 
 
-@dataclass
-class ForStmt:
-    """AST node representing for stmt.
-    
-    This type is part of Astra's public compiler/tooling surface.
-    """
-    var: str
-    iterable: Any
-    body: list[Any]
-    pos: int = 0
-    line: int = 0
-    col: int = 0
 
 
 @dataclass
@@ -149,18 +137,6 @@ class ContinueStmt:
     
     This type is part of Astra's public compiler/tooling surface.
     """
-    pos: int = 0
-    line: int = 0
-    col: int = 0
-
-
-@dataclass
-class DeferStmt:
-    """AST node representing defer stmt.
-    
-    This type is part of Astra's public compiler/tooling surface.
-    """
-    expr: Any
     pos: int = 0
     line: int = 0
     col: int = 0
@@ -338,7 +314,7 @@ class WhileStmt:
 
 @dataclass
 class EnhancedWhileStmt:
-    """AST node representing enhanced while stmt with inline variable declaration.
+    """AST node representing enhanced while stmt with inline binding.
     
     This type is part of Astra's public compiler/tooling surface.
     """
@@ -350,20 +326,6 @@ class EnhancedWhileStmt:
     col: int = 0
 
 
-@dataclass
-class EnhancedForStmt:
-    """AST node representing enhanced for stmt with init, cond, step.
-    
-    This type is part of Astra's public compiler/tooling surface.
-    """
-    var_name: str      # Loop variable name
-    init_expr: Any     # Initialization expression
-    cond_expr: Any     # Condition expression
-    step_expr: Any     # Step expression
-    body: list[Any]    # Loop body
-    pos: int = 0
-    line: int = 0
-    col: int = 0
 
 
 @dataclass
@@ -478,18 +440,6 @@ class IfExpression:
     cond: Any
     then_expr: Any
     else_expr: Any
-    pos: int = 0
-    line: int = 0
-    col: int = 0
-
-
-@dataclass
-class DeferStmt:
-    """AST node representing defer statement.
-    
-    This type is part of Astra's public compiler/tooling surface.
-    """
-    expr: Any
     pos: int = 0
     line: int = 0
     col: int = 0
@@ -638,6 +588,84 @@ class GuardedPattern:
     """
     pattern: Any
     guard: Any
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class RangePattern:
+    """AST node representing range patterns like `1..=10`.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
+    start: Any
+    end: Any
+    inclusive: bool = False
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class SlicePattern:
+    """AST node representing slice patterns like `[a, b, ..]`.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
+    patterns: list[Any]
+    rest_pattern: Any | None = None  # The `..` pattern
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class TuplePattern:
+    """AST node representing tuple patterns like `(a, b, c)`.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
+    patterns: list[Any]
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class StructPattern:
+    """AST node representing struct patterns like `Point { x, y }`.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
+    struct_name: str
+    field_patterns: dict[str, Any]  # field_name -> pattern
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class EnumPattern:
+    """AST node representing enum patterns like `Option::Some(value)`.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
+    enum_name: str
+    variant_name: str
+    payload_patterns: list[Any]
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class LiteralPattern:
+    """AST node representing literal patterns like `42`, `"hello"`, `true`.
+    
+    This type is part of Astra's public compiler/tooling surface.
+    """
+    value: Any
     pos: int = 0
     line: int = 0
     col: int = 0

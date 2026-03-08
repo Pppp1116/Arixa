@@ -570,17 +570,17 @@ def build(
     Parameters:
         src_path: Filesystem path input used by this routine.
         out_path: Filesystem path input used by this routine.
-        target: Input value used by this routine.
-        kind: Input value used by this routine.
-        emit_ir: Input value used by this routine.
-        strict: Input value used by this routine.
+        target: Input value used by this function.
+        kind: Input value used by this function.
+        emit_ir: Input value used by this function.
+        strict: Input value used by this function.
         freestanding: Whether hosted-runtime features are disallowed.
         profile: Build profile selector, typically `debug` or `release`.
         overflow: Integer overflow behavior mode requested by the caller.
-        triple: Input value used by this routine.
+        triple: Input value used by this function.
     
     Returns:
-        Value produced by the routine, if any.
+        Value produced by the function, if any.
     """
     src_file = Path(src_path)
     if kind not in {"exe", "lib"}:

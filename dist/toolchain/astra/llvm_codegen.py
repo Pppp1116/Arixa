@@ -2938,7 +2938,7 @@ def to_llvm_ir(
         prog: Program AST to read or mutate.
         freestanding: Whether hosted-runtime features are disallowed.
         overflow_mode: Integer overflow behavior mode requested by the caller.
-        triple: Input value used by this routine.
+        triple: Input value used by this function.
         profile: Build profile selector, typically `debug` or `release`.
     
     Returns:

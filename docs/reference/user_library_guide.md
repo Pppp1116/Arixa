@@ -21,7 +21,7 @@ my_library/
 ### 2. Package Manifest (Astra.toml)
 
 ```toml
-[package]
+[module]
 name = "my_library"
 version = "1.0.0"
 description = "My awesome ASTRA library"
@@ -79,7 +79,7 @@ fn main() Int {
 ### 2. Package Usage (Future)
 
 ```astra
-// Once package management is implemented
+// Once module management is implemented
 import my_library;
 
 fn main() Int {
@@ -95,7 +95,7 @@ fn main() Int {
 | Feature | Rust Crates | ASTRA Libraries |
 |---------|-------------|------------------|
 | Package manifest | Cargo.toml | Astra.toml |
-| Registry | crates.io | registry/packages.json |
+| Registry | crates.io | registry/modules.json |
 | Dependencies | [dependencies] | [dependencies] |
 | Features | [features] | [features] |
 | Examples | examples/ | examples/ |
@@ -136,7 +136,7 @@ astra update
 ## Current Status
 
 ### ✅ Working
-- Basic package structure with Astra.toml
+- Basic module structure with Astra.toml
 - Local file imports
 - Stdlib integration
 - Cross-module type checking
@@ -231,4 +231,4 @@ fn process_data() Int {
 
 ## Conclusion
 
-ASTRA libraries provide a foundation similar to Rust crates but with some key differences in the import system and visibility controls. While the package management ecosystem is still developing, the core functionality for creating and using user libraries is operational and continues to improve.
+ASTRA libraries provide a foundation similar to Rust crates but with some key differences in the import system and visibility controls. While the module management ecosystem is still developing, the core functionality for creating and using user libraries is operational and continues to improve.

@@ -269,7 +269,7 @@ def to_python(
         "_astra_registry_lock = threading.Lock()",
         "_astra_libs = {}",
         "def __astra_cast(v, t):",
-        "    if t in ('Float', 'f32', 'f64'):",
+        "    if t in ('Float', 'f16', 'f32', 'f64', 'f80', 'f128'):",
         "        return float(v)",
         "    if t in ('Int', 'isize'): bits, signed = 64, True",
         "    elif t == 'usize': bits, signed = 64, False",
@@ -768,7 +768,6 @@ def to_python(
             lines.append(f"async def {fn_name}({params}):")
         else:
             lines.append(f"def {fn_name}({params}):")
-        lines.append("    _astra_defer_stack = []")
         lines.append("    try:")
         if not item.body:
             lines.append("        pass")
@@ -778,9 +777,7 @@ def to_python(
         lines.append("        return None")
         lines.append("    except _AstraTryResultErr as __astra_err:")
         lines.append("        return __astra_result_err(__astra_err.value)")
-        lines.append("    finally:")
-        lines.append("        for _d in reversed(_astra_defer_stack):")
-        lines.append("            _d()")
+        # Automatic cleanup handled by ownership system
         cuda_source, cuda_kernel_name = _emit_cuda_kernel_source(item, fn_name)
         if cuda_kernel_name and cuda_source:
             # Emit the CUDA kernel as a Python function
@@ -881,9 +878,12 @@ def _extern_ctype_name(typ: str, *, is_return: bool) -> str | None:
         "Int": "ctypes.c_longlong",
         "isize": "ctypes.c_ssize_t",
         "usize": "ctypes.c_size_t",
+        "f16": "ctypes.c_uint16",  # f16 stored as uint16 bits
         "f32": "ctypes.c_float",
         "Float": "ctypes.c_double",
         "f64": "ctypes.c_double",
+        "f80": "ctypes.c_uint8 * 10",  # f80 as 10 bytes
+        "f128": "ctypes.c_uint8 * 16", # f128 as 16 bytes
         "Bool": "ctypes.c_bool",
     }
     if c in ints:
@@ -1255,8 +1255,6 @@ def _stmt_py(st: Any, ind: int) -> list[str]:
         return [f"{p}break"]
     if isinstance(st, ContinueStmt):
         return [f"{p}continue"]
-    if isinstance(st, DeferStmt):
-        return [f"{p}_astra_defer_stack.append(lambda: {_expr(st.expr)})"]
     if isinstance(st, UnsafeStmt):
         lines: list[str] = []
         for s in st.body:

@@ -1,0 +1,266 @@
+// Advanced pattern matching tests with edge cases
+
+// Test 1: Deeply nested patterns
+fn test_deep_nesting() Int {
+    complex_data = ((Point(1, 2), [3, 4, 5]), Option::Some((6, 7)));
+    
+    match complex_data {
+        ((Point { x: 0, y: 0 }, _), _) => print("Origin in nested structure"),
+        ((Point { x, y }, [a, b, c]), Option::Some((d, e))) if x + y == a + b + c + d + e => {
+            print("All numbers sum to same value");
+        },
+        ((Point { x, y }, slice), Option::Some((d, e))) => {
+            print("Point " + to_string_int(x) + "," + to_string_int(y) + " with slice and tuple");
+        },
+        ((_, _), Option::None) => print("Nested with none"),
+        _ => print("Complex no match"),
+    }
+    
+    return 0;
+}
+
+// Test 2: Pattern matching with arithmetic in guards
+fn test_arithmetic_guards() Int {
+    value = 42;
+    
+    match value {
+        n if n * 2 == 84 => print("Double is 84"),
+        n if n / 2 == 21 => print("Half is 21"),
+        n if n % 10 == 2 => print("Ends with 2"),
+        n if n > 0 && n < 100 => print("Positive two-digit"),
+        _ => print("Other arithmetic condition"),
+    }
+    
+    return 0;
+}
+
+// Test 3: Pattern matching with function calls in guards
+fn is_even(x: Int) Bool {
+    return x % 2 == 0;
+}
+
+fn is_prime(x: Int) Bool {
+    if x < 2 {
+        return false;
+    }
+    if x == 2 {
+        return true;
+    }
+    if x % 2 == 0 {
+        return false;
+    }
+    i = 3;
+    while i * i <= x {
+        if x % i == 0 {
+            return false;
+        }
+        i = i + 2;
+    }
+    return true;
+}
+
+fn test_function_guards() Int {
+    num = 17;
+    
+    match num {
+        n if is_even(n) => print("Even number: " + to_string_int(n)),
+        n if is_prime(n) => print("Prime number: " + to_string_int(n)),
+        n if n > 50 => print("Large number: " + to_string_int(n)),
+        _ => print("Other number: " + to_string_int(n)),
+    }
+    
+    return 0;
+}
+
+// Test 4: Complex struct patterns with nested structs
+struct Rectangle {
+    top_left: Point,
+    bottom_right: Point,
+}
+
+struct Circle {
+    center: Point,
+    radius: Int,
+}
+
+enum Shape {
+    Rectangle(Rectangle),
+    Circle(Circle),
+    Point(Point),
+}
+
+fn test_complex_struct_patterns() Int {
+    rect = Rectangle(Point(0, 10), Point(20, 0));
+    circle = Circle(Point(5, 5), 3);
+    
+    shape1 = Shape::Rectangle(rect);
+    shape2 = Shape::Circle(circle);
+    
+    match shape1 {
+        Shape::Rectangle(Rectangle { top_left: Point { x: 0, y: y }, bottom_right: Point { x: x, y: 0 } }) => {
+            print("Rectangle from origin: " + to_string_int(x) + "x" + to_string_int(y));
+        },
+        Shape::Rectangle(rect) => print("Other rectangle"),
+        Shape::Circle(Circle { center: Point { x: 5, y: 5 }, radius: r }) => {
+            print("Circle at (5,5) with radius " + to_string_int(r));
+        },
+        _ => print("Other shape"),
+    }
+    
+    return 0;
+}
+
+// Test 5: Pattern matching with references
+fn test_reference_patterns() Int {
+    x = 42;
+    ref_x = &x;
+    
+    // This would test reference patterns when implemented
+    // match ref_x {
+    //     &0 => print("Reference to zero"),
+    //     &n => print("Reference to " + to_string_int(n)),
+    // }
+    
+    print("Reference patterns (placeholder)");
+    return 0;
+}
+
+// Test 6: Pattern matching with mutable references
+fn test_mutable_reference_patterns() Int {
+    mut x = 10;
+    mut_ref_x = &mut x;
+    
+    // This would test mutable reference patterns when implemented
+    // match mut_ref_x {
+    //     &mut 0 => print("Mutable reference to zero"),
+    //     &mut n => {
+    //         *n = *n + 1;
+    //         print("Modified to " + to_string_int(*n));
+    //     },
+    // }
+    
+    print("Mutable reference patterns (placeholder)");
+    return 0;
+}
+
+// Test 7: Pattern matching with slices and ranges
+fn test_slice_range_combinations() Int {
+    data = [1, 2, 3, 4, 5, 6, 7, 8];
+    
+    match data {
+        [] => print("Empty slice"),
+        [x] if x > 0 => print("Single positive: " + to_string_int(x)),
+        [x, y] if x + y == 10 => print("Two numbers summing to 10"),
+        [1, 2, 3, ..] => print("Starts with 1,2,3"),
+        [.., 6, 7, 8] => print("Ends with 6,7,8"),
+        [.., middle, ..] if middle > 5 => print("Middle element > 5"),
+        [a, b, c, d, e, f, g, h] => {
+            print("Full slice: " + to_string_int(a) + "," + to_string_int(b) + "," + to_string_int(c) + "," + 
+                  to_string_int(d) + "," + to_string_int(e) + "," + to_string_int(f) + "," + 
+                  to_string_int(g) + "," + to_string_int(h));
+        },
+    }
+    
+    return 0;
+}
+
+// Test 8: Pattern matching with box patterns (when implemented)
+fn test_box_patterns() Int {
+    // This would test box patterns when implemented
+    // boxed_value = box 42;
+    // 
+    // match boxed_value {
+    //     box 0 => print("Boxed zero"),
+    //     box n => print("Boxed value: " + to_string_int(n)),
+    // }
+    
+    print("Box patterns (placeholder)");
+    return 0;
+}
+
+// Test 9: Pattern matching with complex or-patterns
+fn test_complex_or_patterns() Int {
+    point = Point(3, 4);
+    
+    match point {
+        Point { x: 0, y: 0 } | Point { x: 1, y: 1 } => print("Origin or (1,1)"),
+        Point { x: x, y: y } if x == y => print("On diagonal"),
+        Point { x: x, y: 0 } | Point { x: 0, y: y } => print("On axis"),
+        Point { x, y } if x > 0 && y > 0 => print("First quadrant"),
+        Point { x, y } if x < 0 && y < 0 => print("Third quadrant"),
+        _ => print("Other quadrant"),
+    }
+    
+    return 0;
+}
+
+// Test 10: Pattern matching with string literals
+fn test_string_patterns() Int {
+    message = "hello world";
+    
+    match message {
+        "hello" => print("Simple hello"),
+        "hello world" => print("Hello world"),
+        s if s.len() > 10 => print("Long string: " + s),
+        s if s.len() < 5 => print("Short string: " + s),
+        s => print("Medium string: " + s),
+    }
+    
+    return 0;
+}
+
+// Test 11: Pattern matching with boolean logic in guards
+fn test_boolean_logic_guards() Int {
+    x = 15;
+    y = 20;
+    
+    match (x, y) {
+        (a, b) if a > 0 && b > 0 => print("Both positive"),
+        (a, b) if a < 0 && b < 0 => print("Both negative"),
+        (a, b) if a * b > 0 => print("Same sign"),
+        (a, b) if a + b == 0 => print("Opposites sum to zero"),
+        (a, b) if a > b => print("First greater"),
+        (a, b) if a < b => print("Second greater"),
+        (a, b) => print("Equal"),
+    }
+    
+    return 0;
+}
+
+// Test 12: Exhaustiveness checking
+fn test_exhaustiveness() Int {
+    value = Option::Some(42);
+    
+    // This should pass exhaustiveness checking
+    match value {
+        Option::None => print("None"),
+        Option::Some(v) => print("Some: " + to_string_int(v)),
+    }
+    
+    // This would fail exhaustiveness checking if Option::None case is missing
+    // match value {
+    //     Option::Some(v) => print("Some: " + to_string_int(v)),
+    // }
+    
+    return 0;
+}
+
+fn main() Int {
+    print("Testing advanced pattern matching...");
+    
+    test_deep_nesting();
+    test_arithmetic_guards();
+    test_function_guards();
+    test_complex_struct_patterns();
+    test_reference_patterns();
+    test_mutable_reference_patterns();
+    test_slice_range_combinations();
+    test_box_patterns();
+    test_complex_or_patterns();
+    test_string_patterns();
+    test_boolean_logic_guards();
+    test_exhaustiveness();
+    
+    print("Advanced pattern matching tests completed!");
+    return 0;
+}

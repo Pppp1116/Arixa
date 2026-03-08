@@ -50,8 +50,11 @@ class StructLayout:
 
 _SCALAR_LAYOUTS: dict[str, TypeLayout] = {
     "Bool": TypeLayout(1, 1, "int", False, 8, True),
+    "f16": TypeLayout(2, 2, "float", None, 16, True),
     "f32": TypeLayout(4, 4, "float", None, 32, True),
     "f64": TypeLayout(8, 8, "float", None, 64, True),
+    "f80": TypeLayout(10, 2, "float", None, 80, True),
+    "f128": TypeLayout(16, 16, "float", None, 128, True),
     "Float": TypeLayout(8, 8, "float", None, 64, True),
     "Void": TypeLayout(0, 1, "void", None, 0, False),
     "Never": TypeLayout(0, 1, "void", None, 0, False),

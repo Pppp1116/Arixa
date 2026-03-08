@@ -28,10 +28,10 @@ class ModuleResolutionError(ValueError):
 
 
 def import_label(decl: ImportDecl) -> str:
-    """Execute the `import_label` routine.
+    """Execute the `Execute the function.` function.
     
     Parameters:
-        decl: Input value used by this routine.
+        decl: Input value used by this function.
     
     Returns:
         Value described by the function return annotation.
@@ -61,7 +61,7 @@ def find_project_root(filename: str) -> Path | None:
 
 
 def stdlib_root_path() -> Path | None:
-    """Execute the `stdlib_root_path` routine.
+    """Execute the `Execute the function.` function.
     
     Parameters:
         none
@@ -82,7 +82,7 @@ def stdlib_root_path() -> Path | None:
 
 
 def runtime_source_path() -> Path | None:
-    """Execute the `runtime_source_path` routine.
+    """Execute the `Execute the function.` function.
     
     Parameters:
         none
@@ -113,7 +113,7 @@ def resolve_import_path(decl: ImportDecl, from_filename: str) -> Path:
     """Resolve an import declaration into an absolute filesystem path.
     
     Parameters:
-        decl: Input value used by this routine.
+        decl: Input value used by this function.
         from_filename: Filename context used for diagnostics or path resolution.
     
     Returns:

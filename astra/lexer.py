@@ -2,11 +2,10 @@
 
 from dataclasses import dataclass
 
-from astra.int_types import INT_WIDTH_MAX, parse_prefixed_int_type, prefixed_int_width_error
+from astra.int_types import INT_WIDTH_MAX, INT_WIDTH_MIN, parse_prefixed_int_type, prefixed_int_width_error
 
 KEYWORDS = {
     "fn",
-    "let",
     "mut",
     "if",
     "else",
@@ -16,10 +15,10 @@ KEYWORDS = {
     "return",
     "break",
     "continue",
-    "defer",
     "unsafe",
     "struct",
     "enum",
+    "trait",
     "type",
     "import",
     "extern",
@@ -30,7 +29,17 @@ KEYWORDS = {
     "as",
     "sizeof",
     "alignof",
+    "f16",
+    "f80",
+    "f128",
+    "pub",
     "const",
+    "true",
+    "false",
+    "where",
+    "for",
+    "async",
+    "await",
 }
 
 MULTI_TOKENS = [
@@ -58,6 +67,7 @@ MULTI_TOKENS = [
     "<<",
     ">>",
     "..",
+    "..=",
 ]
 
 SINGLE_TOKENS = set("{}()<>;,=+-*/%!?[]:.&|^~@")
@@ -273,11 +283,63 @@ def lex(src: str, filename: str = "<input>") -> list[Token]:
                     exp_start = j
                     j, exp_valid = _scan_digits_with_separators(src, j, base=10)
                     valid = valid and exp_valid and (j > exp_start)
+            
+            # Check for type suffix (123i64, 456u32, etc.)
+            if kind == "INT" and j < len(src) and src[j] in {"i", "u"}:
+                # Check if this is a valid type suffix
+                suffix_start = j
+                j += 1
+                # Scan the digits for the type suffix
+                j, suffix_valid = _scan_digits_with_separators(src, j, base=10)
+                if suffix_valid and j > suffix_start + 1:  # Must have at least one digit
+                    suffix = src[suffix_start:j]
+                    # Validate the suffix
+                    width_str = suffix[1:]  # Remove the 'i' or 'u' prefix
+                    if width_str.startswith("0"):
+                        out.append(Token("ERROR", f"integer type suffix width cannot start with 0: {suffix}", start_i, start_line, start_col))
+                    else:
+                        width = int(width_str)
+                        if width < INT_WIDTH_MIN or width > INT_WIDTH_MAX:
+                            out.append(Token("ERROR", f"integer type suffix width must be between {INT_WIDTH_MIN} and {INT_WIDTH_MAX}: {suffix}", start_i, start_line, start_col))
+                        else:
+                            # Valid typed integer literal
+                            text = src[i:j]
+                            out.append(Token("TYPED_INT", text, start_i, start_line, start_col))
+                    line, col = _advance_pos(text, line, col)
+                    i = j
+                    continue
+                else:
+                    # Invalid suffix, treat as regular integer
+                    j = suffix_start
+            
             text = src[i:j]
             if valid:
                 out.append(Token(kind, text, start_i, start_line, start_col))
             else:
                 out.append(Token("ERROR", f"invalid numeric literal {text}", start_i, start_line, start_col))
+            line, col = _advance_pos(text, line, col)
+            i = j
+            continue
+
+        # Handle arbitrary precision integer literals (i123, u456)
+        if ch in {"i", "u"} and i + 1 < len(src) and src[i + 1].isdigit():
+            j = i + 1
+            # Scan the digits
+            j, valid = _scan_digits_with_separators(src, j, base=10)
+            text = src[i:j]
+            if valid and j > i + 1:  # Must have at least one digit
+                # Validate the width
+                width_str = text[1:]  # Remove the 'i' or 'u' prefix
+                if width_str.startswith("0"):
+                    out.append(Token("ERROR", f"arbitrary precision integer width cannot start with 0: {text}", start_i, start_line, start_col))
+                else:
+                    width = int(width_str)
+                    if width < INT_WIDTH_MIN or width > INT_WIDTH_MAX:
+                        out.append(Token("ERROR", f"arbitrary precision integer width must be between {INT_WIDTH_MIN} and {INT_WIDTH_MAX}: {text}", start_i, start_line, start_col))
+                    else:
+                        out.append(Token("ARBITRARY_INT_TYPE", text, start_i, start_line, start_col))
+            else:
+                out.append(Token("ERROR", f"invalid arbitrary precision integer type: {text}", start_i, start_line, start_col))
             line, col = _advance_pos(text, line, col)
             i = j
             continue

@@ -183,9 +183,6 @@ def _optimize_stmt(st: Any, env: dict[str, Any], mutable_names: set[str]) -> tup
         return st, env, _stmts_terminate(st.body)
     if isinstance(st, (BreakStmt, ContinueStmt)):
         return st, env, True
-    if isinstance(st, DeferStmt):
-        st.expr = _fold_ast_expr(st.expr, env, mutable_names)
-        return st, env, False
     return st, env, False
 
 
@@ -687,10 +684,6 @@ def _cse_stmt(st: Any, avail: dict[Any, tuple[str, set[str]]]) -> tuple[Any | No
             st.expr = _cse_expr(st.expr, avail)
         return st, avail, True
 
-    if isinstance(st, DeferStmt):
-        st.expr = _cse_expr(st.expr, avail)
-        return st, avail, False
-
     if isinstance(st, IfStmt):
         st.cond = _cse_expr(st.cond, avail)
         cond_avail = dict(avail)
@@ -1001,10 +994,6 @@ def _dse_stmts(stmts: list[Any], live_out: set[str]) -> tuple[list[Any], set[str
             st.body = body_out
             out_rev.append(st)
             live |= body_live
-            continue
-        if isinstance(st, DeferStmt):
-            out_rev.append(st)
-            live |= _used_names_expr(st.expr)
             continue
         if isinstance(st, (BreakStmt, ContinueStmt)):
             out_rev.append(st)

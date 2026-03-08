@@ -17,7 +17,7 @@ fn helper(v Int) Int?{
   return x + 1;
 }
 
-fn main() Int{
+fn main() Int {
   a = helper(0) ?? 7;
   b = helper(1) ?? 0;
   return a + b;
@@ -40,7 +40,7 @@ fn helper(v Int?) Int?{
   return x;
 }
 
-fn main() Int{
+fn main() Int {
   mut input: Int? = none;
   out = helper(input) ?? 5;
   return out;
@@ -71,7 +71,7 @@ fn add1(v Int) Int | none{
   return x + 1;
 }
 
-fn main() Int{
+fn main() Int {
   print(to_json(add1(2)));
   print(to_json(add1(0)));
   return 0;
@@ -110,7 +110,7 @@ fn helper(v Int) Int | none{
   return x + 1;
 }
 
-fn main() Int{
+fn main() Int {
   _ = helper(0);
   _ = helper(1);
   return 0;

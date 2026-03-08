@@ -1,6 +1,6 @@
 import std.time;
 
-fn main() Int{
+fn main() Int {
     t0 = monotonic_ms();
     sleep_ms(10);
     t1 = monotonic_ms();

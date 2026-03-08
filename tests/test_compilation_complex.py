@@ -19,7 +19,7 @@ fn fib(n Int) Int{
   return fib(n - 1) + fib(n - 2);
 }
 
-fn main() Int{
+fn main() Int {
   comptime {
     k = fib(8);
     p = alloc(16);
@@ -54,7 +54,7 @@ fn calc(a Int, b Int) Int{
   }
   return x;
 }
-fn main() Int{
+fn main() Int {
   return calc(5, 7);
 }
 """
@@ -77,7 +77,7 @@ fn cmp(a Int, b Int) Int{
   }
   return 0;
 }
-fn main() Int{
+fn main() Int {
   return cmp(3, 7);
 }
 """
@@ -93,7 +93,7 @@ def test_llvm_algebraic_program_is_valid(tmp_path: Path):
     out = tmp_path / "alg.ll"
     src.write_text(
         """
-fn main() Int{
+fn main() Int {
   a = 7;
   b = (a * 1) + 0;
   return b;
@@ -111,7 +111,7 @@ def test_mutable_loop_variable_is_not_const_propagated(tmp_path: Path):
     out = tmp_path / "loop.py"
     src.write_text(
         """
-fn main() Int{
+fn main() Int {
   mut i = 0;
   mut acc = 0;
   while i < 4 {

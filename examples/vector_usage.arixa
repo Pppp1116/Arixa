@@ -1,13 +1,12 @@
 import std.vec;
 
-fn main() Int{
+fn main() Int {
     v: Vec<Int> = vec_new() as Vec<Int>;
     vec_push(v, 3);
     vec_push(v, 4);
     vec_push(v, 5);
-
     n = vec_len(v);
-    first: Int? = vec_get(v, 0);
+    first: Int | none = vec_get(v, 0);
     total = (first ?? 0) + n;
     print(total);
     return 0;

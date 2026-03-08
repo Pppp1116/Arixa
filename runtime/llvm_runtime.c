@@ -2567,3 +2567,57 @@ u128 astra_u128_mod_trap(u128 a, u128 b) {
   }
   return a % b;
 }
+
+// String conversion functions
+uintptr_t astra_int_to_str(int64_t value) {
+  // Buffer large enough for 64-bit integer + sign + null terminator
+  char buffer[32];
+  int len = snprintf(buffer, sizeof(buffer), "%lld", (long long)value);
+  if (len < 0 || len >= (int)sizeof(buffer)) {
+    return (uintptr_t)astra_strdup_s("");
+  }
+  char *result = (char *)astra_heap_alloc(len + 1);
+  if (result == NULL) {
+    return (uintptr_t)astra_strdup_s("");
+  }
+  memcpy(result, buffer, len + 1);
+  return (uintptr_t)result;
+}
+
+uintptr_t astra_uint_to_str(uint64_t value) {
+  char buffer[32];
+  int len = snprintf(buffer, sizeof(buffer), "%llu", (unsigned long long)value);
+  if (len < 0 || len >= (int)sizeof(buffer)) {
+    return (uintptr_t)astra_strdup_s("");
+  }
+  char *result = (char *)astra_heap_alloc(len + 1);
+  if (result == NULL) {
+    return (uintptr_t)astra_strdup_s("");
+  }
+  memcpy(result, buffer, len + 1);
+  return (uintptr_t)result;
+}
+
+uintptr_t astra_float_to_str(double value) {
+  char buffer[64];
+  int len = snprintf(buffer, sizeof(buffer), "%.15g", value);
+  if (len < 0 || len >= (int)sizeof(buffer)) {
+    return (uintptr_t)astra_strdup_s("");
+  }
+  char *result = (char *)astra_heap_alloc(len + 1);
+  if (result == NULL) {
+    return (uintptr_t)astra_strdup_s("");
+  }
+  memcpy(result, buffer, len + 1);
+  return (uintptr_t)result;
+}
+
+uintptr_t astra_bool_to_str(int8_t value) {
+  const char *str = value ? "true" : "false";
+  char *result = (char *)astra_heap_alloc(strlen(str) + 1);
+  if (result == NULL) {
+    return (uintptr_t)astra_strdup_s("");
+  }
+  strcpy(result, str);
+  return (uintptr_t)result;
+}

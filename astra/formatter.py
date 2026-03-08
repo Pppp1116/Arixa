@@ -168,6 +168,22 @@ def _fmt_expr(e, cfg: FormatConfig, *, indent: int = 0) -> str:
     if isinstance(e, ArrayLit):
         vals = [_fmt_expr(x, cfg, indent=indent + 1) for x in e.elements]
         return _wrap_call_like("", vals, cfg, indent=indent).replace("(", "[", 1).rsplit(")", 1)[0] + "]"
+    if isinstance(e, VectorLiteral):
+        vals = [_fmt_expr(x, cfg, indent=indent + 1) for x in e.elements]
+        return _wrap_call_like("vec", vals, cfg, indent=indent)
+    if isinstance(e, MapLiteral):
+        vals = []
+        for k, v in e.pairs:
+            vals.append(f"{_fmt_expr(k, cfg, indent=indent + 1)}: {_fmt_expr(v, cfg, indent=indent + 1)}")
+        return _wrap_call_like("", vals, cfg, indent=indent).replace("(", "{", 1).rsplit(")", 1)[0] + "}"
+    if isinstance(e, SetLiteral):
+        vals = [_fmt_expr(x, cfg, indent=indent + 1) for x in e.elements]
+        return _wrap_call_like("", vals, cfg, indent=indent).replace("(", "{", 1).rsplit(")", 1)[0] + "}"
+    if isinstance(e, IfExpression):
+        cond = _fmt_expr(e.cond, cfg, indent=indent + 1)
+        then_expr = _fmt_expr(e.then_expr, cfg, indent=indent + 1)
+        else_expr = _fmt_expr(e.else_expr, cfg, indent=indent + 1)
+        return f"if {cond} {{ {then_expr} }} else {{ {else_expr} }}"
     if isinstance(e, StructLit):
         vals = [_fmt_expr(v, cfg, indent=indent + 1) for _, v in e.fields]
         return _wrap_call_like(e.name, vals, cfg, indent=indent)
@@ -229,8 +245,6 @@ def _fmt_stmt(st, ind: int, cfg: FormatConfig) -> list[str]:
         return [f"{p}continue;"]
     if isinstance(st, ExprStmt):
         return [f"{p}{_fmt_expr(st.expr, cfg, indent=ind)};"]
-    if isinstance(st, DeferStmt):
-        return [f"{p}defer {_fmt_expr(st.expr, cfg, indent=ind)};"]
     if isinstance(st, UnsafeStmt):
         return _fmt_block("unsafe", st.body, ind, cfg)
     if isinstance(st, ComptimeStmt):
@@ -287,6 +301,8 @@ def _fmt_item(item, cfg: FormatConfig) -> list[str]:
         mut = "mut " if item.mut else ""
         ann = f": {type_text(item.type_name)}" if item.type_name else ""
         return [f"{mut}{item.name}{ann} = {_fmt_expr(item.expr, cfg)};"]
+    if isinstance(item, ConstDecl):
+        return [f"const {item.name} = {_fmt_expr(item.expr, cfg)};"]
     if isinstance(item, StructDecl):
         out = []
         if item.doc:

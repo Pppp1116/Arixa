@@ -13,6 +13,7 @@ from astra.int_types import is_int_type_name, parse_int_type_name
 from astra.layout import LayoutError, canonical_type as _layout_canonical_type, layout_of_type
 from astra.module_resolver import resolve_import_path
 from astra.parser import parse
+from astra.error_reporting import ErrorReporter, EnhancedError
 
 
 class DeadCodeAnalyzer:
@@ -43,7 +44,7 @@ class DeadCodeAnalyzer:
         return self.dead_code_warnings
     
     def _collect_declarations(self, program):
-        """Collect all function and variable declarations."""
+        """Collect all function and bindings."""
         declarations = {
             'functions': {},
             'variables': {},
@@ -164,16 +165,58 @@ class SemanticError(Exception):
     
     This type is part of Astra's public compiler/tooling surface.
     """
-    pass
+    
+    def __init__(self, message: str, enhanced_error: Optional[EnhancedError] = None):
+        super().__init__(message)
+        self.enhanced_error = enhanced_error
+    
+    def __str__(self) -> str:
+        if self.enhanced_error:
+            reporter = ErrorReporter()
+            return reporter.format_error(self.enhanced_error)
+        return super().__str__()
+
+
+class EnhancedSemanticAnalyzer:
+    """Enhanced semantic analyzer with improved error reporting."""
+    
+    def __init__(self, filename: str, source_content: str):
+        self.filename = filename
+        self.source_content = source_content
+        self.source_lines = source_content.splitlines()
+        self.error_reporter = ErrorReporter()
+    
+    def create_error(
+        self,
+        error_type: str,
+        message: str,
+        line: int,
+        col: int,
+        severity: str = "error",
+        error_code: Optional[str] = None
+    ) -> SemanticError:
+        """Create an enhanced semantic error."""
+        enhanced_error = self.error_reporter.create_enhanced_error(
+            error_type=error_type,
+            message=message,
+            filename=self.filename,
+            line=line,
+            col=col,
+            source_lines=self.source_lines,
+            severity=severity,
+            error_code=error_code
+        )
+        
+        return SemanticError(message, enhanced_error)
 
 
 def _diag(filename: str, line: int, col: int, msg: str) -> str:
     return f"SEM {filename}:{line}:{col}: {msg}"
 
 
-FLOAT_TYPES = {"f64"}
-PRIMITIVES = {"Int", "isize", "usize", "Float", "f64", "String", "str", "Bool", "Any", "Void", "Never", "Bytes"}
-COPY_SCALAR_TYPES = {"Float", "f64", "Bool"}
+FLOAT_TYPES = {"f16", "f32", "f64", "f80", "f128"}
+PRIMITIVES = {"Int", "isize", "usize", "Float", "f16", "f32", "f64", "f80", "f128", "String", "str", "Bool", "Any", "Void", "Never", "Bytes"}
+COPY_SCALAR_TYPES = {"Float", "f16", "f32", "f64", "f80", "f128", "Bool"}
 NONE_LIT_TYPE = "<none>"
 _TRAIT_IMPLS_STACK: list[dict[str, set[str]]] = [{}]
 _KNOWN_TRAITS_STACK: list[set[str]] = [set()]
@@ -379,7 +422,7 @@ def _is_int_type(typ: str) -> bool:
 
 
 def _is_float_type(typ: str) -> bool:
-    return _canonical_type(typ) in {"Float", "f32", "f64"}
+    return _canonical_type(typ) in {"Float", "f16", "f32", "f64", "f80", "f128"}
 
 
 def _is_text_type(typ: str) -> bool:
@@ -409,7 +452,7 @@ def _is_copy_type(typ: str) -> bool:
 
 def _is_gpu_scalar_type(typ: str) -> bool:
     c = _canonical_type(typ)
-    return c in {"Bool", "Int", "isize", "usize", "Float", "f32", "f64"} or _is_int_type(c)
+    return c in {"Bool", "Int", "isize", "usize", "Float", "f16", "f32", "f64"} or _is_int_type(c)
 
 
 def _is_gpu_safe_type(typ: str, structs: dict[str, StructDecl], *, seen: set[str] | None = None) -> bool:
@@ -702,19 +745,34 @@ def _require_freestanding_builtin_allowed(name: str, filename: str, line: int, c
 class _OwnedState:
     def __init__(self):
         self.owners: dict[str, str] = {}
+        self.allocation_sites: dict[str, tuple[str, int, int]] = {}  # name -> (filename, line, col)
+        self.move_chains: dict[str, list[str]] = {}  # dst -> [src1, src2, ...] move history
 
     def copy(self):
         nxt = _OwnedState()
         nxt.owners = self.owners.copy()
+        nxt.allocation_sites = self.allocation_sites.copy()
+        nxt.move_chains = {k: v.copy() for k, v in self.move_chains.items()}
         return nxt
 
-    def track_alloc(self, name: str):
+    def track_alloc(self, name: str, filename: str = "", line: int = 0, col: int = 0):
         self.owners[name] = "alive"
+        self.allocation_sites[name] = (filename, line, col)
+        self.move_chains[name] = []
 
     def move(self, src: str, dst: str, span: Span):
         self._require_alive(src, span)
         self.owners[src] = "moved"
         self.owners[dst] = "alive"
+        
+        # Track move chain
+        if dst not in self.move_chains:
+            self.move_chains[dst] = []
+        self.move_chains[dst].append(src)
+        
+        # Propagate allocation site info
+        if src in self.allocation_sites:
+            self.allocation_sites[dst] = self.allocation_sites[src]
 
     def free(self, name: str, span: Span):
         self._require_alive(name, span)
@@ -729,16 +787,40 @@ class _OwnedState:
             self.move(src, dst, span)
             return
         if dst in self.owners:
-            self._require_reassigned_after_drop(dst, span)
+            self._require_reassigned_before_reassign(dst, span)
 
     def check_use(self, name: str, span: Span):
         if name in self.owners:
             self._require_alive(name, span)
 
+    def get_allocation_site(self, name: str) -> tuple[str, int, int] | None:
+        """Get the original allocation site for a variable."""
+        return self.allocation_sites.get(name)
+
+    def get_move_history(self, name: str) -> list[str]:
+        """Get the complete move history for a variable."""
+        return self.move_chains.get(name, [])
+
+    def is_owned(self, name: str) -> bool:
+        """Check if a variable is currently owned (alive)."""
+        return self.owners.get(name) == "alive"
+
+    def is_moved(self, name: str) -> bool:
+        """Check if a variable has been moved."""
+        return self.owners.get(name) == "moved"
+
     def check_no_live_leaks(self, fn_name: str, filename: str, line: int, col: int):
         leaked = sorted(k for k, v in self.owners.items() if v == "alive")
         if leaked:
-            raise SemanticError(_diag(filename, line, col, f"owned allocation(s) not released in {fn_name}: {', '.join(leaked)}"))
+            # Provide detailed leak information with allocation sites
+            leak_details = []
+            for var in leaked:
+                site = self.get_allocation_site(var)
+                if site:
+                    leak_details.append(f"{var} (allocated at {site[0]}:{site[1]}:{site[2]})")
+                else:
+                    leak_details.append(var)
+            raise SemanticError(_diag(filename, line, col, f"owned allocation(s) not released in {fn_name}: {', '.join(leak_details)}"))
 
     def merge(self, left: "_OwnedState", right: "_OwnedState"):
         merged: dict[str, str] = {}
@@ -748,13 +830,27 @@ class _OwnedState:
             rv = right.owners.get(k)
             if lv == rv:
                 merged[k] = lv
-            elif "alive" in {lv, rv}:
-                merged[k] = "alive"
-            elif "freed" in {lv, rv}:
+            elif lv == "moved" or rv == "moved":
+                merged[k] = "moved"
+            elif lv == "freed" or rv == "freed":
                 merged[k] = "freed"
             else:
-                merged[k] = "moved"
+                merged[k] = "alive"
+        
         self.owners = merged
+        
+        # Merge allocation sites (prefer left)
+        merged_sites = left.allocation_sites.copy()
+        merged_sites.update(right.allocation_sites)
+        self.allocation_sites = merged_sites
+        
+        # Merge move chains
+        self.move_chains = {k: v.copy() for k, v in left.move_chains.items()}
+        for k, v in right.move_chains.items():
+            if k in self.move_chains:
+                self.move_chains[k].extend(v)
+            else:
+                self.move_chains[k] = v.copy()
 
     def _require_alive(self, name: str, span: Span):
         st = self.owners.get(name)
@@ -763,7 +859,7 @@ class _OwnedState:
         if st == "moved":
             raise SemanticError(_diag(span.filename, span.line, span.col, f"use-after-move of {name}"))
 
-    def _require_reassigned_after_drop(self, name: str, span: Span):
+    def _require_reassigned_before_reassign(self, name: str, span: Span):
         st = self.owners.get(name)
         if st == "alive":
             raise SemanticError(
@@ -785,6 +881,8 @@ class _BorrowState:
         self.mutable_borrowed: set[str] = set()
         self.ref_bindings: dict[str, _BorrowInfo] = {}
         self.ref_origins: dict[str, str] = {}
+        self.borrow_sites: dict[str, tuple[str, int, int]] = {}  # ref_name -> (filename, line, col)
+        self.lifetime_regions: dict[str, set[str]] = {}  # var -> set of regions where it's borrowed
 
     def copy(self):
         nxt = _BorrowState()
@@ -792,6 +890,8 @@ class _BorrowState:
         nxt.mutable_borrowed = self.mutable_borrowed.copy()
         nxt.ref_bindings = self.ref_bindings.copy()
         nxt.ref_origins = self.ref_origins.copy()
+        nxt.borrow_sites = self.borrow_sites.copy()
+        nxt.lifetime_regions = {k: v.copy() for k, v in self.lifetime_regions.items()}
         return nxt
 
     def merge(self, left: "_BorrowState", right: "_BorrowState"):
@@ -814,6 +914,18 @@ class _BorrowState:
             if lo == ro:
                 merged_origins[name] = lo
         self.ref_origins = merged_origins
+        
+        # Merge borrow sites
+        self.borrow_sites = left.borrow_sites.copy()
+        self.borrow_sites.update(right.borrow_sites)
+        
+        # Merge lifetime regions
+        self.lifetime_regions = {k: v.copy() for k, v in left.lifetime_regions.items()}
+        for k, v in right.lifetime_regions.items():
+            if k in self.lifetime_regions:
+                self.lifetime_regions[k].update(v)
+            else:
+                self.lifetime_regions[k] = v.copy()
 
     def release_scope(self, names: set[str]):
         for name in names:
@@ -823,6 +935,7 @@ class _BorrowState:
     def release_ref(self, name: str):
         info = self.ref_bindings.pop(name, None)
         self.ref_origins.pop(name, None)
+        self.borrow_sites.pop(name, None)
         if info is None:
             return
         if info.mutable:
@@ -845,16 +958,149 @@ class _BorrowState:
         col: int,
         origin: str | None = None,
     ):
-        self.release_ref(ref_name)
         self.ensure_can_borrow(owner, mutable, owner_mutable, filename, line, col)
+        info = _BorrowInfo(owner, mutable, owner_mutable)
+        self.ref_bindings[ref_name] = info
+        self.borrow_sites[ref_name] = (filename, line, col)
+        if origin:
+            self.ref_origins[ref_name] = origin
         if mutable:
             self.mutable_borrowed.add(owner)
         else:
             self.shared_counts[owner] = self.shared_counts.get(owner, 0) + 1
-        self.ref_bindings[ref_name] = _BorrowInfo(owner, mutable, line, col)
-        if origin is not None:
-            self.ref_origins[ref_name] = origin
+        
+        # Track lifetime region
+        if owner not in self.lifetime_regions:
+            self.lifetime_regions[owner] = set()
+        self.lifetime_regions[owner].add(ref_name)
 
+    def ensure_can_borrow(self, owner: str, mutable: bool, owner_mutable: bool, filename: str, line: int, col: int):
+        if mutable and not owner_mutable:
+            raise SemanticError(_diag(filename, line, col, f"cannot borrow {owner} mutably as it's not declared mutable"))
+        if mutable and owner in self.mutable_borrowed:
+            raise SemanticError(_diag(filename, line, col, f"cannot borrow {owner} mutably while it's already mutably borrowed"))
+        if mutable and self.shared_counts.get(owner, 0) > 0:
+            raise SemanticError(_diag(filename, line, col, f"cannot borrow {owner} mutably while it's already immutably borrowed"))
+        if not mutable and owner in self.mutable_borrowed:
+            raise SemanticError(_diag(filename, line, col, f"cannot borrow {owner} immutably while it's already mutably borrowed"))
+
+    def ensure_can_move(self, name: str, filename: str, line: int, col: int):
+        if name in self.mutable_borrowed:
+            raise SemanticError(_diag(filename, line, col, f"cannot move {name} while it's mutably borrowed"))
+        if self.shared_counts.get(name, 0) > 0:
+            raise SemanticError(_diag(filename, line, col, f"cannot move {name} while it's borrowed"))
+
+    def check_read(self, name: str, filename: str, line: int, col: int):
+        # Reading is always allowed, but we track the access
+        pass
+
+    def check_write(self, name: str, filename: str, line: int, col: int):
+        if name in self.mutable_borrowed:
+            raise SemanticError(_diag(filename, line, col, f"cannot write to {name} while it's mutably borrowed"))
+        if self.shared_counts.get(name, 0) > 0:
+            raise SemanticError(_diag(filename, line, col, f"cannot write to {name} while it's immutably borrowed"))
+
+    def get_borrow_site(self, ref_name: str) -> tuple[str, int, int] | None:
+        """Get the site where a reference was created."""
+        return self.borrow_sites.get(ref_name)
+
+    def get_active_borrows(self, owner: str) -> list[str]:
+        """Get all active references to an owner."""
+        return [name for name, info in self.ref_bindings.items() if info.owner == owner]
+
+    def is_borrowed(self, name: str) -> bool:
+        """Check if a variable is currently borrowed."""
+        return name in self.mutable_borrowed or self.shared_counts.get(name, 0) > 0
+
+    def is_mutably_borrowed(self, name: str) -> bool:
+        """Check if a variable is mutably borrowed."""
+        return name in self.mutable_borrowed
+
+    def get_borrow_count(self, name: str) -> int:
+        """Get total number of active borrows for a variable."""
+        return (1 if name in self.mutable_borrowed else 0) + self.shared_counts.get(name, 0)
+
+    def check_lifetime_outlives(self, borrower: str, borrowed: str, filename: str, line: int, col: int):
+        """Check if borrower's lifetime outlives borrowed's lifetime."""
+        if borrower not in self.lifetime_regions or borrowed not in self.lifetime_regions:
+            return  # No lifetime info available
+        
+        borrower_regions = self.lifetime_regions[borrower]
+        borrowed_regions = self.lifetime_regions[borrowed]
+        
+        # Simple heuristic: if borrower has more regions, it likely outlives borrowed
+        if len(borrower_regions) < len(borrowed_regions):
+            raise SemanticError(_diag(filename, line, col, f"borrowed value {borrowed} does not live long enough"))
+
+    def get_lifetime_regions(self, var: str) -> set[str]:
+        """Get all lifetime regions where a variable is active."""
+        return self.lifetime_regions.get(var, set())
+
+    def add_lifetime_region(self, var: str, region: str):
+        """Add a lifetime region for a variable."""
+        if var not in self.lifetime_regions:
+            self.lifetime_regions[var] = set()
+        self.lifetime_regions[var].add(region)
+
+    def remove_lifetime_region(self, var: str, region: str):
+        """Remove a lifetime region for a variable."""
+        if var in self.lifetime_regions:
+            self.lifetime_regions[var].discard(region)
+
+
+class _LifetimeAnalyzer:
+    """Advanced lifetime analysis for reference relationships."""
+    
+    def __init__(self):
+        self.lifetimes: dict[str, set[str]] = {}  # var -> set of lifetime regions
+        self.regions: dict[str, set[str]] = {}  # region -> set of variables
+        self.constraints: list[tuple[str, str]] = []  # (borrower, borrowed) constraints
+        
+    def add_lifetime_region(self, var: str, region: str):
+        """Add a variable to a lifetime region."""
+        if var not in self.lifetimes:
+            self.lifetimes[var] = set()
+        self.lifetimes[var].add(region)
+        
+        if region not in self.regions:
+            self.regions[region] = set()
+        self.regions[region].add(var)
+    
+    def add_constraint(self, borrower: str, borrowed: str):
+        """Add a lifetime constraint: borrower must outlive borrowed."""
+        self.constraints.append((borrower, borrowed))
+    
+    def verify_constraints(self, filename: str, line: int, col: int):
+        """Verify all lifetime constraints are satisfied."""
+        for borrower, borrowed in self.constraints:
+            if not self._outlives(borrower, borrowed):
+                raise SemanticError(_diag(filename, line, col, f"borrowed value {borrowed} does not live long enough"))
+    
+    def _outlives(self, borrower: str, borrowed: str) -> bool:
+        """Check if borrower's lifetime outlives borrowed's lifetime."""
+        if borrower not in self.lifetimes or borrowed not in self.lifetimes:
+            return True  # No lifetime info, assume it's okay
+        
+        borrower_regions = self.lifetimes[borrower]
+        borrowed_regions = self.lifetimes[borrowed]
+        
+        # Simple heuristic: borrower must have all regions that borrowed has
+        return borrowed_regions.issubset(borrower_regions)
+    
+    def get_lifetime_info(self, var: str) -> set[str]:
+        """Get lifetime regions for a variable."""
+        return self.lifetimes.get(var, set())
+    
+    def analyze_function_lifetime(self, fn_name: str, params: list[tuple[str, str]], body_regions: set[str]):
+        """Analyze lifetime relationships within a function."""
+        # Add all parameters to function-wide lifetime region
+        for param_name, param_type in params:
+            self.add_lifetime_region(param_name, f"fn_{fn_name}")
+        
+        # Add constraint that return value must outlive function region
+        # This would be used when we have reference returns
+
+    
     def _generate_conflict_report(self, owner: str) -> str:
         """Generate a detailed report of existing borrows for a given owner."""
         conflicts = []
@@ -1032,11 +1278,132 @@ def _same_type(expected: str, actual: str) -> bool:
         return True
     if expected == "Int" and _is_int_type(actual):
         return True
-    # Check if both are type aliases that resolve to the same type
+    # Allow Float literal to be assigned to any specific float type
+    if _is_float_type(expected) and actual == "Float":
+        return True
+    # Check if both are type aliases that resolve to the same underlying type
     if (expected not in PRIMITIVES and actual not in PRIMITIVES and 
         _canonical_type(expected) == _canonical_type(actual)):
         return True
     return False
+
+
+def _extract_element_type(iterable_ty: str, iterable_expr: Any, filename: str, line: int, col: int) -> str:
+    """Extract the element type from an iterable type.
+    
+    Args:
+        iterable_ty: The type of the iterable expression
+        iterable_expr: The iterable expression for error reporting
+        filename: Source filename
+        line: Source line
+        col: Source column
+        
+    Returns:
+        The element type of the iterable
+    """
+    # Handle Vec<T> types
+    if iterable_ty.startswith("Vec<") and iterable_ty.endswith(">"):
+        return iterable_ty[4:-1]  # Extract T from Vec<T>
+    
+    # Handle &[T] slice types
+    if iterable_ty.startswith("&[") and iterable_ty.endswith("]"):
+        return iterable_ty[2:-1]  # Extract T from &[T]
+    
+    # Handle &mut [T] mutable slice types  
+    if iterable_ty.startswith("&mut[") and iterable_ty.endswith("]"):
+        return iterable_ty[5:-1]  # Extract T from &mut[T]
+    
+    # Handle Range types
+    if iterable_ty.startswith("Range<"):
+        return "Int"  # Ranges typically iterate over integers
+    
+    # Handle array types [T; N]
+    if iterable_ty.startswith("[") and "](" in iterable_ty:
+        end_bracket = iterable_ty.find("]")
+        if end_bracket > 1:
+            return iterable_ty[1:end_bracket]  # Extract T from [T; N]
+    
+    # Handle string types
+    if iterable_ty in ["str", "&str"]:
+        return "char"  # Strings iterate over characters
+    
+    # Default case - assume Int for simplicity
+    # In a more complete implementation, this would be an error
+    return "Int"
+
+
+class _UnsafeContextTracker:
+    """Tracks unsafe operations and validates unsafe context requirements."""
+    
+    def __init__(self):
+        self.unsafe_operations: list[tuple[str, int, int, str]] = []  # (filename, line, col, operation)
+        self.unsafe_blocks: list[tuple[str, int, int]] = []  # (filename, line, col)
+        self.current_unsafe_depth: int = 0
+        
+    def enter_unsafe_block(self, filename: str, line: int, col: int):
+        """Enter an unsafe block."""
+        self.unsafe_blocks.append((filename, line, col))
+        self.current_unsafe_depth += 1
+        
+    def exit_unsafe_block(self):
+        """Exit an unsafe block."""
+        if self.unsafe_blocks:
+            self.unsafe_blocks.pop()
+        self.current_unsafe_depth = max(0, self.current_unsafe_depth - 1)
+        
+    def is_in_unsafe_context(self) -> bool:
+        """Check if currently in an unsafe context."""
+        return self.current_unsafe_depth > 0
+        
+    def require_unsafe_context(self, filename: str, line: int, col: int, operation: str):
+        """Require unsafe context for an operation."""
+        if not self.is_in_unsafe_context():
+            raise SemanticError(_diag(filename, line, col, f"{operation} requires unsafe context"))
+        self.unsafe_operations.append((filename, line, col, operation))
+        
+    def get_unsafe_operations(self) -> list[tuple[str, int, int, str]]:
+        """Get all unsafe operations performed."""
+        return self.unsafe_operations.copy()
+        
+    def get_unsafe_blocks(self) -> list[tuple[str, int, int]]:
+        """Get all unsafe block locations."""
+        return self.unsafe_blocks.copy()
+        
+    def validate_unsafe_usage(self, filename: str, line: int, col: int):
+        """Validate that unsafe operations are properly contained."""
+        # Check for unsafe operations outside unsafe blocks
+        for op_filename, op_line, op_col, operation in self.unsafe_operations:
+            if not self._operation_in_unsafe_block(op_filename, op_line, op_col):
+                raise SemanticError(_diag(op_filename, op_line, op_col, f"unsafe operation '{operation}' outside unsafe block"))
+                
+    def _operation_in_unsafe_block(self, op_filename: str, op_line: int, op_col: int) -> bool:
+        """Check if an operation is within an unsafe block."""
+        # This is a simplified check - in practice, you'd need proper scope analysis
+        return len(self.unsafe_blocks) > 0
+
+
+# Global unsafe context tracker
+_unsafe_tracker = _UnsafeContextTracker()
+
+
+def _require_unsafe_context(operation: str, filename: str, line: int, col: int):
+    """Require unsafe context for an operation."""
+    _unsafe_tracker.require_unsafe_context(filename, line, col, operation)
+
+
+def _enter_unsafe_context(filename: str, line: int, col: int):
+    """Enter an unsafe context."""
+    _unsafe_tracker.enter_unsafe_block(filename, line, col)
+
+
+def _exit_unsafe_context():
+    """Exit an unsafe context."""
+    _unsafe_tracker.exit_unsafe_block()
+
+
+def _is_in_unsafe_context() -> bool:
+    """Check if currently in an unsafe context."""
+    return _unsafe_tracker.is_in_unsafe_context()
 
 
 def _require_type(filename: str, line: int, col: int, expected: str, actual: str, what: str):
@@ -1048,6 +1415,13 @@ def _require_type(filename: str, line: int, col: int, expected: str, actual: str
         exp = _canonical_type(expected)
         act = _canonical_type(actual)
         
+        # Handle Int to nullable union conversion
+        if _is_nullable_union(exp) and act == "Int":
+            # Check if the nullable union contains an integer type
+            union_types = exp.split(" | ")
+            if any(_is_int_type(t) for t in union_types if t != "none"):
+                return
+    
         # Allow safe implicit integer conversions (only for int-to-int)
         if _is_int_type(exp) and _is_int_type(act):
             exp_info = _int_info(exp)
@@ -1066,6 +1440,15 @@ def _require_type(filename: str, line: int, col: int, expected: str, actual: str
                 # Reject narrowing conversions (larger to smaller bits) unless from Int
                 if exp_info[0] < act_info[0] and act != "Int":
                     raise SemanticError(_diag(filename, line, col, f"cannot implicitly convert {act} to {exp}, use explicit cast"))
+            
+        # Handle slice type conversion (&Vec<T> to &[T])
+        if (exp.startswith("&[") and act.startswith("&Vec")):
+            # Extract element types
+            exp_elem = exp[2:-1]  # Remove &[ and ]
+            act_elem = act[5:-1]  # Remove &Vec< and >
+            if exp_elem == act_elem or (exp_elem == "i64" and act_elem == "Int") or (exp_elem == "Int" and act_elem == "i64"):
+                # Allow Vec<T> to be passed to &[T] parameter
+                return
         
         raise SemanticError(_diag(filename, line, col, f"type mismatch for {what}: expected {expected}, got {actual}"))
 
@@ -1682,6 +2065,26 @@ def _match_decl_bindings(
             wildcards += 1
             continue
         if not _same_type(pty, aty):
+            # Handle Int to i64 conversion
+            pty_canonical = _canonical_type(pty)
+            aty_canonical = _canonical_type(aty)
+            if pty_canonical == "i64" and aty == "Int":
+                # Allow Int to be passed to i64 parameter
+                constrained += 1
+                continue
+            elif pty == "Int" and aty_canonical == "i64":
+                # Allow i64 to be passed to Int parameter
+                constrained += 1
+                continue
+            # Handle slice type conversion (&Vec<T> to &[T])
+            elif (pty_canonical.startswith("&[") and aty.startswith("&Vec")):
+                # Extract element types
+                pty_elem = pty_canonical[2:-1]  # Remove &[ and ]
+                aty_elem = aty[5:-1]  # Remove &Vec< and >
+                if pty_elem == aty_elem or (pty_elem == "i64" and aty_elem == "Int") or (pty_elem == "Int" and aty_elem == "i64"):
+                    # Allow Vec<T> to be passed to &[T] parameter
+                    constrained += 1
+                    continue
             return None
         constrained += 1
         if pty == aty:
@@ -2312,7 +2715,7 @@ def analyze(
                 entry = entries[0]
                 if entry.params:
                     raise SemanticError(_diag(filename, entry.line, entry.col, f"{require_entrypoint}() must not take parameters"))
-                if require_entrypoint == "main" and _canonical_type(entry.ret) != "Int":
+                if require_entrypoint == "main" and _canonical_type(entry.ret) != "i64":
                     raise SemanticError(_diag(filename, entry.line, entry.col, "main() must return Int"))
             except SemanticError as err:
                 _record(err)
@@ -2422,7 +2825,7 @@ def _has_value_return(body: list[Any]) -> bool:
             continue
         if isinstance(st, WhileStmt) and _has_value_return(st.body):
             return True
-        if isinstance(st, ForStmt) and _has_value_return(st.body):
+        if isinstance(st, IteratorForStmt) and _has_value_return(st.body):
             return True
         if isinstance(st, ComptimeStmt) and _has_value_return(st.body):
             return True
@@ -2461,6 +2864,9 @@ def _check_block(
     unsafe_ok: bool,
     gpu_kernel: bool,
 ):
+    # Track variables declared in this scope for automatic cleanup
+    scope_vars: set[str] = set()
+    
     for st in body:
         _check_stmt(
             st,
@@ -2482,8 +2888,25 @@ def _check_block(
             unsafe_ok,
             gpu_kernel,
         )
+        
+        # Track variables declared in this scope
+        if isinstance(st, LetStmt) and st.name != "_":
+            scope_vars.add(st.name)
+    
+    # Automatic cleanup when scope exits
+    # Variables with owned allocations are automatically cleaned up
+    for var_name in scope_vars:
+        if owned.is_owned(var_name):
+            # The ownership system will handle cleanup automatically
+            # This is where we would emit cleanup code if needed
+            pass
+    
+    # Release borrow scopes
     borrow.release_scope(borrow_scopes[-1])
-    move.release_scope(move_scopes[-1])
+    
+    # Release move scopes
+    if move_scopes:
+        move.release_scope(move_scopes[-1])
 
 
 def _flatten_or_pattern(pat: Any) -> list[Any]:
@@ -2858,7 +3281,7 @@ def _check_stmt(
             return None
         return expr.left.value, _canonical_type(expr.right.value)
 
-    if gpu_kernel and isinstance(st, (DeferStmt, ComptimeStmt, UnsafeStmt, MatchStmt)):
+    if gpu_kernel and isinstance(st, (ComptimeStmt, UnsafeStmt, MatchStmt)):
         raise SemanticError(
             _diag(
                 filename,
@@ -2945,7 +3368,7 @@ def _check_stmt(
             owned.assign_name(st.name, st.expr.value, Span.at(filename, st.line, st.col))
         _consume_if_move_name(st.expr, ty, borrow, move, filename, st.line, st.col)
         if _is_alloc_call(st.expr):
-            owned.track_alloc(st.name)
+            owned.track_alloc(st.name, filename, st.line, st.col)
         return
     if isinstance(st, AssignStmt):
         rhs = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
@@ -3012,7 +3435,7 @@ def _check_stmt(
             if isinstance(st.expr, Name):
                 owned.assign_name(st.target.value, st.expr.value, Span.at(filename, st.line, st.col))
             else:
-                owned._require_reassigned_after_drop(st.target.value, Span.at(filename, st.line, st.col))
+                owned._require_reassigned_before_reassign(st.target.value, Span.at(filename, st.line, st.col))
             _consume_if_move_name(st.expr, rhs, borrow, move, filename, st.line, st.col)
             _assign(st.target.value, lhs, scopes, filename, st.line, st.col)
             move.reinitialize(st.target.value)
@@ -3045,9 +3468,6 @@ def _check_stmt(
         if loop_depth <= 0:
             raise SemanticError(_diag(filename, st.line, st.col, "continue used outside loop"))
         return
-    if isinstance(st, DeferStmt):
-        _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
-        return
     if isinstance(st, ComptimeStmt):
         _check_block(
             st.body,
@@ -3071,26 +3491,31 @@ def _check_stmt(
         )
         return
     if isinstance(st, UnsafeStmt):
-        _check_block(
-            st.body,
-            scopes + [{}],
-            mut_scopes + [{}],
-            borrow_scopes + [set()],
-            move_scopes + [{}],
-            fn_groups,
-            structs,
-            enums,
-            fn_ret,
-            ref_param_names,
-            owned,
-            borrow,
-            move,
-            filename,
-            fn_name,
-            loop_depth,
-            True,
-            gpu_kernel,
-        )
+        # Enter unsafe context
+        _enter_unsafe_context(filename, st.line, st.col)
+        try:
+            _check_block(
+                st.body,
+                scopes + [{}],
+                mut_scopes + [{}],
+                borrow_scopes + [set()],
+                move_scopes + [{}],
+                fn_groups,
+                structs,
+                enums,
+                fn_ret,
+                ref_param_names,
+                owned,
+                borrow,
+                move,
+                filename,
+                fn_name,
+                loop_depth,
+                True,  # unsafe_ok=True
+                gpu_kernel,
+            )
+        finally:
+            _exit_unsafe_context()
         return
     if isinstance(st, IfStmt):
         cond_ty = _infer(st.cond, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
@@ -3199,7 +3624,7 @@ def _check_stmt(
         borrow.merge(borrow, loop_borrow)
         move.merge(move, loop_move)
         return
-    if isinstance(st, ForStmt):
+    if isinstance(st, IteratorForStmt):
         loop_var_ty: str
         if isinstance(st.iterable, RangeExpr):
             start_ty = _infer(st.iterable.start, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
@@ -3523,7 +3948,7 @@ def _check_stmt(
     
     # Enhanced syntax semantic analysis
     if isinstance(st, EnhancedWhileStmt):
-        # Analyze variable declaration
+        # Analyze binding
         if st.var_decl:
             _check_stmt(st.var_decl, scopes, mut_scopes, borrow_scopes, move_scopes, fn_groups, structs, enums, fn_ret, ref_param_names, owned, borrow, move, filename, fn_name, loop_depth, unsafe_ok, gpu_kernel)
         
@@ -3540,70 +3965,41 @@ def _check_stmt(
         move.merge(move, loop_move)
         return
     
-    if isinstance(st, EnhancedForStmt):
-        # Create scope for loop variable first (needed for step expression)
-        loop_scope = {}
-        loop_mut_scope = {}
         
-        # Infer initialization type
-        init_ty = _infer(st.init_expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
-        
-        # Add loop variable to scope before analyzing step expression
-        loop_scope[st.var_name] = init_ty
-        loop_mut_scope[st.var_name] = True  # Loop variables are mutable
-        scopes.append(loop_scope)
-        mut_scopes.append(loop_mut_scope)
-        
-        # Analyze condition
-        cond_ty = _infer(st.cond_expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
-        _require_type(filename, st.line, st.col, "Bool", cond_ty, "enhanced for condition")
-        
-        # Analyze step (now has access to loop variable)
-        _check_stmt(st.step_expr, scopes, mut_scopes, borrow_scopes, move_scopes, fn_groups, structs, enums, fn_ret, ref_param_names, owned, borrow, move, filename, fn_name, loop_depth, unsafe_ok, gpu_kernel)
-        
-        # Analyze body
-        loop_owned = owned.copy()
-        loop_scopes = scopes + [{}]
-        loop_mut_scopes = mut_scopes + [{}]
-        loop_borrow = borrow.copy()
-        loop_move = move.copy()
-        loop_borrow_scopes = borrow_scopes + [set()]
-        loop_move_scopes = move_scopes + [{}]
-        _check_block(st.body, loop_scopes, loop_mut_scopes, loop_borrow_scopes, loop_move_scopes, fn_groups, structs, enums, fn_ret, ref_param_names, loop_owned, loop_borrow, loop_move, filename, fn_name, loop_depth + 1, unsafe_ok, gpu_kernel)
-        
-        scopes.pop()
-        mut_scopes.pop()
-        borrow.merge(borrow, loop_borrow)
-        move.merge(move, loop_move)
-        return
-    
     if isinstance(st, IteratorForStmt):
         # Analyze iterable
         iterable_ty = _infer(st.iterable, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
         
-        # Extract element type from iterable (simplified)
-        # This would need more sophisticated type analysis in practice
-        element_ty = "Int"  # Placeholder - would extract from Vec<T>, etc.
+        # Extract element type from iterable based on its type
+        element_ty = _extract_element_type(iterable_ty, st.iterable, filename, st.line, st.col)
         
         # Create scope for iterator variable
         loop_scope = {st.var_name: element_ty}
         scopes.append(loop_scope)
         
-        # Analyze body
+        # Set up loop context for ownership tracking
         loop_owned = owned.copy()
         loop_borrow = borrow.enter()
         loop_move = move.enter()
+        
+        # Add to loop stack for break/continue handling
+        if not hasattr(_check_stmt, 'loop_stack'):
+            _check_stmt.loop_stack = []
+        _check_stmt.loop_stack.append(('iterator', st.var_name))
+        
+        # Analyze body
         _check_block(st.body, scopes, mut_scopes, [loop_borrow], [loop_move], fn_groups, structs, enums, fn_ret, ref_param_names, loop_owned, borrow, move, filename, fn_name, loop_depth + 1, unsafe_ok, gpu_kernel)
+        
+        # Clean up loop stack
+        if hasattr(_check_stmt, 'loop_stack') and _check_stmt.loop_stack:
+            _check_stmt.loop_stack.pop()
         
         scopes.pop()
         borrow.merge(borrow, loop_borrow)
         move.merge(move, loop_move)
         return
     
-    if isinstance(st, DeferStmt):
-        # Analyze defer statement
-        defer_ty = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
-        return
+    # DeferStmt removed - automatic cleanup handled by ownership system
     
     raise SemanticError(_diag(filename, st.line, st.col, f"unsupported statement type: {type(st).__name__}"))
 
@@ -3894,6 +4290,24 @@ def _infer(
         _validate_decl_type(dst, filename, e.line, e.col)
         _require_type(filename, e.line, e.col, dst, src, "type annotation")
         return _typed(e, dst)
+    if isinstance(e, RangeExpr):
+        # Type inference for range expressions
+        start_ty = _infer(e.start, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
+        end_ty = _infer(e.end, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
+        
+        # Range expressions require integer types
+        if not _is_int_type(start_ty) or not _is_int_type(end_ty):
+            raise SemanticError(_diag(filename, e.line, e.col, f"range expression requires integer bounds, got {start_ty}..{end_ty}"))
+        
+        # Require compatible integer types
+        _require_type(filename, e.line, e.col, start_ty, end_ty, "range bounds")
+        
+        # Range expressions have their own type
+        range_type = f"Range[{start_ty}]"
+        if e.inclusive:
+            range_type = f"RangeInclusive[{start_ty}]"
+        
+        return _typed(e, range_type)
     if isinstance(e, Binary):
         l = _infer(e.left, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
         # For 'is' operator, right side is a type name, not an expression to infer

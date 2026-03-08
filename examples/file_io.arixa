@@ -1,8 +1,8 @@
 import std.io;
 
-fn main() Int{
+fn main() Int {
     path = "build/example_output.txt";
-    write_file(path, "astra file I/O demo\\n");
+    write_file(path, "astra file I/O demo\\\\n");
     text = read_file(path);
     print(text);
     return 0;

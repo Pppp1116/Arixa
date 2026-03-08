@@ -5,7 +5,7 @@ def test_std_crypto_runtime_parity(tmp_path) -> None:
     src = """
 import "crypto";
 
-fn main() Int{
+fn main() Int {
   a = sha256("abc");
   b = hmac_sha256("k", "v");
   c = digest_pair("left", "right");
@@ -31,7 +31,7 @@ def test_std_serde_runtime_parity(tmp_path) -> None:
     src = """
 import "serde";
 
-fn main() Int{
+fn main() Int {
   m = map_new();
   _ = map_set(m, "alpha", 11);
   _ = map_set(m, "beta", 5);

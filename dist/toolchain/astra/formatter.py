@@ -63,7 +63,7 @@ def resolve_format_config(for_path: Path | None = None) -> FormatConfig:
     """Resolve and return data for `resolve_format_config`.
     
     Parameters:
-        for_path: Input value used by this routine.
+        for_path: Input value used by this function.
     
     Returns:
         Value described by the function return annotation.
@@ -315,13 +315,12 @@ def _fmt_item(item, cfg: FormatConfig) -> list[str]:
         if item.doc:
             out.extend([f"/// {line}" for line in item.doc.splitlines()])
         pub = "pub " if item.pub else ""
-        impl_kw = "impl " if item.is_impl else ""
         async_kw = "async " if item.async_fn else ""
         unsafe_kw = "unsafe " if item.unsafe else ""
         sig = ", ".join(f"{n} {type_text(t)}" for n, t in item.params)
-        fn_head = f"{pub}{impl_kw}{async_kw}{unsafe_kw}fn {item.name}({sig}) -> {type_text(item.ret)}"
+        fn_head = f"{pub}{async_kw}{unsafe_kw}fn {item.name}({sig}) -> {type_text(item.ret)}"
         if len(fn_head) > cfg.line_width and item.params:
-            out.append(f"{pub}{impl_kw}{async_kw}{unsafe_kw}fn {item.name}(")
+            out.append(f"{pub}{async_kw}{unsafe_kw}fn {item.name}(")
             for n, t in item.params:
                 out.append(f"{_indent(1, cfg)}{n} {type_text(t)},")
             fn_head = f") -> {type_text(item.ret)}"
@@ -341,7 +340,7 @@ def fmt(src: str, *, config: FormatConfig | None = None) -> str:
     
     Parameters:
         src: Astra source text to process.
-        config: Input value used by this routine.
+        config: Input value used by this function.
     
     Returns:
         Value described by the function return annotation.
@@ -376,7 +375,7 @@ def main(argv=None):
         argv: Optional CLI arguments passed instead of process argv.
     
     Returns:
-        Value produced by the routine, if any.
+        Value produced by the function, if any.
     """
     p = argparse.ArgumentParser()
     p.add_argument("file")

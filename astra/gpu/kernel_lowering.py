@@ -13,7 +13,7 @@ from astra.ast import (
     ExprStmt,
     FieldExpr,
     FnDecl,
-    ForStmt,
+    IteratorForStmt,
     IfStmt,
     IndexExpr,
     LetStmt,
@@ -93,7 +93,7 @@ def _walk_stmt(stmt, *, builtins: set[str]) -> int:
         for sub in stmt.body:
             count += _walk_stmt(sub, builtins=builtins)
         return count
-    if isinstance(stmt, ForStmt):
+    if isinstance(stmt, IteratorForStmt):
         _walk_expr(stmt.iterable, builtins=builtins)
         for sub in stmt.body:
             count += _walk_stmt(sub, builtins=builtins)

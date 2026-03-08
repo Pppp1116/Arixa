@@ -23,10 +23,10 @@ def _parse_prefixed_width(text: str) -> tuple[bool, int] | None:
 
 
 def looks_like_prefixed_int(text: str) -> bool:
-    """Execute the `looks_like_prefixed_int` routine.
+    """Execute the `Execute the function.` function.
     
     Parameters:
-        text: Input value used by this routine.
+        text: Input value used by this function.
     
     Returns:
         Value described by the function return annotation.
@@ -39,11 +39,11 @@ def looks_like_prefixed_int(text: str) -> bool:
 
 
 def prefixed_int_width_error(text: str, max_width: int = INT_WIDTH_MAX) -> str | None:
-    """Execute the `prefixed_int_width_error` routine.
+    """Execute the `Execute the function.` function.
     
     Parameters:
-        text: Input value used by this routine.
-        max_width: Input value used by this routine.
+        text: Input value used by this function.
+        max_width: Input value used by this function.
     
     Returns:
         Value described by the function return annotation.
@@ -63,8 +63,8 @@ def parse_prefixed_int_type(text: str, max_width: int = INT_WIDTH_MAX) -> tuple[
     """Parse the `prefixed_int_type` grammar production from the token stream.
     
     Parameters:
-        text: Input value used by this routine.
-        max_width: Input value used by this routine.
+        text: Input value used by this function.
+        max_width: Input value used by this function.
     
     Returns:
         Value described by the function return annotation.
@@ -82,8 +82,8 @@ def parse_int_type_name(name: str, max_width: int = INT_WIDTH_MAX) -> tuple[int,
     """Parse the `int_type_name` grammar production from the token stream.
     
     Parameters:
-        name: Input value used by this routine.
-        max_width: Input value used by this routine.
+        name: Input value used by this function.
+        max_width: Input value used by this function.
     
     Returns:
         Value described by the function return annotation.
@@ -100,8 +100,8 @@ def is_int_type_name(name: str, max_width: int = INT_WIDTH_MAX) -> bool:
     """Return whether the input satisfies `is_int_type_name`.
     
     Parameters:
-        name: Input value used by this routine.
-        max_width: Input value used by this routine.
+        name: Input value used by this function.
+        max_width: Input value used by this function.
     
     Returns:
         Value described by the function return annotation.
@@ -110,10 +110,10 @@ def is_int_type_name(name: str, max_width: int = INT_WIDTH_MAX) -> bool:
 
 
 def int_storage_size(bits: int) -> int:
-    """Execute the `int_storage_size` routine.
+    """Execute the `Execute the function.` function.
     
     Parameters:
-        bits: Input value used by this routine.
+        bits: Input value used by this function.
     
     Returns:
         Value described by the function return annotation.
@@ -122,10 +122,10 @@ def int_storage_size(bits: int) -> int:
 
 
 def int_storage_align(size: int) -> int:
-    """Execute the `int_storage_align` routine.
+    """Execute the `Execute the function.` function.
     
     Parameters:
-        size: Input value used by this routine.
+        size: Input value used by this function.
     
     Returns:
         Value described by the function return annotation.

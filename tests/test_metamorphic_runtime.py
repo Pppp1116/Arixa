@@ -22,7 +22,7 @@ def test_random_arithmetic_is_consistent_between_py_and_native(tmp_path) -> None
     for i in range(20):
         expr = _gen_expr(rng, depth=3)
         src = f"""
-fn main() Int{{
+fn main() Int {{
   x = {expr};
   print(x);
   return 0;

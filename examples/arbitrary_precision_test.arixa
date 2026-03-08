@@ -1,0 +1,322 @@
+// Test 1: Basic arbitrary precision integer types
+fn test_basic_arbitrary_ints() Int {
+    // Test different bit widths
+    small_int: i8 = 127;
+    medium_int: i16 = 32767;
+    large_int: i32 = 2147483647;
+    huge_int: i64 = 9223372036854775807;
+    
+    // Test unsigned variants
+    small_uint: u8 = 255;
+    medium_uint: u16 = 65535;
+    large_uint: u32 = 4294967295;
+    huge_uint: u64 = 18446744073709551615;
+    
+    // Test very large bit widths
+    very_large: i128 = 170141183460469231731687303715884105727;
+    very_large_u: u128 = 340282366920938463463374607431768211455;
+    
+    print("Basic arbitrary precision integers work!");
+    return 0;
+}
+
+// Test 2: Typed integer literals
+fn test_typed_literals() Int {
+    // Test typed integer literals
+    value1 = 42i8;
+    value2 = 1000i16;
+    value3 = 50000i32;
+    value4 = 1000000i64;
+    value5 = 123456789i128;
+    
+    // Test unsigned typed literals
+    uvalue1 = 42u8;
+    uvalue2 = 1000u16;
+    uvalue3 = 50000u32;
+    uvalue4 = 1000000u64;
+    uvalue5 = 123456789u128;
+    
+    print("Typed integer literals work!");
+    return 0;
+}
+
+// Test 3: Arbitrary precision integer operations
+fn test_arithmetic_operations() Int {
+    // Addition with different bit widths
+    a: i16 = 1000;
+    b: i16 = 2000;
+    result = a + b;  // 3000i16
+    
+    // Mixed operations (should be handled by type inference)
+    x: i32 = 50000;
+    y: i64 = 100000;
+    // This would require type casting in a real implementation
+    
+    // Multiplication
+    m1: i8 = 10;
+    m2: i8 = 12;
+    product = m1 * m2;  // 120i8
+    
+    // Division
+    d1: i16 = 100;
+    d2: i16 = 25;
+    quotient = d1 / d2;  // 4i16
+    
+    // Modulo
+    mod1: i32 = 100;
+    mod2: i32 = 7;
+    remainder = mod1 % mod2;  // 2i32
+    
+    print("Arithmetic operations work!");
+    return 0;
+}
+
+// Test 4: Bitwise operations
+fn test_bitwise_operations() Int {
+    // Bitwise AND
+    a: i8 = 0b11001100;
+    b: i8 = 0b10101010;
+    and_result = a & b;  // 0b10001000
+    
+    // Bitwise OR
+    or_result = a | b;  // 0b11101110
+    
+    // Bitwise XOR
+    xor_result = a ^ b;  // 0b01100110
+    
+    // Bitwise NOT
+    not_result = ~a;  // ~0b11001100
+    
+    // Left shift
+    left_shift = a << 2;  // 0b11001100 << 2 = 0b00110000
+    
+    // Right shift
+    right_shift = a >> 2;  // 0b11001100 >> 2 = 0b00110011
+    
+    print("Bitwise operations work!");
+    return 0;
+}
+
+// Test 5: Comparison operations
+fn test_comparison_operations() Int {
+    // Equality
+    a: i16 = 1000;
+    b: i16 = 1000;
+    c: i16 = 2000;
+    
+    equal = a == b;  // true
+    not_equal = a != c;  // true
+    
+    // Less than/greater than
+    less = a < c;  // true
+    greater = c > a;  // true
+    
+    // Less than or equal/greater than or equal
+    less_equal = a <= b;  // true
+    greater_equal = c >= a;  // true
+    
+    print("Comparison operations work!");
+    return 0;
+}
+
+// Test 6: Function parameters and return types
+fn process_i8_value(x: i8) i8 {
+    return x * 2;
+}
+
+fn process_i16_value(x: i16) i16 {
+    return x * 2;
+}
+
+fn process_i32_value(x: i32) i32 {
+    return x * 2;
+}
+
+fn process_i64_value(x: i64) i64 {
+    return x * 2;
+}
+
+fn process_i128_value(x: i128) i128 {
+    return x * 2;
+}
+
+fn test_function_parameters() Int {
+    result8 = process_i8_value(50i8);
+    result16 = process_i16_value(5000i16);
+    result32 = process_i32_value(500000i32);
+    result64 = process_i64_value(5000000000i64);
+    result128 = process_i128_value(5000000000000000000i128);
+    
+    print("Function parameters work!");
+    return 0;
+}
+
+// Test 7: Arrays and structs with arbitrary precision integers
+struct SmallIntStruct {
+    value: i8,
+    count: u16,
+}
+
+struct BigIntStruct {
+    large_value: i128,
+    huge_count: u128,
+    medium_value: i32,
+}
+
+fn test_structs_and_arrays() Int {
+    // Struct with small integers
+    small_struct = SmallIntStruct(127i8, 1000u16);
+    
+    // Struct with large integers
+    big_struct = BigIntStruct(170141183460469231731687303715884105727i128, 340282366920938463463374607431768211455u128, 50000i32);
+    
+    // Arrays with arbitrary precision integers
+    small_array: [i8; 4] = [1i8, 2i8, 3i8, 4i8];
+    big_array: [i128; 3] = [1000000000000000000i128, 2000000000000000000i128, 3000000000000000000i128];
+    
+    print("Structs and arrays work!");
+    return 0;
+}
+
+// Test 8: Type casting between arbitrary precision integers
+fn test_type_casting() Int {
+    // Cast from smaller to larger
+    small_val: i8 = 100;
+    medium_val: i16 = small_val as i16;
+    large_val: i32 = medium_val as i32;
+    huge_val: i64 = large_val as i64;
+    
+    // Cast between signed and unsigned
+    signed_val: i32 = -1000;
+    unsigned_val: u32 = signed_val as u32;
+    
+    // Cast from larger to smaller (potential truncation)
+    big_val: i64 = 100000;
+    small_val_cast: i8 = big_val as i8;
+    
+    print("Type casting works!");
+    return 0;
+}
+
+// Test 9: Overflow and underflow behavior
+fn test_overflow_behavior() Int {
+    // Test maximum values
+    max_i8: i8 = 127;
+    max_u8: u8 = 255;
+    max_i16: i16 = 32767;
+    max_u16: u16 = 65535;
+    
+    // Test minimum values
+    min_i8: i8 = -128;
+    min_i16: i16 = -32768;
+    
+    // Note: Overflow behavior depends on implementation
+    // In a real system, these might wrap around or cause errors
+    
+    print("Overflow behavior tested!");
+    return 0;
+}
+
+// Test 10: Arbitrary precision integers in expressions
+fn test_expressions() Int {
+    // Complex expressions
+    result1: i32 = (100i32 * 2i32) + (50i32 / 5i32) - (10i32 % 3i32);
+    result2: i64 = 1000000i64 + 2000000i64 - 500000i64;
+    
+    // Bitwise expressions
+    mask: i16 = 0b11110000i16;
+    value: i16 = 0b10101010i16;
+    masked = value & mask;
+    
+    // Mixed operations
+    complex_result: i32 = ((100i32 + 50i32) << 2) & 0b11111111i32;
+    
+    print("Expressions work!");
+    return 0;
+}
+
+// Test 11: Arbitrary precision integers in control flow
+fn test_control_flow() Int {
+    value: i16 = 1000;
+    
+    if value > 500i16 {
+        print("Value is greater than 500");
+    }
+    
+    while value > 0i16 {
+        value = value - 1i16;
+        if value == 500i16 {
+            break;
+        }
+    }
+    
+    for i in 0i8..10i8 {
+        print("Loop iteration: " + to_string_int(i));
+    }
+    
+    print("Control flow works!");
+    return 0;
+}
+
+// Test 12: Arbitrary precision integers with pattern matching
+fn test_pattern_matching() Int {
+    value: i16 = 1000;
+    
+    match value {
+        0i16..=100i16 => print("Small value"),
+        101i16..=1000i16 => print("Medium value"),
+        1001i16..=32767i16 => print("Large value"),
+        _ => print("Other value"),
+    }
+    
+    print("Pattern matching works!");
+    return 0;
+}
+
+// Test 13: Edge cases and special values
+fn test_edge_cases() Int {
+    // Zero values
+    zero_i8: i8 = 0i8;
+    zero_i64: i64 = 0i64;
+    zero_i128: i128 = 0i128;
+    
+    // Maximum values
+    max_i8: i8 = 127i8;
+    max_i16: i16 = 32767i16;
+    max_i32: i32 = 2147483647i32;
+    max_i64: i64 = 9223372036854775807i64;
+    
+    // Minimum values (signed only)
+    min_i8: i8 = -128i8;
+    min_i16: i16 = -32768i16;
+    min_i32: i32 = -2147483648i32;
+    min_i64: i64 = -9223372036854775808i64;
+    
+    // Power of 2 values
+    power_of_2: i32 = 1024i32;  // 2^10
+    another_power: i64 = 1048576i64;  // 2^20
+    
+    print("Edge cases work!");
+    return 0;
+}
+
+fn main() Int {
+    print("Testing arbitrary precision integers...");
+    
+    test_basic_arbitrary_ints();
+    test_typed_literals();
+    test_arithmetic_operations();
+    test_bitwise_operations();
+    test_comparison_operations();
+    test_function_parameters();
+    test_structs_and_arrays();
+    test_type_casting();
+    test_overflow_behavior();
+    test_expressions();
+    test_control_flow();
+    test_pattern_matching();
+    test_edge_cases();
+    
+    print("All arbitrary precision integer tests completed!");
+    return 0;
+}

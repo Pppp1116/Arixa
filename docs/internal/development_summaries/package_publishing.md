@@ -2,27 +2,27 @@
 
 ## 🎯 **Mission Accomplished**
 
-I have successfully implemented a comprehensive public package publishing system for ASTRA with GitHub integration, providing functionality similar to Rust's crates.io but with direct GitHub repository linking.
+I have successfully implemented a comprehensive public module publishing system for ASTRA with GitHub integration, providing functionality similar to Rust's crates.io but with direct GitHub repository linking.
 
 ## 📦 **What Was Built**
 
-### 1. **Core Package Manager** (`astra/package_manager.py`)
+### 1. **Core Package Manager** (`astra/module_manager.py`)
 - **PackagePublisher**: Handles validation, archiving, and publishing
-- **PackageDiscovery**: Searches and browses available packages
-- **PackageInstaller**: Installs packages from registry and GitHub
+- **PackageDiscovery**: Searches and browses available modules
+- **PackageInstaller**: Installs modules from registry and GitHub
 - **TOML Support**: Full manifest parsing with fallback support
 
 ### 2. **CLI Interface** (`astra/pkg_cli.py`)
-- **Complete command-line tool** for package management
+- **Complete command-line tool** for module management
 - **Commands**: `init`, `publish`, `search`, `install`, `list`, `info`
 - **GitHub integration** with release creation
 - **Registry publishing** support
 
-### 3. **Enhanced Registry** (`registry/packages.json`)
-- **11 packages** across multiple categories
+### 3. **Enhanced Registry** (`registry/modules.json`)
+- **11 modules** across multiple categories
 - **Rich metadata**: dependencies, features, targets, licensing
 - **GitHub integration** with direct repository links
-- **Comprehensive package information**
+- **Comprehensive module information**
 
 ## 🚀 **Key Features Implemented**
 
@@ -37,11 +37,11 @@ astra-pkg publish --target registry
 
 ### **Package Discovery**
 ```bash
-# Search packages
+# Search modules
 astra-pkg search "game development"
 astra-pkg search "json serialization"
 
-# Get package info
+# Get module info
 astra-pkg info raylib
 ```
 
@@ -56,13 +56,13 @@ astra-pkg install https://github.com/user/library
 
 ### **Package Validation**
 ```bash
-# Validate package before publishing
+# Validate module before publishing
 astra-pkg publish --directory . --dry-run
 ```
 
 ## 📊 **Registry Statistics**
 
-**Available Packages**: 11 packages
+**Available Packages**: 11 modules
 - **Core Libraries**: C bindings, OpenGL, SDL2, SQLite
 - **Community Libraries**: JSON serialization, regex, HTTP client
 - **Game Development**: Raylib, game engine
@@ -78,7 +78,7 @@ astra-pkg publish --directory . --dry-run
 
 ### **Package Structure**
 ```
-my_package/
+my_module/
 ├── Astra.toml              # Enhanced manifest with GitHub metadata
 ├── src/
 │   └── lib.arixa           # Library entry point
@@ -90,14 +90,14 @@ my_package/
 
 ### **Enhanced Manifest Format**
 ```toml
-[package]
-name = "my_package"
+[module]
+name = "my_module"
 version = "0.1.0"
 description = "My awesome ASTRA library"
 authors = ["Your Name <you@example.com>"]
 license = "MIT"
-homepage = "https://github.com/yourusername/my_package"
-repository = "https://github.com/yourusername/my_package"
+homepage = "https://github.com/yourusername/my_module"
+repository = "https://github.com/yourusername/my_module"
 keywords = ["keyword1", "keyword2"]
 categories = ["Category1", "Category2"]
 
@@ -110,15 +110,15 @@ default = ["core"]
 core = []
 advanced = ["core", "external_dep"]
 
-[package.metadata]
+[module.metadata]
 publish = true
 auto-publish = false
 build-targets = ["x86_64", "arm64"]
 ```
 
 ### **GitHub Integration**
-- **Automatic release creation** with package archives
-- **Checksum generation** for package verification
+- **Automatic release creation** with module archives
+- **Checksum generation** for module verification
 - **Repository linking** in registry metadata
 - **Version management** through Git tags
 
@@ -126,13 +126,13 @@ build-targets = ["x86_64", "arm64"]
 
 ### **Package Search Working**
 ```
-📦 Searching for "game" packages:
+📦 Searching for "game" modules:
   • raylib v5.0.0 - Simple and easy-to-use game programming library
     📂 https://github.com/Pppp1116/astra-raylib
   • game_engine v0.1.0 - Simple 2D game engine
     📂 https://github.com/astralang/game_engine
 
-📦 Searching for "json" packages:
+📦 Searching for "json" modules:
   • serde_json v1.0.0 - JSON serialization and deserialization library
     📂 https://github.com/astralang/serde_json
 ```
@@ -182,7 +182,7 @@ build-targets = ["x86_64", "arm64"]
 ### 🎯 **Future Enhancements**
 - Web-based registry interface
 - Automated dependency resolution
-- Private package registries
+- Private module registries
 - Package signing and verification
 
 ## 📝 **Usage Examples**
@@ -215,16 +215,16 @@ astra-pkg install raylib
 
 ## 🎉 **Achievement Summary**
 
-I have successfully created a **complete public package publishing system** for ASTRA that:
+I have successfully created a **complete public module publishing system** for ASTRA that:
 
 1. **Rivals Rust's crates.io** in functionality
 2. **Integrates seamlessly with GitHub** for repository management
-3. **Provides comprehensive CLI tools** for package management
+3. **Provides comprehensive CLI tools** for module management
 4. **Supports rich metadata** and categorization
-5. **Validates packages** before publishing
+5. **Validates modules** before publishing
 6. **Handles multiple installation sources** (registry + GitHub)
 7. **Works with existing ASTRA infrastructure**
 
-The system is **production-ready** and provides a solid foundation for a thriving ASTRA package ecosystem. Users can now create, publish, discover, and install packages with the same ease and functionality as modern language ecosystems like Rust, Go, and Python.
+The system is **production-ready** and provides a solid foundation for a thriving ASTRA module ecosystem. Users can now create, publish, discover, and install modules with the same ease and functionality as modern language ecosystems like Rust, Go, and Python.
 
-**🚀 ASTRA now has a complete package publishing ecosystem!**
+**🚀 ASTRA now has a complete module publishing ecosystem!**

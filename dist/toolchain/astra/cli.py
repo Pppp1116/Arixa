@@ -16,7 +16,7 @@ def cmd_build(a):
     """Handle the `astra build` subcommand.
     
     Parameters:
-        a: Input value used by this routine.
+        a: Input value used by this function.
     
     Returns:
         None. May raise `SystemExit` for CLI exit handling.
@@ -41,7 +41,7 @@ def cmd_check(a):
     """Handle the `astra check` subcommand.
     
     Parameters:
-        a: Input value used by this routine.
+        a: Input value used by this function.
     
     Returns:
         None. May raise `SystemExit` for CLI exit handling.
@@ -97,7 +97,7 @@ def cmd_run(a):
     """Handle the `astra run` subcommand.
     
     Parameters:
-        a: Input value used by this routine.
+        a: Input value used by this function.
     
     Returns:
         None. May raise `SystemExit` for CLI exit handling.
@@ -111,7 +111,7 @@ def cmd_test(a):
     """Handle the `astra test` subcommand.
     
     Parameters:
-        a: Input value used by this routine.
+        a: Input value used by this function.
     
     Returns:
         None. May raise `SystemExit` for CLI exit handling.
@@ -130,7 +130,7 @@ def cmd_fmt(a):
     """Handle the `astra fmt` subcommand.
     
     Parameters:
-        a: Input value used by this routine.
+        a: Input value used by this function.
     
     Returns:
         None. May raise `SystemExit` for CLI exit handling.
@@ -159,7 +159,7 @@ def cmd_doc(a):
     """Handle the `astra doc` subcommand.
     
     Parameters:
-        a: Input value used by this routine.
+        a: Input value used by this function.
     
     Returns:
         None. May raise `SystemExit` for CLI exit handling.
@@ -172,7 +172,7 @@ def cmd_selfhost(a):
     """Handle the `astra selfhost` subcommand.
     
     Parameters:
-        a: Input value used by this routine.
+        a: Input value used by this function.
     
     Returns:
         None. May raise `SystemExit` for CLI exit handling.
@@ -192,7 +192,7 @@ def main(argv=None):
         argv: Optional CLI arguments passed instead of process argv.
     
     Returns:
-        Value produced by the routine, if any.
+        Value produced by the function, if any.
     """
     p = argparse.ArgumentParser()
     sp = p.add_subparsers(dest="cmd", required=True)

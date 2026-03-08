@@ -9,7 +9,7 @@ def main(argv=None):
         argv: Optional CLI arguments passed instead of process argv.
     
     Returns:
-        Value produced by the routine, if any.
+        Value produced by the function, if any.
     """
     p=argparse.ArgumentParser(); p.add_argument('script'); ns=p.parse_args(argv)
     prof=cProfile.Profile(); prof.enable(); exec(open(ns.script).read(), {'__name__':'__main__'}); prof.disable()

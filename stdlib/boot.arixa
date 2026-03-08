@@ -1,35 +1,39 @@
-/// std.boot - bootloader and system initialization utilities.
-///
-/// This module provides bootloader functionality, memory layout management, and system startup.
-/// All operations are designed for freestanding environments and bare-metal development.
-
 import std.embedded;
+
 import std.hardware;
+
 import std.memory;
 
-/// Boot modes.
 type BootMode = Int;
 
 const BOOT_MODE_NORMAL = 0;
+
 const BOOT_MODE_BOOTLOADER = 1;
+
 const BOOT_MODE_RECOVERY = 2;
+
 const BOOT_MODE_UPDATE = 3;
 
-/// Memory region types.
 type MemoryRegionType = Int;
 
 const MEM_REGION_FLASH = 0;
+
 const MEM_REGION_RAM = 1;
+
 const MEM_REGION_PERIPHERAL = 2;
+
 const MEM_REGION_EXTERNAL = 3;
 
-/// Memory protection attributes.
 type MemoryProtection = Int;
 
-const MEM_PROT_READ = 0x1;
-const MEM_PROT_WRITE = 0x2;
-const MEM_PROT_EXECUTE = 0x4;
+const MEM_PROT_READ = 1;
+
+const MEM_PROT_WRITE = 2;
+
+const MEM_PROT_EXECUTE = 4;
+
 const MEM_PROT_READ_WRITE = MEM_PROT_READ | MEM_PROT_WRITE;
+
 const MEM_PROT_READ_EXECUTE = MEM_PROT_READ | MEM_PROT_EXECUTE;
 
 /// Memory region structure.
@@ -50,7 +54,6 @@ struct VectorTable {
     memory_management_fault_handler u32,
     bus_fault_handler u32,
     usage_fault_handler u32,
-    // Additional handlers can be added as needed
 }
 
 /// Firmware metadata.
@@ -71,8 +74,6 @@ struct BootConfig {
     enable_recovery Bool,
     firmware_update_required Bool,
 }
-
-// System Initialization
 
 /// Initialize system clocks and PLL.
 fn system_clock_init() Bool {
@@ -95,21 +96,16 @@ fn system_init() Bool {
         return false;
     }
     else {}
-    
     if !memory_system_init() {
         return false;
     }
     else {}
-    
     if !external_memory_init() {
         return false;
     }
     else {}
-    
     return true;
 }
-
-// Bootloader Operations
 
 /// Check if bootloader should run.
 fn should_enter_bootloader() Bool {
@@ -144,7 +140,7 @@ fn calculate_checksum(data Vec<u8>) u32 {
     while i < vec_len(data) {
         byte = vec_get(data, i);
         if byte != none {
-            checksum += (byte as u8?) as u32;
+            checksum += byte as u8 | none as u32;
         }
         else {}
         i += 1;
@@ -153,17 +149,12 @@ fn calculate_checksum(data Vec<u8>) u32 {
 }
 
 /// Jump to application.
-fn jump_to_application(address u32) Void {
-    // Set stack pointer
+fn jump_to_application(address u32) {
     stack_pointer = __read_uint32_impl(address);
     __set_stack_pointer_impl(stack_pointer);
-    
-    // Set program counter
     reset_handler = __read_uint32_impl(address + 4);
     __jump_to_address_impl(reset_handler);
 }
-
-// Memory Layout Management
 
 /// Get memory regions from linker script.
 fn get_memory_regions() Vec<MemoryRegion> {
@@ -181,12 +172,12 @@ fn set_memory_protection(address u32, size u32, protection MemoryProtection) Boo
 }
 
 /// Initialize data section (copy from flash to RAM).
-fn init_data_section() Void {
+fn init_data_section() {
     __init_data_section_impl();
 }
 
 /// Initialize BSS section (zero-fill).
-fn init_bss_section() Void {
+fn init_bss_section() {
     __init_bss_section_impl();
 }
 
@@ -196,11 +187,9 @@ fn get_stack_pointer() u32 {
 }
 
 /// Set stack pointer.
-fn set_stack_pointer(stack_ptr u32) Void {
+fn set_stack_pointer(stack_ptr u32) {
     __set_stack_pointer_impl(stack_ptr);
 }
-
-// Vector Table Management
 
 /// Set vector table address.
 fn set_vector_table(address u32) Bool {
@@ -222,25 +211,23 @@ fn register_interrupt_handler(irq_number u8, handler u32) Bool {
     return __register_interrupt_handler_impl(irq_number, handler);
 }
 
-// Reset and Power Management
-
 /// Get reset cause.
 fn get_reset_cause() u32 {
     return __get_reset_cause_impl();
 }
 
 /// Clear reset flags.
-fn clear_reset_flags() Void {
+fn clear_reset_flags() {
     __clear_reset_flags_impl();
 }
 
 /// Perform system reset.
-fn system_reset() Void {
+fn system_reset() {
     __system_reset_impl();
 }
 
 /// Perform system reset to bootloader.
-fn reset_to_bootloader() Void {
+fn reset_to_bootloader() {
     __reset_to_bootloader_impl();
 }
 
@@ -250,11 +237,9 @@ fn set_watchdog(timeout_ms u32, enable Bool) Bool {
 }
 
 /// Feed watchdog timer.
-fn feed_watchdog() Void {
+fn feed_watchdog() {
     __feed_watchdog_impl();
 }
-
-// Firmware Management
 
 /// Read firmware metadata.
 fn read_firmware_metadata() FirmwareMetadata {
@@ -283,8 +268,6 @@ fn is_firmware_valid() Bool {
     return metadata.valid && metadata.checksum != 0;
 }
 
-// Utility Functions
-
 /// Get system tick frequency.
 fn get_system_tick_frequency() u32 {
     return __get_system_tick_frequency_impl();
@@ -301,7 +284,7 @@ fn get_peripheral_clock_frequency() u32 {
 }
 
 /// Enable/disable interrupts globally.
-fn set_interrupts_enabled(enabled Bool) Void {
+fn set_interrupts_enabled(enabled Bool) {
     if enabled {
         __enable_interrupts_impl();
     }
@@ -321,7 +304,7 @@ fn enter_critical_section() u32 {
 }
 
 /// Exit critical section.
-fn exit_critical_section(state u32) Void {
+fn exit_critical_section(state u32) {
     __exit_critical_section_impl(state);
 }
 
@@ -340,62 +323,96 @@ fn get_ram_size() u32 {
     return __get_ram_size_impl();
 }
 
-// Constants for common memory regions
-const FLASH_BASE = 0x08000000;
-const RAM_BASE = 0x20000000;
-const PERIPHERAL_BASE = 0x40000000;
+const FLASH_BASE = 134217728;
 
-// Common vector table offsets
-const STACK_POINTER_OFFSET = 0x00;
-const RESET_HANDLER_OFFSET = 0x04;
-const NMI_HANDLER_OFFSET = 0x08;
-const HARD_FAULT_HANDLER_OFFSET = 0x0C;
+const RAM_BASE = 536870912;
 
-// Runtime implementation functions
+const PERIPHERAL_BASE = 1073741824;
+
+const STACK_POINTER_OFFSET = 0;
+
+const RESET_HANDLER_OFFSET = 4;
+
+const NMI_HANDLER_OFFSET = 8;
+
+const HARD_FAULT_HANDLER_OFFSET = 12;
+
 extern fn __system_clock_init_impl() Bool;
+
 extern fn __memory_system_init_impl() Bool;
+
 extern fn __external_memory_init_impl() Bool;
 
 extern fn __should_enter_bootloader_impl() Bool;
+
 extern fn __bootloader_init_impl(config BootConfig) Bool;
+
 extern fn __check_firmware_update_impl() Bool;
+
 extern fn __update_firmware_impl() Bool;
 
 extern fn __read_uint32_impl(address u32) u32;
-extern fn __set_stack_pointer_impl(stack_ptr u32) Void;
-extern fn __jump_to_address_impl(address u32) Void;
+
+extern fn __set_stack_pointer_impl(stack_ptr u32);
+
+extern fn __jump_to_address_impl(address u32);
 
 extern fn __get_memory_regions_impl() Vec<MemoryRegion>;
+
 extern fn __setup_mpu_impl(regions Vec<MemoryRegion>) Bool;
+
 extern fn __set_memory_protection_impl(address u32, size u32, protection MemoryProtection) Bool;
-extern fn __init_data_section_impl() Void;
-extern fn __init_bss_section_impl() Void;
+
+extern fn __init_data_section_impl();
+
+extern fn __init_bss_section_impl();
+
 extern fn __get_stack_pointer_impl() u32;
 
 extern fn __set_vector_table_impl(address u32) Bool;
+
 extern fn __get_vector_table_impl() u32;
+
 extern fn __init_vector_table_impl(table VectorTable) Bool;
+
 extern fn __register_interrupt_handler_impl(irq_number u8, handler u32) Bool;
 
 extern fn __get_reset_cause_impl() u32;
-extern fn __clear_reset_flags_impl() Void;
-extern fn __system_reset_impl() Void;
-extern fn __reset_to_bootloader_impl() Void;
+
+extern fn __clear_reset_flags_impl();
+
+extern fn __system_reset_impl();
+
+extern fn __reset_to_bootloader_impl();
+
 extern fn __set_watchdog_impl(timeout_ms u32, enable Bool) Bool;
-extern fn __feed_watchdog_impl() Void;
+
+extern fn __feed_watchdog_impl();
 
 extern fn __read_firmware_metadata_impl() FirmwareMetadata;
+
 extern fn __write_firmware_metadata_impl(metadata FirmwareMetadata) Bool;
+
 extern fn __validate_firmware_signature_impl(firmware_data Vec<u8>, signature Vec<u8>) Bool;
 
 extern fn __get_system_tick_frequency_impl() u32;
+
 extern fn __get_cpu_clock_frequency_impl() u32;
+
 extern fn __get_peripheral_clock_frequency_impl() u32;
-extern fn __enable_interrupts_impl() Void;
-extern fn __disable_interrupts_impl() Void;
+
+extern fn __enable_interrupts_impl();
+
+extern fn __disable_interrupts_impl();
+
 extern fn __are_interrupts_enabled_impl() Bool;
+
 extern fn __enter_critical_section_impl() u32;
-extern fn __exit_critical_section_impl(state u32) Void;
+
+extern fn __exit_critical_section_impl(state u32);
+
 extern fn __get_device_id_impl() Vec<u8>;
+
 extern fn __get_flash_size_impl() u32;
+
 extern fn __get_ram_size_impl() u32;

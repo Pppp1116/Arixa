@@ -12,7 +12,7 @@ from astra.ast import (
     ContinueStmt,
     BreakStmt,
     FnDecl,
-    ForStmt,
+    IteratorForStmt,
     IfStmt,
     IndexExpr,
     LetStmt,
@@ -1100,7 +1100,7 @@ def _collect_stmt_decl_names(body: list, out: set[str]) -> None:
     for st in body:
         if isinstance(st, LetStmt):
             out.add(st.name)
-        if isinstance(st, ForStmt):
+        if isinstance(st, IteratorForStmt):
             out.add(st.var)
             _collect_stmt_decl_names(st.body, out)
         elif isinstance(st, IfStmt):
@@ -1196,7 +1196,7 @@ def _nested_blocks(st) -> list[list]:
         return [st.then_body, st.else_body]
     if isinstance(st, WhileStmt):
         return [st.body]
-    if isinstance(st, ForStmt):
+    if isinstance(st, IteratorForStmt):
         return [st.body]
     if isinstance(st, MatchStmt):
         return [arm for _, arm in st.arms]
@@ -1414,9 +1414,9 @@ def _performance_warnings(body: list, filename: str, source_text: str) -> list[D
     def detect_2d_iteration_pattern(stmts: list) -> None:
         """Detect suboptimal 2D array iteration patterns."""
         for i, st in enumerate(stmts):
-            if isinstance(st, ForStmt) and i + 1 < len(stmts):
+            if isinstance(st, IteratorForStmt) and i + 1 < len(stmts):
                 next_st = stmts[i + 1]
-                if isinstance(next_st, ForStmt):
+                if isinstance(next_st, IteratorForStmt):
                     # Check for nested for loops that might be accessing 2D arrays
                     # This is a simplified detection - a full implementation would need
                     # more sophisticated analysis of array access patterns
@@ -1432,7 +1432,7 @@ def _performance_warnings(body: list, filename: str, source_text: str) -> list[D
     
     def walk(stmts: list) -> None:
         for st in stmts:
-            if isinstance(st, ForStmt):
+            if isinstance(st, IteratorForStmt):
                 detect_2d_iteration_pattern(st.body)
             
             for nested in _nested_blocks(st):

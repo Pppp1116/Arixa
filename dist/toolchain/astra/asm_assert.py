@@ -35,9 +35,9 @@ def assert_valid_llvm_ir(ir_text: str, *, triple: str | None = None, workdir: Pa
     """Assert that generated LLVM IR parses and verifies successfully.
     
     Parameters:
-        ir_text: Input value used by this routine.
-        triple: Input value used by this routine.
-        workdir: Input value used by this routine.
+        ir_text: Input value used by this function.
+        triple: Input value used by this function.
+        workdir: Input value used by this function.
     
     Returns:
         Value described by the function return annotation.

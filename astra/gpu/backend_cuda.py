@@ -193,8 +193,9 @@ def _numpy_dtype(type_name: str):
     mapping = {
         "Bool": np.bool_,
         "Float": np.float64,
-        "f64": np.float64,
+        "f16": np.float16,
         "f32": np.float32,
+        "f64": np.float64,
         "Int": np.int64,
         "isize": np.int64,
         "usize": np.uint64,

@@ -1,10 +1,11 @@
 import "raylib";
 
-fn main() i32{
+fn main() i32 {
     w = GetScreenWidth();
     h = GetScreenHeight();
-    if w < 0i32 || h < 0i32 {
-        return 1i32;
+    if w < 0 as i32 || h < 0 as i32 {
+        return 1 as i32;
     }
-    return 0i32;
+    else {}
+    return 0 as i32;
 }

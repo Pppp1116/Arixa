@@ -1,0 +1,402 @@
+// This file demonstrates various error types and their enhanced error messages
+
+// === SYNTAX ERRORS ===
+
+// PARSE001: Missing semicolon
+fn syntax_error_001() -> Int {
+    let x = 42  // Missing semicolon here
+    return x
+}
+
+// PARSE002: Mismatched brackets
+fn syntax_error_002() -> Int {
+    let arr = [1, 2, 3  // Missing closing bracket
+    return arr[0]
+}
+
+// PARSE003: Invalid token in function parameter
+fn syntax_error_003(x: Int, -> Int {  // Missing parameter name
+    return x
+}
+
+// PARSE004: Expected identifier after 'let'
+fn syntax_error_004() -> Int {
+    let = 42;  // Missing variable name
+    return 42
+}
+
+// PARSE005: Invalid function signature
+fn syntax_error_005 -> Int {  // Missing function name
+    return 42
+}
+
+// === SEMANTIC ERRORS ===
+
+// SEM101: Undefined variable
+fn semantic_error_101() -> Int {
+    return undefined_variable;  // Variable not defined
+}
+
+// SEM102: Type mismatch
+fn semantic_error_102() -> Int {
+    let x: Int = "hello";  // String assigned to Int
+    return x;
+}
+
+// SEM103: Duplicate definition
+fn semantic_error_103() -> Int {
+    let x = 42;
+    let x = 24;  // Duplicate variable name
+    return x;
+}
+
+// SEM104: Invalid operation
+fn semantic_error_104() -> Int {
+    let x = 42;
+    let y = x + "hello";  // Cannot add Int and String
+    return y;
+}
+
+// SEM200: Borrow checker error
+fn semantic_error_200() -> Int {
+    let x = 42;
+    let r1 = &x;
+    let r2 = &mut x;  // Cannot borrow mutably while already borrowed
+    return *r2;
+}
+
+// SEM201: Ownership error
+fn semantic_error_201() -> Int {
+    let x = 42;
+    let y = x;  // x is moved
+    return x;  // Use after move
+}
+
+// SEM202: Mutability conflict
+fn semantic_error_202() -> Int {
+    let x = 42;  // Immutable
+    let r = &mut x;  // Cannot create mutable reference to immutable
+    return *r;
+}
+
+// SEM203: Use after free
+fn semantic_error_203() -> Int {
+    let x = alloc_int(42);
+    free_int(x);
+    return *x;  // Use after free
+}
+
+// SEM204: Lifetime error
+fn semantic_error_204() -> Int {
+    let r;
+    {
+        let x = 42;
+        r = &x;  // x doesn't live long enough
+    }
+    return *r;
+}
+
+// === TYPE ERRORS ===
+
+// SEM300: Invalid type annotation
+fn type_error_300() -> Int {
+    let x: InvalidType = 42;  // Invalid type name
+    return x;
+}
+
+// SEM301: Generic constraint violation
+fn type_error_301<T>(x: T) -> T where T: Display {
+    return x;  // T doesn't implement Display
+}
+
+// SEM302: Trait method not found
+fn type_error_302() -> String {
+    let x = 42;
+    return x.display();  // Int doesn't have display method
+}
+
+// SEM303: Recursive type without indirection
+fn type_error_303() -> Void {
+    struct Node {
+        value: Int,
+        next: Node,  // Recursive without Box or pointer
+    }
+}
+
+// === FUNCTION ERRORS ===
+
+// SEM400: Function parameter count mismatch
+fn function_error_400() -> Int {
+    return add_numbers(1, 2, 3);  // Function expects 2 arguments
+}
+
+// SEM401: Wrong function parameter types
+fn function_error_401() -> Int {
+    return add_numbers("hello", "world");  // Expects Int arguments
+}
+
+// SEM402: Missing return statement
+fn function_error_402() -> Int {  // Declares Int return but doesn't return
+    let x = 42;
+}
+
+// SEM403: Return type mismatch
+fn function_error_403() -> Int {
+    return "hello";  // Returns String instead of Int
+}
+
+// === MODULE ERRORS ===
+
+// SEM500: Invalid import
+fn module_error_500() -> Int {
+    import non_existent_module;  // Module doesn't exist
+    return 42;
+}
+
+// SEM501: Circular import
+// File: module_a.arixa
+import module_b;
+
+// File: module_b.arixa  
+import module_a;  // Circular import
+
+// SEM502: Private member access
+fn module_error_502() -> Int {
+    return some_module.private_function();  // Can't access private
+}
+
+// === CONTROL FLOW ERRORS ===
+
+// SEM600: Break outside loop
+fn control_flow_error_600() -> Int {
+    break;  // Not in a loop
+    return 42;
+}
+
+// SEM601: Continue outside loop
+fn control_flow_error_601() -> Int {
+    continue;  // Not in a loop
+    return 42;
+}
+
+// SEM602: Return in wrong context
+fn control_flow_error_602() -> Int {
+    if true {
+        return 42;
+    } else {
+        return "hello";  // Type mismatch in return
+    }
+}
+
+// === PATTERN MATCHING ERRORS ===
+
+// SEM700: Non-exhaustive patterns
+fn pattern_error_700(x: Int) -> String {
+    match x {
+        1 => "one",
+        2 => "two"
+        // Missing case for other values
+    }
+}
+
+// SEM701: Unreachable pattern
+fn pattern_error_701(x: Int) -> String {
+    match x {
+        1 => "one",
+        2 => "two", 
+        _ => "other",  // This pattern makes all previous ones unreachable
+        3 => "three"  // Unreachable
+    }
+}
+
+// SEM702: Type mismatch in pattern
+fn pattern_error_702(x: Int | String) -> String {
+    match x {
+        s: String => s,
+        42 => "the answer",  // Int pattern after String pattern
+        i: Int => i.to_string()
+    }
+}
+
+// === ASYNC/AWAIT ERRORS ===
+
+// SEM800: Await outside async function
+fn async_error_800() -> Int {
+    let future = async_function();
+    return await future;  // Not in async function
+}
+
+// SEM801: Async function in wrong context
+fn async_error_801() -> Int {
+    async fn inner() -> Int {
+        return 42;
+    }
+    return inner();  // Cannot call async function synchronously
+}
+
+// SEM802: Wrong await usage
+fn async_error_802() async -> Int {
+    let x = 42;
+    return await x;  // Can't await non-async value
+}
+
+// === GPU ERRORS ===
+
+// SEM900: GPU function with unsupported operations
+fn gpu_error_900() -> Int {
+    gpu kernel unsupported_op() {
+        let x = 42;
+        println!("hello");  // I/O not supported in GPU kernels
+        return x;
+    }
+    return 0;
+}
+
+// SEM901: GPU function with wrong signature
+fn gpu_error_901() -> String {
+    gpu kernel wrong_signature() -> String {  // GPU kernels must return Int or Void
+        return "hello";
+    }
+    return "done";
+}
+
+// === MEMORY SAFETY ERRORS ===
+
+// SEM1000: Null pointer dereference
+fn memory_error_1000() -> Int {
+    let ptr: Int* = null;
+    return *ptr;  // Dereferencing null pointer
+}
+
+// SEM1001: Buffer overflow
+fn memory_error_1001() -> Int {
+    let arr = [1, 2, 3];
+    return arr[10];  // Out of bounds access
+}
+
+// SEM1002: Double free
+fn memory_error_1002() -> Int {
+    let ptr = alloc_int(42);
+    free_int(ptr);
+    free_int(ptr);  // Double free
+    return 0;
+}
+
+// === COMPILER INTERNAL ERRORS ===
+
+// These would be triggered by edge cases or bugs in the compiler
+// Users typically wouldn't write code to trigger these intentionally
+
+// === WARNING EXAMPLES ===
+
+// WARN001: Unused variable
+fn warning_example_001() -> Int {
+    let unused = 42;  // Variable declared but never used
+    return 42;
+}
+
+// WARN002: Dead code
+fn warning_example_002() -> Int {
+    return 42;
+    let x = 24;  // Unreachable code
+    return x;
+}
+
+// WARN003: Unnecessary cast
+fn warning_example_003() -> Int {
+    let x: Int = 42;
+    return x as Int;  // Unnecessary type cast
+}
+
+// Helper functions for the examples
+fn add_numbers(a: Int, b: Int) -> Int {
+    return a + b;
+}
+
+fn async_function() async -> Int {
+    return 42;
+}
+
+fn alloc_int(value: Int) -> Int* {
+    // Mock allocation
+    return &value;
+}
+
+fn free_int(ptr: Int*) -> Void {
+    // Mock deallocation
+}
+
+trait Display {
+    fn display(self) -> String;
+}
+
+// Main function to trigger all errors (commented out to avoid actual compilation errors)
+/*
+fn main() -> Int {
+    // Uncomment each function to see different error messages
+    
+    // Syntax errors
+    syntax_error_001();
+    syntax_error_002();
+    syntax_error_003();
+    syntax_error_004();
+    syntax_error_005();
+    
+    // Semantic errors
+    semantic_error_101();
+    semantic_error_102();
+    semantic_error_103();
+    semantic_error_104();
+    semantic_error_200();
+    semantic_error_201();
+    semantic_error_202();
+    semantic_error_203();
+    semantic_error_204();
+    
+    // Type errors
+    type_error_300();
+    type_error_301();
+    type_error_302();
+    type_error_303();
+    
+    // Function errors
+    function_error_400();
+    function_error_401();
+    function_error_402();
+    function_error_403();
+    
+    // Module errors
+    module_error_500();
+    
+    // Control flow errors
+    control_flow_error_600();
+    control_flow_error_601();
+    control_flow_error_602();
+    
+    // Pattern matching errors
+    pattern_error_700();
+    pattern_error_701();
+    pattern_error_702();
+    
+    // Async/await errors
+    async_error_800();
+    async_error_801();
+    async_error_802();
+    
+    // GPU errors
+    gpu_error_900();
+    gpu_error_901();
+    
+    // Memory safety errors
+    memory_error_1000();
+    memory_error_1001();
+    memory_error_1002();
+    
+    // Warnings
+    warning_example_001();
+    warning_example_002();
+    warning_example_003();
+    
+    return 0;
+}
+*/

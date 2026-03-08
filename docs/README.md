@@ -1,4 +1,4 @@
-# Astra Documentation Index
+# ASTRA Documentation Index
 
 ## Getting Started
 - [Installation & Quick Start](development/getting-started.md)
@@ -7,14 +7,17 @@
 ## Language Reference
 - [Language Specification](language/specification.md) - Complete language definition
 - [Language Tour](language/tour.md) - Interactive tutorial with examples
-- [Syntax Guide](language/syntax.md)
-- [Type System](language/types.md)
+- [Syntax Guide](language/syntax.md) - Current syntax and usage
+- [Type System](language/types.md) - Type system and conversions
+- [Functions](language/functions.md) - Function definitions and calls
 - [Memory Model](language/memory_model.md)
-- [Control Flow](language/control_flow.md)
+- [Control Flow](language/control_flow.md) - Updated iterator-style loops
 - [Modules](language/modules.md)
 - [Pattern Matching](language/pattern_matching.md)
+- [Generics](language/generics.md)
+- [Enums](language/enums.md)
 - [Unsafe Code](language/unsafe.md)
-- [GPU Computing](language/gpu_compute.md)
+- [Freestanding vs Hosted](language/freestanding_vs_hosted.md)
 
 ## Compiler Internals
 - [Architecture Overview](compiler/architecture.md)
@@ -48,6 +51,15 @@
 - [Formatter](tools/formatter.md)
 - [Language Server](tools/lsp.md)
 - [Debugger](tools/debugger.md)
+- [Profiler](tools/profiler.md)
+- [Package Manager](tools/package_manager.md)
+
+## Analysis & Reports
+- [Error Reporting](error_reporting.md)
+- [Performance Analysis](performance-analysis.md)
+- [Safety Analysis](safety-analysis.md)
+- [Test Suite](test_suite.md)
+- [Design Rationale](design-rationale.md)
 
 ## Reference
 - [Standard Library](stdlib/README.md)

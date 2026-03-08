@@ -1,11 +1,7 @@
-/// std.math - small numeric helpers.
-///
-/// These utilities are pure and valid in both hosted and freestanding modes.
-
 import std.algorithm;
 
 /// Return the smaller of two integers.
-fn min_int(a Int, b Int) Int{
+fn min_int(a Int, b Int) Int {
     if a < b {
         return a;
     }
@@ -14,7 +10,7 @@ fn min_int(a Int, b Int) Int{
 }
 
 /// Return the larger of two integers.
-fn max_int(a Int, b Int) Int{
+fn max_int(a Int, b Int) Int {
     if a > b {
         return a;
     }
@@ -23,7 +19,7 @@ fn max_int(a Int, b Int) Int{
 }
 
 /// Clamp `x` into the inclusive range `[lo, hi]`.
-fn clamp_int(x Int, lo Int, hi Int) Int{
+fn clamp_int(x Int, lo Int, hi Int) Int {
     if x < lo {
         return lo;
     }
@@ -36,7 +32,7 @@ fn clamp_int(x Int, lo Int, hi Int) Int{
 }
 
 /// Return absolute value of `x`.
-fn abs_int(x Int) Int{
+fn abs_int(x Int) Int {
     if x < 0 {
         return -x;
     }
@@ -47,7 +43,7 @@ fn abs_int(x Int) Int{
 /// Return `x` raised to the power of `n` (integer exponent).
 /// 
 /// Returns `none` on overflow or invalid exponent.
-fn pow_int(base Int, exp Int) Int? {
+fn pow_int(base Int, exp Int) Int | none {
     if exp < 0 {
         return none;
     }
@@ -60,11 +56,9 @@ fn pow_int(base Int, exp Int) Int? {
         return none;
     }
     else {}
-    
     mut result = 1;
     mut current = base;
     mut remaining = exp;
-    
     while remaining > 0 {
         if remaining % 2 == 1 {
             result = result * current;
@@ -73,6 +67,7 @@ fn pow_int(base Int, exp Int) Int? {
             }
             else {}
         }
+        else {}
         current = current * current;
         if current / base != current {
             return none;
@@ -80,7 +75,6 @@ fn pow_int(base Int, exp Int) Int? {
         else {}
         remaining = remaining / 2;
     }
-    
     return result;
 }
 
@@ -106,8 +100,6 @@ fn sign_int(x Int) Int {
     else {}
     return 0;
 }
-
-// Float operations
 
 /// Return the smaller of two floats.
 fn min_float(a Float, b Float) Float {
@@ -151,7 +143,7 @@ fn abs_float(x Float) Float {
 
 /// Return square root of `x`.
 /// Returns `none` if `x` is negative.
-fn sqrt(x Float) Float? {
+fn sqrt(x Float) Float | none {
     if x < 0.0 {
         return none;
     }
@@ -166,7 +158,7 @@ fn pow(x Float, y Float) Float {
 
 /// Return natural logarithm of `x`.
 /// Returns `none` if `x` <= 0.
-fn log(x Float) Float? {
+fn log(x Float) Float | none {
     if x <= 0.0 {
         return none;
     }
@@ -176,7 +168,7 @@ fn log(x Float) Float? {
 
 /// Return base-10 logarithm of `x`.
 /// Returns `none` if `x` <= 0.
-fn log10(x Float) Float? {
+fn log10(x Float) Float | none {
     if x <= 0.0 {
         return none;
     }
@@ -204,8 +196,6 @@ fn ceil(x Float) Int {
     return __ceil_impl(x);
 }
 
-// Trigonometric functions
-
 /// Return sine of `x` (in radians).
 fn sin(x Float) Float {
     return __sin_impl(x);
@@ -223,7 +213,7 @@ fn tan(x Float) Float {
 
 /// Return arcsine of `x` (in radians).
 /// Returns `none` if `x` is outside [-1, 1].
-fn asin(x Float) Float? {
+fn asin(x Float) Float | none {
     if x < -1.0 || x > 1.0 {
         return none;
     }
@@ -233,7 +223,7 @@ fn asin(x Float) Float? {
 
 /// Return arccosine of `x` (in radians).
 /// Returns `none` if `x` is outside [-1, 1].
-fn acos(x Float) Float? {
+fn acos(x Float) Float | none {
     if x < -1.0 || x > 1.0 {
         return none;
     }
@@ -251,8 +241,6 @@ fn atan2(y Float, x Float) Float {
     return __atan2_impl(y, x);
 }
 
-// Hyperbolic functions
-
 /// Return hyperbolic sine of `x`.
 fn sinh(x Float) Float {
     return __sinh_impl(x);
@@ -268,72 +256,60 @@ fn tanh(x Float) Float {
     return __tanh_impl(x);
 }
 
-// Statistical functions
-
 /// Calculate mean of integer array.
 /// Returns `none` if array is empty.
-fn mean_int(data &Vec<Int>) Float? {
+fn mean_int(data &Vec<Int>) Float | none {
     n = vec_len(*data);
     if n == 0 {
         return none;
     }
     else {}
-    
     mut sum = 0;
     mut i = 0;
     while i < n {
         val = vec_get(*data, i);
         if val != none {
-            sum += (val as Int);
+            sum += val as Int;
         }
         else {}
         i += 1;
     }
-    
     return sum as Float / n as Float;
 }
 
 /// Calculate median of integer array.
 /// Returns `none` if array is empty.
-fn median_int(data Vec<Int>) Float? {
+fn median_int(data Vec<Int>) Float | none {
     n = vec_len(data);
     if n == 0 {
         return none;
     }
     else {}
-    
-    // Create a copy and sort it
     sorted = vec_new() as Vec<Int>;
     mut i = 0;
     while i < n {
         val = vec_get(data, i);
         if val != none {
-            vec_push(sorted, (val as Int));
+            vec_push(sorted, val as Int);
         }
         else {}
         i += 1;
     }
-    
-    // Sort the array (using a simple bubble sort for now)
     bubble_sort_int(&sorted);
-    
     if n % 2 == 1 {
-        // Odd number of elements
         mid_val = vec_get(sorted, n / 2);
         if mid_val != none {
-            return (mid_val as Int?) as Float;
+            return mid_val as Int | none as Float;
         }
         else {
             return none;
         }
     }
     else {
-        // Even number of elements
         val1 = vec_get(sorted, n / 2 - 1);
         val2 = vec_get(sorted, n / 2);
-        
         if val1 != none && val2 != none {
-            return ((val1 as Int) + (val2 as Int)) as Float / 2.0;
+            return (val1 as Int + val2 as Int) as Float / 2.0;
         }
         else {
             return none;
@@ -343,47 +319,37 @@ fn median_int(data Vec<Int>) Float? {
 
 /// Calculate standard deviation of integer array.
 /// Returns `none` if array is empty.
-fn std_dev_int(data Vec<Int>) Float? {
+fn std_dev_int(data Vec<Int>) Float | none {
     mean = mean_int(&data);
     if mean == none {
         return none;
     }
     else {}
-    
     n = vec_len(data);
     if n == 0 {
         return none;
     }
     else {}
-    
     mut sum_sq_diff = 0.0;
     mut i = 0;
     while i < n {
         val = vec_get(data, i);
         if val != none {
-            diff = (val as Int) as Float - (mean as Float);
+            diff = val as Int as Float - mean as Float;
             sum_sq_diff += diff * diff;
         }
         else {}
         i += 1;
     }
-    
     variance = sum_sq_diff / n as Float;
     return sqrt(variance);
 }
 
-// Constants
+const PI = 3.141592653589793;
 
-/// Mathematical constant π.
-const PI = 3.14159265358979323846;
+const E = 2.718281828459045;
 
-/// Mathematical constant e.
-const E = 2.71828182845904523536;
-
-/// Golden ratio φ.
-const GOLDEN_RATIO = 1.61803398874989484820;
-
-// Utility functions
+const GOLDEN_RATIO = 1.618033988749895;
 
 /// Convert degrees to radians.
 fn degrees_to_radians(degrees Float) Float {
@@ -405,22 +371,38 @@ fn lerp(a Float, b Float, t Float) Float {
     return a + t * (b - a);
 }
 
-// Runtime implementation functions
 extern fn __sqrt_impl(x Float) Float;
+
 extern fn __pow_impl(x Float, y Float) Float;
+
 extern fn __log_impl(x Float) Float;
+
 extern fn __log10_impl(x Float) Float;
+
 extern fn __exp_impl(x Float) Float;
+
 extern fn __round_impl(x Float) Int;
+
 extern fn __floor_impl(x Float) Int;
+
 extern fn __ceil_impl(x Float) Int;
+
 extern fn __sin_impl(x Float) Float;
+
 extern fn __cos_impl(x Float) Float;
+
 extern fn __tan_impl(x Float) Float;
+
 extern fn __asin_impl(x Float) Float;
+
 extern fn __acos_impl(x Float) Float;
+
 extern fn __atan_impl(x Float) Float;
+
 extern fn __atan2_impl(y Float, x Float) Float;
+
 extern fn __sinh_impl(x Float) Float;
+
 extern fn __cosh_impl(x Float) Float;
+
 extern fn __tanh_impl(x Float) Float;

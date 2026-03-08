@@ -9,12 +9,12 @@ def spawn(fn, *args, **kwargs):
     """Schedule work on the runtime thread pool and return a future handle.
     
     Parameters:
-        fn: Input value used by this routine.
+        fn: Input value used by this function.
         *args: Additional positional arguments.
         **kwargs: Additional keyword arguments.
     
     Returns:
-        Value produced by the routine, if any.
+        Value produced by the function, if any.
     """
     return _pool.submit(fn, *args, **kwargs)
 
@@ -22,7 +22,7 @@ async def run_async(awaitable):
     """Await and return the result of an awaitable object.
     
     Parameters:
-        awaitable: Input value used by this routine.
+        awaitable: Input value used by this function.
     
     Returns:
         Awaited result produced by the coroutine.
@@ -36,6 +36,6 @@ def shutdown():
         none
     
     Returns:
-        Value produced by the routine, if any.
+        Value produced by the function, if any.
     """
     _pool.shutdown(wait=True)

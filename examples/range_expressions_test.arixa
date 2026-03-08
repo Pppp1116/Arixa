@@ -1,0 +1,253 @@
+// Test 1: Basic range expressions
+fn test_basic_ranges() Int {
+    // Exclusive range
+    range1 = 1..10;
+    print("Exclusive range: 1..10");
+    
+    // Inclusive range
+    range2 = 1..=10;
+    print("Inclusive range: 1..=10");
+    
+    // Negative ranges
+    range3 = -10..-1;
+    print("Negative range: -10..-1");
+    
+    range4 = -5..=5;
+    print("Negative to positive inclusive: -5..=5");
+    
+    // Single element ranges
+    range5 = 5..5;
+    print("Single element exclusive: 5..5");
+    
+    range6 = 5..=5;
+    print("Single element inclusive: 5..=5");
+    
+    return 0;
+}
+
+// Test 2: Range expressions in for loops
+fn test_range_for_loops() Int {
+    print("Testing range for loops:");
+    
+    // Exclusive range loop
+    print("Exclusive 0..5:";
+    for i in 0..5 {
+        print("  " + to_string_int(i));
+    }
+    
+    // Inclusive range loop
+    print("Inclusive 0..=4:";
+    for i in 0..=4 {
+        print("  " + to_string_int(i));
+    }
+    
+    // Negative range loop
+    print("Negative -3..=3:";
+    for i in -3..=3 {
+        print("  " + to_string_int(i));
+    }
+    
+    return 0;
+}
+
+// Test 3: Range expressions with variables
+fn test_range_with_variables() Int {
+    start = 10;
+    end = 20;
+    
+    range1 = start..end;
+    print("Variable range: " + to_string_int(start) + ".." + to_string_int(end));
+    
+    range2 = start..=end;
+    print("Variable inclusive range: " + to_string_int(start) + "..=" + to_string_int(end));
+    
+    // Dynamic ranges
+    x = 5;
+    for i in x..(x + 5) {
+        print("Dynamic range: " + to_string_int(i));
+    }
+    
+    return 0;
+}
+
+// Test 4: Range expressions in function calls
+fn process_range(r: Range[Int]) Int {
+    print("Processing range");
+    return 0;
+}
+
+fn test_range_function_calls() Int {
+    range1 = 1..100;
+    range2 = 50..=150;
+    
+    process_range(range1);
+    process_range(range2);
+    
+    return 0;
+}
+
+// Test 5: Range expressions with different integer types
+fn test_range_types() Int {
+    // Test with different integer types
+    small_range = 1i8..10i8;
+    print("Int8 range");
+    
+    large_range = 1000i64..2000i64;
+    print("Int64 range");
+    
+    // Mixed types (should be coerced)
+    mixed_range = 1..1000i32;
+    print("Mixed range");
+    
+    return 0;
+}
+
+// Test 6: Range expressions in pattern matching
+fn test_range_patterns() Int {
+    value = 42;
+    
+    match value {
+        0..=10 => print("Small number"),
+        11..=50 => print("Medium number"),
+        51..=100 => print("Large number"),
+        _ => print("Very large number"),
+    }
+    
+    return 0;
+}
+
+// Test 7: Complex range expressions
+fn test_complex_ranges() Int {
+    // Nested ranges
+    outer_start = 10;
+    outer_end = 20;
+    
+    for i in outer_start..outer_end {
+        inner_range = i..=(i + 5);
+        print("Outer " + to_string_int(i) + " with inner range");
+        
+        for j in i..=(i + 2) {
+            print("  Inner " + to_string_int(j));
+        }
+    }
+    
+    // Range arithmetic
+    base = 100;
+    offset = 50;
+    
+    complex_range = (base - offset)..(base + offset);
+    print("Complex range: " + to_string_int(base - offset) + ".." + to_string_int(base + offset));
+    
+    return 0;
+}
+
+// Test 8: Range expressions with boolean logic
+fn test_range_logic() Int {
+    x = 15;
+    y = 25;
+    
+    // Range comparisons
+    in_range = (x >= 10) and (x <= 20);
+    print("x in 10..20: " + to_string_int(if in_range { 1 } else { 0 }));
+    
+    in_inclusive_range = (y >= 20) and (y <= 30);
+    print("y in 20..=30: " + to_string_int(if in_inclusive_range { 1 } else { 0 }));
+    
+    return 0;
+}
+
+// Test 9: Range edge cases
+fn test_range_edge_cases() Int {
+    // Empty ranges
+    empty_range1 = 10..5;
+    print("Empty range 10..5");
+    
+    empty_range2 = 5..=4;
+    print("Empty range 5..=4");
+    
+    // Single element ranges
+    single1 = 5..6;
+    print("Single element 5..6");
+    
+    single2 = 5..=5;
+    print("Single element 5..=5");
+    
+    // Large ranges
+    large_range = 0..1000000;
+    print("Large range 0..1000000");
+    
+    return 0;
+}
+
+// Test 10: Range expressions in expressions
+fn test_range_expressions() Int {
+    // Range in assignment
+    my_range = 1..=100;
+    print("Assigned range");
+    
+    // Range in return (simplified)
+    result = if true { 5..=10 } else { 20..=30 };
+    print("Conditional range");
+    
+    // Range in array indexing (conceptual)
+    data = [1, 2, 3, 4, 5];
+    index_range = 1..=3;
+    print("Index range");
+    
+    return 0;
+}
+
+// Test 11: Range validation
+fn test_range_validation() Int {
+    // These should work
+    valid1 = 1..10;
+    valid2 = 1..=10;
+    valid3 = -10..10;
+    valid4 = 0..=0;
+    
+    print("All valid ranges created successfully");
+    
+    return 0;
+}
+
+// Test 12: Range iteration with step (conceptual)
+fn test_range_iteration() Int {
+    print("Range iteration tests:");
+    
+    // Standard iteration
+    for i in 1..5 {
+        print("  Forward: " + to_string_int(i));
+    }
+    
+    // Inclusive iteration
+    for i in 1..=5 {
+        print("  Inclusive: " + to_string_int(i));
+    }
+    
+    // Negative iteration
+    for i in -3..=3 {
+        print("  Negative: " + to_string_int(i));
+    }
+    
+    return 0;
+}
+
+fn main() Int {
+    print("Testing range expressions...");
+    
+    test_basic_ranges();
+    test_range_for_loops();
+    test_range_with_variables();
+    test_range_function_calls();
+    test_range_types();
+    test_range_patterns();
+    test_complex_ranges();
+    test_range_logic();
+    test_range_edge_cases();
+    test_range_expressions();
+    test_range_validation();
+    test_range_iteration();
+    
+    print("All range expression tests completed!");
+    return 0;
+}

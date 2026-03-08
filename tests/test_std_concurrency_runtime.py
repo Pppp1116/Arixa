@@ -6,11 +6,11 @@ def test_std_thread_and_atomic_runtime(tmp_path) -> None:
 import "thread";
 import "atomic";
 
-fn worker() Int{
+fn fn worker() Int{() Int {
   return 41;
 }
 
-fn main() Int{
+fn main() Int {
   tid = spawn0(worker);
   out: Int = join_task(tid) as Int;
   mut a = atomic_int_new(1);
@@ -32,7 +32,7 @@ def test_std_channel_runtime(tmp_path) -> None:
     src = '''
 import "channel";
 
-fn main() Int{
+fn main() Int {
   mut ch = channel_new();
   rc = channel_send(&mut ch, 7);
   if rc != 0 {
@@ -62,7 +62,7 @@ fn worker(ms Int) Int{
   return 7;
 }
 
-fn main() Int{
+fn main() Int {
   t0 = monotonic_ms();
   tid = spawn1(worker, 200);
   t1 = monotonic_ms();
