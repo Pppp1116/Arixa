@@ -4,13 +4,13 @@
 
 // PARSE001: Missing semicolon
 fn syntax_error_001() -> Int {
-    let x = 42  // Missing semicolon here
+    x = 42  // Missing semicolon here
     return x
 }
 
 // PARSE002: Mismatched brackets
 fn syntax_error_002() -> Int {
-    let arr = [1, 2, 3  // Missing closing bracket
+    arr = [1, 2, 3  // Missing closing bracket
     return arr[0]
 }
 
@@ -19,9 +19,9 @@ fn syntax_error_003(x: Int, -> Int {  // Missing parameter name
     return x
 }
 
-// PARSE004: Expected identifier after 'let'
+// PARSE004: Expected identifier in binding statement
 fn syntax_error_004() -> Int {
-    let = 42;  // Missing variable name
+    = 42;  // Missing variable name
     return 42
 }
 
@@ -39,58 +39,58 @@ fn semantic_error_101() -> Int {
 
 // SEM102: Type mismatch
 fn semantic_error_102() -> Int {
-    let x: Int = "hello";  // String assigned to Int
+    x: Int = "hello";  // String assigned to Int
     return x;
 }
 
 // SEM103: Duplicate definition
 fn semantic_error_103() -> Int {
-    let x = 42;
-    let x = 24;  // Duplicate variable name
+    x = 42;
+    x = 24;  // Duplicate variable name
     return x;
 }
 
 // SEM104: Invalid operation
 fn semantic_error_104() -> Int {
-    let x = 42;
-    let y = x + "hello";  // Cannot add Int and String
+    x = 42;
+    y = x + "hello";  // Cannot add Int and String
     return y;
 }
 
 // SEM200: Borrow checker error
 fn semantic_error_200() -> Int {
-    let x = 42;
-    let r1 = &x;
-    let r2 = &mut x;  // Cannot borrow mutably while already borrowed
+    x = 42;
+    r1 = &x;
+    r2 = &mut x;  // Cannot borrow mutably while already borrowed
     return *r2;
 }
 
 // SEM201: Ownership error
 fn semantic_error_201() -> Int {
-    let x = 42;
-    let y = x;  // x is moved
+    x = 42;
+    y = x;  // x is moved
     return x;  // Use after move
 }
 
 // SEM202: Mutability conflict
 fn semantic_error_202() -> Int {
-    let x = 42;  // Immutable
-    let r = &mut x;  // Cannot create mutable reference to immutable
+    x = 42;  // Immutable
+    r = &mut x;  // Cannot create mutable reference to immutable
     return *r;
 }
 
 // SEM203: Use after free
 fn semantic_error_203() -> Int {
-    let x = alloc_int(42);
+    x = alloc_int(42);
     free_int(x);
     return *x;  // Use after free
 }
 
 // SEM204: Lifetime error
 fn semantic_error_204() -> Int {
-    let r;
+    r;
     {
-        let x = 42;
+        x = 42;
         r = &x;  // x doesn't live long enough
     }
     return *r;
@@ -100,7 +100,7 @@ fn semantic_error_204() -> Int {
 
 // SEM300: Invalid type annotation
 fn type_error_300() -> Int {
-    let x: InvalidType = 42;  // Invalid type name
+    x: InvalidType = 42;  // Invalid type name
     return x;
 }
 
@@ -111,7 +111,7 @@ fn type_error_301<T>(x: T) -> T where T: Display {
 
 // SEM302: Trait method not found
 fn type_error_302() -> String {
-    let x = 42;
+    x = 42;
     return x.display();  // Int doesn't have display method
 }
 
@@ -137,7 +137,7 @@ fn function_error_401() -> Int {
 
 // SEM402: Missing return statement
 fn function_error_402() -> Int {  // Declares Int return but doesn't return
-    let x = 42;
+    x = 42;
 }
 
 // SEM403: Return type mismatch
@@ -222,7 +222,7 @@ fn pattern_error_702(x: Int | String) -> String {
 
 // SEM800: Await outside async function
 fn async_error_800() -> Int {
-    let future = async_function();
+    future = async_function();
     return await future;  // Not in async function
 }
 
@@ -236,7 +236,7 @@ fn async_error_801() -> Int {
 
 // SEM802: Wrong await usage
 fn async_error_802() async -> Int {
-    let x = 42;
+    x = 42;
     return await x;  // Can't await non-async value
 }
 
@@ -245,7 +245,7 @@ fn async_error_802() async -> Int {
 // SEM900: GPU function with unsupported operations
 fn gpu_error_900() -> Int {
     gpu kernel unsupported_op() {
-        let x = 42;
+        x = 42;
         println!("hello");  // I/O not supported in GPU kernels
         return x;
     }
@@ -264,19 +264,19 @@ fn gpu_error_901() -> String {
 
 // SEM1000: Null pointer dereference
 fn memory_error_1000() -> Int {
-    let ptr: Int* = null;
+    ptr: Int* = null;
     return *ptr;  // Dereferencing null pointer
 }
 
 // SEM1001: Buffer overflow
 fn memory_error_1001() -> Int {
-    let arr = [1, 2, 3];
+    arr = [1, 2, 3];
     return arr[10];  // Out of bounds access
 }
 
 // SEM1002: Double free
 fn memory_error_1002() -> Int {
-    let ptr = alloc_int(42);
+    ptr = alloc_int(42);
     free_int(ptr);
     free_int(ptr);  // Double free
     return 0;
@@ -291,20 +291,20 @@ fn memory_error_1002() -> Int {
 
 // WARN001: Unused variable
 fn warning_example_001() -> Int {
-    let unused = 42;  // Variable declared but never used
+    unused = 42;  // Variable declared but never used
     return 42;
 }
 
 // WARN002: Dead code
 fn warning_example_002() -> Int {
     return 42;
-    let x = 24;  // Unreachable code
+    x = 24;  // Unreachable code
     return x;
 }
 
 // WARN003: Unnecessary cast
 fn warning_example_003() -> Int {
-    let x: Int = 42;
+    x: Int = 42;
     return x as Int;  // Unnecessary type cast
 }
 

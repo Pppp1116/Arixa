@@ -391,6 +391,8 @@ def _strip_ref(typ: Any) -> str:
         return t[5:]
     if t.startswith("&"):
         return t[1:]
+    if t.startswith("*"):
+        return t[1:]
     return t
 
 
@@ -632,8 +634,6 @@ BUILTIN_SIGS: dict[str, BuiltinSig] = {
     "chan_recv_try": BuiltinSig(["Int"], "Any?"),
     "chan_recv_blocking": BuiltinSig(["Int"], "Any"),
     "chan_close": BuiltinSig(["Int"], "Int"),
-    "alloc": BuiltinSig(["Int"], "Int"),
-    "free": BuiltinSig(["Int"], "Void"),
     "await_result": BuiltinSig(["Any"], "Any"),
     "list_new": BuiltinSig([], "Any"),
     "list_push": BuiltinSig(["Any", "Any"], "Int"),
@@ -685,7 +685,7 @@ BUILTIN_SIGS: dict[str, BuiltinSig] = {
 for _name, _sig in list(BUILTIN_SIGS.items()):
     if _name.startswith("__"):
         continue
-    if _name in {"print", "len", "read_file", "write_file", "args", "arg", "spawn", "join", "alloc", "free", "await_result"}:
+    if _name in {"print", "len", "read_file", "write_file", "args", "arg", "spawn", "join", "await_result"}:
         continue
     BUILTIN_SIGS[f"__{_name}"] = _sig
 
@@ -699,8 +699,6 @@ _FREESTANDING_FORBIDDEN_BUILTINS: set[str] = {
     "arg",
     "spawn",
     "join",
-    "alloc",
-    "free",
     "list_new",
     "list_push",
     "list_get",
@@ -794,20 +792,13 @@ def _require_freestanding_builtin_allowed(name: str, filename: str, line: int, c
 class _OwnedState:
     def __init__(self):
         self.owners: dict[str, str] = {}
-        self.allocation_sites: dict[str, tuple[str, int, int]] = {}  # name -> (filename, line, col)
         self.move_chains: dict[str, list[str]] = {}  # dst -> [src1, src2, ...] move history
 
     def copy(self):
         nxt = _OwnedState()
         nxt.owners = self.owners.copy()
-        nxt.allocation_sites = self.allocation_sites.copy()
         nxt.move_chains = {k: v.copy() for k, v in self.move_chains.items()}
         return nxt
-
-    def track_alloc(self, name: str, filename: str = "", line: int = 0, col: int = 0):
-        self.owners[name] = "alive"
-        self.allocation_sites[name] = (filename, line, col)
-        self.move_chains[name] = []
 
     def move(self, src: str, dst: str, span: Span):
         self._require_alive(src, span)
@@ -818,14 +809,6 @@ class _OwnedState:
         if dst not in self.move_chains:
             self.move_chains[dst] = []
         self.move_chains[dst].append(src)
-        
-        # Propagate allocation site info
-        if src in self.allocation_sites:
-            self.allocation_sites[dst] = self.allocation_sites[src]
-
-    def free(self, name: str, span: Span):
-        self._require_alive(name, span)
-        self.owners[name] = "freed"
 
     def invalidate(self, name: str):
         if name in self.owners and self.owners[name] == "alive":
@@ -842,10 +825,6 @@ class _OwnedState:
         if name in self.owners:
             self._require_alive(name, span)
 
-    def get_allocation_site(self, name: str) -> tuple[str, int, int] | None:
-        """Get the original allocation site for a variable."""
-        return self.allocation_sites.get(name)
-
     def get_move_history(self, name: str) -> list[str]:
         """Get the complete move history for a variable."""
         return self.move_chains.get(name, [])
@@ -861,15 +840,7 @@ class _OwnedState:
     def check_no_live_leaks(self, fn_name: str, filename: str, line: int, col: int):
         leaked = sorted(k for k, v in self.owners.items() if v == "alive")
         if leaked:
-            # Provide detailed leak information with allocation sites
-            leak_details = []
-            for var in leaked:
-                site = self.get_allocation_site(var)
-                if site:
-                    leak_details.append(f"{var} (allocated at {site[0]}:{site[1]}:{site[2]})")
-                else:
-                    leak_details.append(var)
-            raise SemanticError(_diag(filename, line, col, f"owned allocation(s) not released in {fn_name}: {', '.join(leak_details)}"))
+            raise SemanticError(_diag(filename, line, col, f"live owned value(s) not released in {fn_name}: {', '.join(leaked)}"))
 
     def merge(self, left: "_OwnedState", right: "_OwnedState"):
         merged: dict[str, str] = {}
@@ -881,18 +852,11 @@ class _OwnedState:
                 merged[k] = lv
             elif lv == "moved" or rv == "moved":
                 merged[k] = "moved"
-            elif lv == "freed" or rv == "freed":
-                merged[k] = "freed"
             else:
                 merged[k] = "alive"
         
         self.owners = merged
-        
-        # Merge allocation sites (prefer left)
-        merged_sites = left.allocation_sites.copy()
-        merged_sites.update(right.allocation_sites)
-        self.allocation_sites = merged_sites
-        
+
         # Merge move chains
         self.move_chains = {k: v.copy() for k, v in left.move_chains.items()}
         for k, v in right.move_chains.items():
@@ -903,17 +867,13 @@ class _OwnedState:
 
     def _require_alive(self, name: str, span: Span):
         st = self.owners.get(name)
-        if st == "freed":
-            raise SemanticError(_diag(span.filename, span.line, span.col, f"use-after-free of {name}"))
         if st == "moved":
             raise SemanticError(_diag(span.filename, span.line, span.col, f"use-after-move of {name}"))
 
     def _require_reassigned_before_reassign(self, name: str, span: Span):
         st = self.owners.get(name)
         if st == "alive":
-            raise SemanticError(
-                _diag(span.filename, span.line, span.col, f"reassignment would leak owned allocation in {name}; free or move it first")
-            )
+            raise SemanticError(_diag(span.filename, span.line, span.col, f"reassignment would overwrite tracked owned value {name}; move it first"))
 
 
 @dataclass
@@ -1024,30 +984,66 @@ class _BorrowState:
         self.lifetime_regions[owner].add(ref_name)
 
     def ensure_can_borrow(self, owner: str, mutable: bool, owner_mutable: bool, filename: str, line: int, col: int):
+        shared_count = self.shared_counts.get(owner, 0)
+        has_mut = owner in self.mutable_borrowed
         if mutable and not owner_mutable:
-            raise SemanticError(_diag(filename, line, col, f"cannot borrow {owner} mutably as it's not declared mutable"))
-        if mutable and owner in self.mutable_borrowed:
-            raise SemanticError(_diag(filename, line, col, f"cannot borrow {owner} mutably while it's already mutably borrowed"))
-        if mutable and self.shared_counts.get(owner, 0) > 0:
-            raise SemanticError(_diag(filename, line, col, f"cannot borrow {owner} mutably while it's already immutably borrowed"))
-        if not mutable and owner in self.mutable_borrowed:
-            raise SemanticError(_diag(filename, line, col, f"cannot borrow {owner} immutably while it's already mutably borrowed"))
+            raise SemanticError(
+                _diag(
+                    filename,
+                    line,
+                    col,
+                    f"cannot create mutable reference to `{owner}` because it is declared as immutable",
+                )
+            )
+        if mutable and has_mut:
+            raise SemanticError(
+                _diag(
+                    filename,
+                    line,
+                    col,
+                    f"cannot create mutable reference to `{owner}` because it is already mutably borrowed",
+                )
+            )
+        if mutable and shared_count > 0:
+            raise SemanticError(
+                _diag(
+                    filename,
+                    line,
+                    col,
+                    f"cannot create mutable reference to `{owner}` because it has {shared_count} active immutable reference(s)",
+                )
+            )
+        if not mutable and has_mut:
+            raise SemanticError(
+                _diag(
+                    filename,
+                    line,
+                    col,
+                    f"cannot create immutable reference to `{owner}` because it is mutably borrowed",
+                )
+            )
 
     def ensure_can_move(self, name: str, filename: str, line: int, col: int):
         if name in self.mutable_borrowed:
-            raise SemanticError(_diag(filename, line, col, f"cannot move {name} while it's mutably borrowed"))
-        if self.shared_counts.get(name, 0) > 0:
-            raise SemanticError(_diag(filename, line, col, f"cannot move {name} while it's borrowed"))
+            raise SemanticError(_diag(filename, line, col, f"cannot read from `{name}` while it is mutably borrowed"))
+        shared_count = self.shared_counts.get(name, 0)
+        if shared_count > 0:
+            raise SemanticError(
+                _diag(filename, line, col, f"cannot move `{name}` because it has {shared_count} active immutable reference(s)")
+            )
 
     def check_read(self, name: str, filename: str, line: int, col: int):
-        # Reading is always allowed, but we track the access
-        pass
+        if name in self.ref_bindings:
+            return
+        if name in self.mutable_borrowed:
+            raise SemanticError(_diag(filename, line, col, f"cannot read from `{name}` while it is mutably borrowed"))
 
     def check_write(self, name: str, filename: str, line: int, col: int):
+        shared_count = self.shared_counts.get(name, 0)
+        if shared_count > 0:
+            raise SemanticError(_diag(filename, line, col, f"cannot mutate `{name}` because it has {shared_count} active immutable reference(s)"))
         if name in self.mutable_borrowed:
-            raise SemanticError(_diag(filename, line, col, f"cannot write to {name} while it's mutably borrowed"))
-        if self.shared_counts.get(name, 0) > 0:
-            raise SemanticError(_diag(filename, line, col, f"cannot write to {name} while it's immutably borrowed"))
+            raise SemanticError(_diag(filename, line, col, f"cannot mutate `{name}` because it is mutably borrowed"))
 
     def get_borrow_site(self, ref_name: str) -> tuple[str, int, int] | None:
         """Get the site where a reference was created."""
@@ -1483,24 +1479,13 @@ def _require_type(filename: str, line: int, col: int, expected: str, actual: str
             if any(_is_int_type(t) for t in union_types if t != "none"):
                 return
     
-        # Allow safe implicit integer conversions (only for int-to-int)
+        # Integer assignments are strict: implicit conversion is only allowed
+        # from default `Int` literals/temporaries. All other int-width or
+        # signedness changes require explicit casts.
         if _is_int_type(exp) and _is_int_type(act):
-            exp_info = _int_info(exp)
-            act_info = _int_info(act)
-            if exp_info and act_info:
-                # Allow conversions from Int (default) to any integer type
-                if act == "Int":
-                    return
-                # Allow widening conversions (smaller to larger bits)
-                if exp_info[0] > act_info[0] and exp_info[1] >= act_info[1]:
-                    # Target type is wider
-                    return
-                # Allow same-width conversions with signedness change
-                if exp_info[0] == act_info[0]:
-                    return
-                # Reject narrowing conversions (larger to smaller bits) unless from Int
-                if exp_info[0] < act_info[0] and act != "Int":
-                    raise SemanticError(_diag(filename, line, col, f"cannot implicitly convert {act} to {exp}, use explicit cast"))
+            if act == "Int":
+                return
+            raise SemanticError(_diag(filename, line, col, f"cannot implicitly convert {act} to {exp}, use explicit cast"))
             
         # Handle slice type conversion (&Vec<T> to &[T])
         if (exp.startswith("&[") and act.startswith("&Vec")):
@@ -2851,6 +2836,9 @@ def analyze(
             raise SemanticError("\n".join(errors))
     finally:
         _FREESTANDING_MODE_STACK.pop()
+    setattr(prog, "_analyzed", True)
+    setattr(prog, "_analyzed_freestanding", freestanding)
+    return prog
 
 
 def _analyze_fn(
@@ -3458,8 +3446,6 @@ def _check_stmt(
         if isinstance(st.expr, Name):
             owned.assign_name(st.name, st.expr.value, Span.at(filename, st.line, st.col))
         _consume_if_move_name(st.expr, ty, borrow, move, filename, st.line, st.col)
-        if _is_alloc_call(st.expr):
-            owned.track_alloc(st.name, filename, st.line, st.col)
         return
     if isinstance(st, AssignStmt):
         rhs = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
@@ -4030,11 +4016,6 @@ def _check_stmt(
         return
     if isinstance(st, ExprStmt):
         _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
-        if _is_free_call(st.expr):
-            ptr = st.expr.args[0]
-            if not isinstance(ptr, Name):
-                raise SemanticError(_diag(filename, st.line, st.col, "free() expects a named owner"))
-            owned.free(ptr.value, Span.at(filename, st.line, st.col))
         return
     
     # Enhanced syntax semantic analysis
@@ -4089,8 +4070,6 @@ def _check_stmt(
         borrow.merge(borrow, loop_borrow)
         move.merge(move, loop_move)
         return
-    
-    # DeferStmt removed - automatic cleanup handled by ownership system
     
     raise SemanticError(_diag(filename, st.line, st.col, f"unsupported statement type: {type(st).__name__}"))
 
@@ -5031,6 +5010,22 @@ def _infer_call(
             elif len(e.args) != len(decl.params):
                 raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects {len(decl.params)} args, got {len(e.args)}"))
             type_bindings: dict[str, str] = {}
+            explicit_type_args = list(getattr(e, "type_args", []) or [])
+            if explicit_type_args:
+                decl_generics = list(getattr(decl, "generics", []))
+                if not decl_generics:
+                    raise SemanticError(_diag(filename, e.line, e.col, f"{name} does not accept explicit type arguments"))
+                if len(explicit_type_args) != len(decl_generics):
+                    raise SemanticError(
+                        _diag(
+                            filename,
+                            e.line,
+                            e.col,
+                            f"{name} expects {len(decl_generics)} type args, got {len(explicit_type_args)}",
+                        )
+                    )
+                for tv, ty in zip(decl_generics, explicit_type_args):
+                    type_bindings[tv] = _canonical_type(ty)
             for i, ((_, pty), arg) in enumerate(zip(decl.params, e.args)):
                 aty = arg_types[i]
                 if _is_typevar(pty, known_types):
@@ -5228,11 +5223,3 @@ def _infer_call(
         if not _is_ref_type(expected) and expected != "Any":
             _consume_if_move_name(arg, aty, borrow, move, filename, arg.line, arg.col)
     return ret_ty
-
-
-def _is_alloc_call(expr):
-    return isinstance(expr, Call) and isinstance(expr.fn, Name) and expr.fn.value == "alloc"
-
-
-def _is_free_call(expr):
-    return isinstance(expr, Call) and isinstance(expr.fn, Name) and expr.fn.value == "free" and len(expr.args) == 1

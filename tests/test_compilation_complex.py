@@ -22,8 +22,6 @@ fn fib(n Int) Int{
 fn main() Int {
   comptime {
     k = fib(8);
-    p = alloc(16);
-    free(p);
   }
   if norm(k) == 21 {
     return 0;
@@ -34,7 +32,6 @@ fn main() Int {
     )
     build(str(src), str(out), "py")
     code = out.read_text()
-    assert "alloc(16)" not in code
     assert "fib(8)" not in code
     cp = subprocess.run([sys.executable, str(out)], timeout=2)
     assert cp.returncode == 0

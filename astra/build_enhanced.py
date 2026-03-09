@@ -19,6 +19,35 @@ except Exception:
     import tomli as tomllib
 
 from astra import __version__ as ASTRA_VERSION
+from astra.ast import (
+    ArrayLit,
+    AssignStmt,
+    AwaitExpr,
+    Binary,
+    Call,
+    CastExpr,
+    ComptimeStmt,
+    EnumDecl,
+    ExternFnDecl,
+    ExprStmt,
+    FieldExpr,
+    FnDecl,
+    IfStmt,
+    IndexExpr,
+    LetStmt,
+    MatchStmt,
+    Name,
+    ReturnStmt,
+    StringInterpolation,
+    StructDecl,
+    StructLit,
+    TryExpr,
+    TypeAliasDecl,
+    TypeAnnotated,
+    Unary,
+    UnsafeStmt,
+    WhileStmt,
+)
 from astra.build import (
     _collect_input_files, _collect_imported_items, _expand_serde_derives,
     _dependency_native_link_data, _build_fingerprint, _resolve_overflow_mode,
@@ -207,9 +236,124 @@ class EnhancedBuildPipeline:
     
     def _remove_dead_functions(self, prog: Any):
         """Remove unused functions."""
-        # This is a placeholder for dead function elimination
-        # In a full implementation, this would build a call graph and remove unused functions
-        pass
+        fn_map: dict[str, FnDecl] = {fn.name: fn for fn in prog.items if isinstance(fn, FnDecl)}
+        if not fn_map:
+            return
+
+        roots: set[str] = set()
+        if "main" in fn_map:
+            roots.add("main")
+        if "_start" in fn_map:
+            roots.add("_start")
+        if not roots:
+            return
+
+        reachable: set[str] = set()
+        worklist = list(roots)
+        while worklist:
+            name = worklist.pop()
+            if name in reachable:
+                continue
+            fn = fn_map.get(name)
+            if fn is None:
+                continue
+            reachable.add(name)
+            refs = self._referenced_functions_in_body(fn.body, set(fn_map))
+            for ref in refs:
+                if ref not in reachable:
+                    worklist.append(ref)
+
+        prog.items = [item for item in prog.items if not isinstance(item, FnDecl) or item.name in reachable]
+
+    def _referenced_functions_in_body(self, body: list[Any], fn_names: set[str]) -> set[str]:
+        refs: set[str] = set()
+        for st in body:
+            refs.update(self._referenced_functions_in_stmt(st, fn_names))
+        return refs
+
+    def _referenced_functions_in_stmt(self, stmt: Any, fn_names: set[str]) -> set[str]:
+        refs: set[str] = set()
+        if isinstance(stmt, LetStmt):
+            refs.update(self._referenced_functions_in_expr(stmt.expr, fn_names))
+        elif isinstance(stmt, AssignStmt):
+            refs.update(self._referenced_functions_in_expr(stmt.target, fn_names))
+            refs.update(self._referenced_functions_in_expr(stmt.expr, fn_names))
+        elif isinstance(stmt, ExprStmt):
+            refs.update(self._referenced_functions_in_expr(stmt.expr, fn_names))
+        elif isinstance(stmt, ReturnStmt) and stmt.expr is not None:
+            refs.update(self._referenced_functions_in_expr(stmt.expr, fn_names))
+        elif isinstance(stmt, IfStmt):
+            refs.update(self._referenced_functions_in_expr(stmt.cond, fn_names))
+            refs.update(self._referenced_functions_in_body(stmt.then_body, fn_names))
+            refs.update(self._referenced_functions_in_body(stmt.else_body, fn_names))
+        elif isinstance(stmt, WhileStmt):
+            refs.update(self._referenced_functions_in_expr(stmt.cond, fn_names))
+            refs.update(self._referenced_functions_in_body(stmt.body, fn_names))
+        elif isinstance(stmt, MatchStmt):
+            refs.update(self._referenced_functions_in_expr(stmt.expr, fn_names))
+            for pat, arm_body in stmt.arms:
+                refs.update(self._referenced_functions_in_expr(pat, fn_names))
+                refs.update(self._referenced_functions_in_body(arm_body, fn_names))
+        elif isinstance(stmt, ComptimeStmt):
+            refs.update(self._referenced_functions_in_body(stmt.body, fn_names))
+        elif isinstance(stmt, UnsafeStmt):
+            refs.update(self._referenced_functions_in_body(stmt.body, fn_names))
+        return refs
+
+    def _referenced_functions_in_expr(self, expr: Any, fn_names: set[str]) -> set[str]:
+        refs: set[str] = set()
+        if expr is None:
+            return refs
+        if isinstance(expr, Name):
+            if expr.value in fn_names:
+                refs.add(expr.value)
+            return refs
+        if isinstance(expr, Call):
+            if isinstance(expr.fn, Name) and expr.fn.value in fn_names:
+                refs.add(expr.fn.value)
+            refs.update(self._referenced_functions_in_expr(expr.fn, fn_names))
+            for arg in expr.args:
+                refs.update(self._referenced_functions_in_expr(arg, fn_names))
+            return refs
+        if isinstance(expr, Unary):
+            refs.update(self._referenced_functions_in_expr(expr.expr, fn_names))
+            return refs
+        if isinstance(expr, Binary):
+            refs.update(self._referenced_functions_in_expr(expr.left, fn_names))
+            refs.update(self._referenced_functions_in_expr(expr.right, fn_names))
+            return refs
+        if isinstance(expr, IndexExpr):
+            refs.update(self._referenced_functions_in_expr(expr.obj, fn_names))
+            refs.update(self._referenced_functions_in_expr(expr.index, fn_names))
+            return refs
+        if isinstance(expr, FieldExpr):
+            refs.update(self._referenced_functions_in_expr(expr.obj, fn_names))
+            return refs
+        if isinstance(expr, ArrayLit):
+            for el in expr.elements:
+                refs.update(self._referenced_functions_in_expr(el, fn_names))
+            return refs
+        if isinstance(expr, StructLit):
+            for _, value in expr.fields:
+                refs.update(self._referenced_functions_in_expr(value, fn_names))
+            return refs
+        if isinstance(expr, CastExpr):
+            refs.update(self._referenced_functions_in_expr(expr.expr, fn_names))
+            return refs
+        if isinstance(expr, TypeAnnotated):
+            refs.update(self._referenced_functions_in_expr(expr.expr, fn_names))
+            return refs
+        if isinstance(expr, AwaitExpr):
+            refs.update(self._referenced_functions_in_expr(expr.expr, fn_names))
+            return refs
+        if isinstance(expr, TryExpr):
+            refs.update(self._referenced_functions_in_expr(expr.expr, fn_names))
+            return refs
+        if isinstance(expr, StringInterpolation):
+            for part_expr in expr.exprs:
+                refs.update(self._referenced_functions_in_expr(part_expr, fn_names))
+            return refs
+        return refs
     
     def _optimize_memory_layout(self, prog: Any):
         """Optimize struct layouts and memory usage."""

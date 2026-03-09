@@ -128,7 +128,7 @@ def test_for_in_over_non_copy_elements_is_rejected():
 struct Boxed { x: Int }
 fn main() Int{
   mut xs: Vec<Boxed> = vec_new() as Vec<Boxed>;
-  vec_push(xs, Boxed(1););
+  vec_push(xs, Boxed(1));
   for v in xs { return v.x; }
   return 0;
 }
@@ -320,9 +320,13 @@ def test_never_expression_statement_is_valid():
     analyze(parse(src))
 
 
-def test_defer_is_semantically_valid():
-    src = 'fn main() Int{ defer print("bye"); return 0; }'
-    analyze(parse(src))
+def test_defer_is_not_a_builtin_statement_or_function():
+    src = 'fn main() Int{ defer(print("bye")); return 0; }'
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "undefined function defer" in str(e)
 
 
 def test_match_wildcard_makes_bool_match_exhaustive():
@@ -1294,18 +1298,22 @@ def test_use_after_move_is_rejected_for_non_copy_values():
         assert "use-after-move of a" in str(e)
 
 
-def test_drop_consumes_non_copy_values():
-    src = "struct S { v Int } fn main() Int{ a = S(1); drop a; return a.v; }"
+def test_drop_is_not_a_builtin_statement_or_function():
+    src = "struct S { v Int } fn main() Int{ a = S(1); drop(a); return a.v; }"
     try:
         analyze(parse(src))
         assert False
     except SemanticError as e:
-        assert "use-after-move of a" in str(e)
+        assert "undefined function drop" in str(e)
 
 
-def test_drop_releases_alloc_owned_handle():
-    src = "fn main() Int{ p = alloc(8); drop p; return 0; }"
-    analyze(parse(src))
+def test_alloc_is_not_a_default_builtin():
+    src = "fn main() Int{ p = alloc(8); return 0; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "undefined function alloc" in str(e)
 
 
 def test_copy_values_are_usable_after_assignment():
@@ -1318,57 +1326,13 @@ def test_slice_get_returns_option_type():
     analyze(parse(src))
 
 
-def test_owned_internal_use_after_free_reports_exact_location():
-    filename = "tmp/owned_use_after_free.astra"
-    src = (
-        "fn main() Int{\n"
-        "  p = alloc(8);\n"
-        "  free(p);\n"
-        "  free(p);\n"
-        "  return 0;\n"
-        "}\n"
-    )
+def test_free_is_not_a_default_builtin():
+    src = "fn main() Int{ free(1); return 0; }"
     try:
-        analyze(parse(src, filename=filename), filename=filename)
+        analyze(parse(src))
         assert False
     except SemanticError as e:
-        assert str(e) == "SEM tmp/owned_use_after_free.astra:4:8: use-after-free of p"
-
-
-def test_owned_internal_use_after_move_reports_exact_location():
-    filename = "tmp/owned_use_after_move.astra"
-    src = (
-        "fn main() Int{\n"
-        "  p = alloc(8);\n"
-        "  q = p;\n"
-        "  r = p;\n"
-        "  return 0;\n"
-        "}\n"
-    )
-    try:
-        analyze(parse(src, filename=filename), filename=filename)
-        assert False
-    except SemanticError as e:
-        assert str(e) == "SEM tmp/owned_use_after_move.astra:4:7: use-after-move of p"
-
-
-def test_owned_internal_reassignment_leak_reports_exact_location():
-    filename = "tmp/owned_reassign_leak.astra"
-    src = (
-        "fn main() Int{\n"
-        "  mut p = alloc(8);\n"
-        "  p = alloc(16);\n"
-        "  return 0;\n"
-        "}\n"
-    )
-    try:
-        analyze(parse(src, filename=filename), filename=filename)
-        assert False
-    except SemanticError as e:
-        assert str(e) == (
-            "SEM tmp/owned_reassign_leak.astra:3:3: "
-            "reassignment would leak owned allocation in p; free or move it first"
-        )
+        assert "undefined function free" in str(e)
 
 
 def test_any_to_concrete_requires_explicit_cast():

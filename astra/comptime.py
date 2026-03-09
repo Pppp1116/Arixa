@@ -61,8 +61,6 @@ class _Evaluator:
         self.overflow_mode = overflow_mode
         self.max_steps = 100_000
         self.steps = 0
-        self.heap: dict[int, bytearray] = {}
-        self.next_ptr = 1
         self.banned = {
             "print",
             "read_file",
@@ -207,18 +205,6 @@ class _Evaluator:
             if signed and out >= (1 << (bits - 1)):
                 out -= (1 << bits)
             return out
-        if name == "alloc":
-            if len(args) != 1:
-                raise ComptimeError(_diag(self.filename, node.line, node.col, "alloc expects 1 argument"))
-            ptr = self.next_ptr
-            self.next_ptr += 1
-            self.heap[ptr] = bytearray(max(0, int(args[0])))
-            return ptr
-        if name == "free":
-            if len(args) != 1:
-                raise ComptimeError(_diag(self.filename, node.line, node.col, "free expects 1 argument"))
-            self.heap.pop(int(args[0]), None)
-            return 0
         fn = self.fn_map.get(name)
         if fn is not None:
             arg_types = [self._expr_type_hint(a, env, env_types) for a in arg_nodes]

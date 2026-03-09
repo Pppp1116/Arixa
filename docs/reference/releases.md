@@ -4,7 +4,7 @@
 - Removed semantic/backend packed-field hard cap of 64 bits; `@packed struct` supports integer field widths up to language max (`128`).
 - Generalized LLVM packed lowering to dynamic byte windows (including windows wider than 128 bits for offset-packed `u128` fields).
 - Expanded comptime execution support with `match` statement handling and indirect function-value calls, with clearer `undefined/non-function/non-pure` diagnostics.
-- Expanded formatter statement coverage for `defer` and `comptime`, replacing fallback `/* unsupported */` output for valid syntax.
+- Expanded formatter statement coverage for `comptime` and expression statements, replacing fallback `/* unsupported */` output for valid syntax.
 - Improved semantic call diagnostics to report explicit non-function call type errors.
 
 ## v0.3.0
@@ -23,7 +23,7 @@
 ## v0.2.1
 - Expanded x86-64/native backend coverage:
   - Added linked Linux x86-64 runtime object for native builds (`astra_print_*`, `astra_alloc/free`, `astra_panic`).
-  - Added native lowering for `match`, `await`, broader `defer` forms (including loops), and pointer-deref assignments.
+  - Added native lowering for `match`, `await`, and pointer-deref assignments.
   - Added aggregate pointer-handle lowering for struct/dynamic values across calls/returns.
   - Added struct constructor/field lowering and array/slice index + `.get()` lowering paths.
 - Build/cache reliability improvements:

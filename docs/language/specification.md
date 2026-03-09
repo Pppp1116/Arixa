@@ -39,10 +39,10 @@ single_op       = "{" | "}" | "(" | ")" | "<" | ">" | ";" | "," | "=" | "+" | "-
                 | "^" | "~" | "@" ;
 ```
 
-**Current Keywords (34 total)**:
+**Current Keywords**:
 - Control flow: `fn`, `return`, `if`, `else`, `while`, `for`, `match`, `break`, `continue`
 - Declarations: `struct`, `enum`, `trait`, `type`, `mut`, `pub`, `const`, `extern`
-- Memory management: `unsafe`, `defer`
+- Safety: `unsafe`
 - Advanced features: `async`, `await`, `comptime`, `where`
 - Types: `none`, `set`, `in`, `as`, `sizeof`, `alignof`, `f16`, `f80`, `f128`
 - Literals: `true`, `false`
@@ -112,7 +112,7 @@ Associativity:
 block           = "{" { stmt } "}" ;
 stmt            = binding_stmt
                 | return_stmt | break_stmt | continue_stmt
-                | defer_stmt | comptime_stmt
+                | comptime_stmt
                 | if_stmt | while_stmt | for_stmt | match_stmt
                 | assign_stmt | expr_stmt ;
 
@@ -120,7 +120,6 @@ binding_stmt     = [ "mut" ] ident [ ":" type ] "=" expr ";" ;
 return_stmt     = "return" [ expr ] ";" ;
 break_stmt      = "break" ";" ;
 continue_stmt   = "continue" ";" ;
-defer_stmt      = "defer" expr ";" ;
 comptime_stmt   = "comptime" block ;
 
 if_stmt         = "if" expr block [ "else" block ] ;
@@ -215,7 +214,6 @@ Owned-state checks:
 - Function call arguments are evaluated left-to-right.
 - Postfix chains evaluate base before field/index/call operand effects.
 - `&&`, `||`, and `??` are short-circuiting.
-- `defer` executes in LIFO order at function exit.
 
 Numeric semantics:
 - Integer arithmetic/bitwise/shift operators require matching integer types.

@@ -394,7 +394,7 @@ fn main() Int {
     cp = subprocess.run([sys.executable, str(out)], capture_output=True, text=True, timeout=5)
     # 5! = 120, optimize_me(10,20) = (10*8 + 20*16)*2 = (80 + 320)*2 = 800
     # Total = 120 + 800 = 920
-    assert cp.returncode == 920
+    assert cp.returncode == (920 & 0xFF)
 
 
 def test_optimization_regression_tests(tmp_path: Path):

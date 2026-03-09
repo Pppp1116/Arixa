@@ -38,6 +38,7 @@ astra = ["stdlib/*.arixa", "stdlib/bindings/*.arixa", "assets/runtime/llvm_runti
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--ignore=tests/temporary"
 
 [tool.mutmut]
 paths_to_mutate = ["astra/build.py"]

@@ -32,10 +32,9 @@ fn main() Int {
     assert_same_stdout_and_exit(results, expected_stdout="after\n", expected_returncode=9)
 
 
-def test_try_operator_runs_defers_on_early_return(tmp_path) -> None:
+def test_try_operator_early_return_has_no_implicit_cleanup(tmp_path) -> None:
     src = """
 fn helper(v Int?) Int?{
-  defer print("cleanup");
   x = v!;
   return x;
 }
@@ -48,11 +47,11 @@ fn main() Int {
 """
     results = compile_and_run_program(
         tmp_path,
-        name="try_defer_cleanup",
+        name="try_early_return_cleanup",
         src_text=src,
         backends=("py", "native"),
     )
-    assert_same_stdout_and_exit(results, expected_stdout="cleanup\n", expected_returncode=5)
+    assert_same_stdout_and_exit(results, expected_stdout="", expected_returncode=5)
 
 
 def test_try_operator_propagates_union_err_and_short_circuits(tmp_path) -> None:

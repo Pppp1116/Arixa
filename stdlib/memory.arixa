@@ -116,8 +116,8 @@ fn memory_pool_alloc(pool MemoryPool) u32 | none {
         byte_index = i / 8;
         bit_index = i % 8;
         byte_val = vec_get(pool.bitmap, byte_index);
-        if byte_val != none && (byte_val as u8 & 1 << bit_index) == 0 {
-            new_byte = byte_val as u8 | 1 << bit_index;
+        if byte_val != none && ((byte_val as u8) & (1u8 << bit_index)) == 0 {
+            new_byte = (byte_val as u8) | (1u8 << bit_index);
             vec_set(pool.bitmap, byte_index, new_byte);
             pool.free_blocks -= 1;
             return pool.base_address + i as u32 * pool.block_size;

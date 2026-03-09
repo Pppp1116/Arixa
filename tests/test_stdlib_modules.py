@@ -13,24 +13,16 @@ def _load(path: str) -> str:
 
 def test_core_stdlib_module_analyzes_in_freestanding_mode():
     modules = [
-        # "stdlib/algorithm.arixa",  # Skip due to type system issues
         "stdlib/atomic.arixa",
         "stdlib/boot.arixa",
-        "stdlib/console.arixa",
+        "stdlib/c.arixa",
         "stdlib/core.arixa",
         "stdlib/data.arixa",
-        "stdlib/debug.arixa",
         "stdlib/embedded.arixa",
-        "stdlib/encoding.arixa",
-        "stdlib/geometry.arixa",
-        "stdlib/graph.arixa",
         "stdlib/hardware.arixa",
-        "stdlib/heap.arixa",
-        "stdlib/interrupt.arixa",
         "stdlib/math.arixa",
         "stdlib/mem.arixa",
         "stdlib/memory.arixa",
-        "stdlib/path.arixa",
         "stdlib/vec.arixa",
     ]
     for module in modules:

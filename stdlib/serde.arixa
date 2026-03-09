@@ -5,7 +5,7 @@ struct ParseError {
 }
 
 /// Serialize a value to JSON text.
-fn to_json<T>(v T) String {
+fn to_json(v Any) String {
     return __to_json(v);
 }
 
@@ -48,6 +48,6 @@ fn is_valid_json(s String) Bool {
 }
 
 /// Pretty-print a value to JSON with indentation.
-fn to_json_pretty<T>(v T) String {
+fn to_json_pretty(v Any) String {
     return __to_json(v);
 }

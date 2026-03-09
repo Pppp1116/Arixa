@@ -54,17 +54,6 @@ for item in iterable {
 - **Break**: `break;` - exit loop immediately
 - **Continue**: `continue;` - skip to next iteration
 
-## Scope Exit Helpers
-
-### Defer
-```astra
-fn example() Void {
-    defer cleanup();
-    // do work
-    // cleanup() called automatically
-}
-```
-
 ## Examples
 
 ### Nested Control Flow

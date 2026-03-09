@@ -15,16 +15,12 @@ def test_release_build_no_allocation_tracking():
     # Simple test that does allocations
     test_code = '''
 fn main() Int {
-    // Test basic allocation
-    let x = alloc<Int>(10);
-    *x = 42;
-    
     // Test string allocations
-    let s1 = "hello world";
-    let s2 = "another string";
+    s1 = "hello world";
+    s2 = "another string";
     
     // Test array allocation
-    let arr = [1, 2, 3, 4, 5];
+    arr = [1, 2, 3, 4, 5];
     
     return 0;
 }

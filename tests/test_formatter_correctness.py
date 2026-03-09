@@ -36,7 +36,7 @@ def _normalize(node):
         "fn main() Int{ return a ?? (b ?? c); }",
         "fn main() Int{ return -(1 + 2); }",
         "fn main() Int{ return await (a + b); }",
-        'fn main() Int{ defer print("bye"); return 0; }',
+        'fn main() Int{ print("bye"); return 0; }',
         "fn main() Int{ comptime { x = 1; } return 0; }",
         "fn main() Int{ mut s = 0; for i in 1..=3 { s += i; } match s == 6 { true => { return 1; } _ => { return 0; } } }",
     ],

@@ -110,15 +110,15 @@ mut mixed = list_new()  // Heterogeneous data
 ### Use StringBuilder for String Building
 ```astra
 // Good - O(n) total performance
-let sb = StringBuilder.new()
+sb = StringBuilder.new()
 for i in 0..1000 {
     sb.append_str("item")
     sb.append_int(i)
 }
-let result = sb.finish()
+result = sb.finish()
 
 // Avoid - O(n²) performance
-let result = ""
+result = ""
 for i in 0..1000 {
     result = result + "item" + to_string_int(i)
 }
@@ -127,11 +127,11 @@ for i in 0..1000 {
 ### Use Typed Collections
 ```astra
 // Good - O(1) hash table lookups
-let map: Map<String, Int> = map_new()
+map: Map<String, Int> = map_new()
 map_set(map, "key", 42)
 
 // Use Any only for dynamic data
-let dynamic = map_new()  // Map<Any, Any>
+dynamic = map_new()  // Map<Any, Any>
 ```
 
 ### Threading Best Practices
@@ -140,8 +140,8 @@ let dynamic = map_new()  // Map<Any, Any>
 // No overhead for programs that don't use threads
 
 // When using threads, operations are O(1)
-let handle = spawn(my_function, arg)
-let result = join(handle)
+handle = spawn(my_function, arg)
+result = join(handle)
 ```
 
 ### Use Release Builds

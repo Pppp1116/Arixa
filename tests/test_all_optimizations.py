@@ -96,7 +96,7 @@ fn main() Int {
     
     build_enhanced(str(src_gvn), str(out_gvn), target="py", profile="release")
     cp_gvn = subprocess.run([sys.executable, str(out_gvn)], capture_output=True, text=True, timeout=5)
-    assert cp_gvn.returncode == 33  # (10*2+1) * 3 = 21 * 3 = 63? Let's check
+    assert cp_gvn.returncode == 63  # (10*2+1) * 3 = 21 * 3 = 63
     
     # Test Control Flow Optimization
     src_cf = tmp_path / "controlflow.arixa"
@@ -218,7 +218,7 @@ fn main() Int {
     
     build_enhanced(str(src_tail), str(out_tail), target="py", profile="release")
     cp_tail = subprocess.run([sys.executable, str(out_tail)], capture_output=True, text=True, timeout=5)
-    assert cp_tail.returncode == 720  # 6!
+    assert cp_tail.returncode == (720 & 0xFF)  # process exit status is 8-bit
 
 
 def test_branch_prediction_optimization(tmp_path: Path):

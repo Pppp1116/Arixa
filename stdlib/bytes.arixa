@@ -48,7 +48,7 @@ fn slice(b Bytes, start Int, length Int) Bytes {
     while i < end {
         byte_opt = vec_get(b, i);
         if byte_opt != none {
-            drop vec_push(result, byte_opt as u8);
+            vec_push(result, byte_opt as u8);
         }
         else {}
         i += 1;
@@ -156,11 +156,11 @@ fn concat(a Bytes, b Bytes) Bytes {
     mut result = vec_new() as Bytes;
 
     for byte in a {
-        drop vec_push(result, byte);
+        vec_push(result, byte);
     }
 
     for byte in b {
-        drop vec_push(result, byte);
+        vec_push(result, byte);
     }
 
     return result;
@@ -179,7 +179,7 @@ fn repeat(b Bytes, n Int) Bytes {
 
     while i < n {
         for byte in b {
-            drop vec_push(result, byte);
+            vec_push(result, byte);
         }
         i += 1;
     }

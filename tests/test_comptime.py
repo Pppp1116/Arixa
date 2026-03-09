@@ -43,12 +43,10 @@ fn main() Int{
     assert cp.returncode == 45
 
 
-def test_comptime_alloc_free(tmp_path: Path):
+def test_comptime_simple_constant_bindings(tmp_path: Path):
     src = """
 fn main() Int{
   comptime {
-    p = alloc(32);
-    free(p);
     x = 7;
   }
   return x;

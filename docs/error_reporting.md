@@ -21,7 +21,7 @@ ASTRA's error reporting system is designed to be:
 
 📄 Context:
    1 | fn main() -> Int {
-   2 |     let x = 42
+   2 |     x = 42
    3 | }
      | ^
 
@@ -57,7 +57,7 @@ These errors occur when the code doesn't follow ASTRA's grammar rules.
 **Missing Semicolon (PARSE001)**
 ```astra
 fn main() -> Int {
-    let x = 42  // Missing semicolon
+    x = 42  // Missing semicolon
     return x
 }
 ```
@@ -69,7 +69,7 @@ fn main() -> Int {
 
 📄 Context:
    1 | fn main() -> Int {
-   2 |     let x = 42
+   2 |     x = 42
    3 |     return x
    4 | }
      | ^^^^^^^^
@@ -79,7 +79,7 @@ fn main() -> Int {
 💡 Suggestions:
    1. Add missing semicolon
       Add a semicolon at the end of the statement
-      Example: `let x = 42;`
+      Example: `x = 42;`
 
 🔍 Error code: PARSE001
    Learn more: https://astra-lang.dev/errors/PARSE001
@@ -88,7 +88,7 @@ fn main() -> Int {
 **Mismatched Brackets (PARSE002)**
 ```astra
 fn main() -> Int {
-    let x = [1, 2, 3  // Missing closing bracket
+    x = [1, 2, 3  // Missing closing bracket
     return x[0]
 }
 ```
@@ -100,7 +100,7 @@ fn main() -> Int {
 
 📄 Context:
    1 | fn main() -> Int {
-   2 |     let x = [1, 2, 3
+   2 |     x = [1, 2, 3
    3 |     return x[0]
    4 | }
      | ^^^^^^^^^^^^^^^^^
@@ -110,7 +110,7 @@ fn main() -> Int {
 💡 Suggestions:
    1. Add closing bracket
       Add the missing ']' to close the array literal
-      Example: `let x = [1, 2, 3];`
+      Example: `x = [1, 2, 3];`
 
 🔍 Error code: PARSE002
    Learn more: https://astra-lang.dev/errors/PARSE002
@@ -147,7 +147,7 @@ fn main() -> Int {
       Verify the name is spelled correctly
    2. Declare variable
       Declare the variable before using it
-      Example: `let undefined_var = 42;`
+      Example: `undefined_var = 42;`
 
 🔍 Error code: SEM101
    Learn more: https://astra-lang.dev/errors/SEM101
@@ -156,7 +156,7 @@ fn main() -> Int {
 **Type Mismatch (SEM102)**
 ```astra
 fn main() -> Int {
-    let x = "hello"  // String, but function expects Int
+    x = "hello"  // String, but function expects Int
     return x
 }
 ```
@@ -168,7 +168,7 @@ fn main() -> Int {
 
 📄 Context:
    1 | fn main() -> Int {
-   2 |     let x = "hello"
+   2 |     x = "hello"
    3 |     return x
    4 | }
      |            ^
@@ -189,9 +189,9 @@ fn main() -> Int {
 **Borrow Checker Error (SEM200)**
 ```astra
 fn main() -> Int {
-    let x = 42;
-    let r1 = &x;
-    let r2 = &mut x;  // Cannot borrow mutably while already borrowed
+    x = 42;
+    r1 = &x;
+    r2 = &mut x;  // Cannot borrow mutably while already borrowed
     return *r2;
 }
 ```
@@ -203,9 +203,9 @@ fn main() -> Int {
 
 📄 Context:
    1 | fn main() -> Int {
-   2 |     let x = 42;
-   3 |     let r1 = &x;
-   4 |     let r2 = &mut x;
+   2 |     x = 42;
+   3 |     r1 = &x;
+   4 |     r2 = &mut x;
    5 |     return *r2;
    6 | }
      |              ^^^
@@ -217,7 +217,7 @@ fn main() -> Int {
       Review ownership and borrowing rules
    2. Use reference
       Use an immutable reference instead
-      Example: `let r2 = &x;`
+      Example: `r2 = &x;`
 
 🔍 Error code: SEM200
    Learn more: https://astra-lang.dev/errors/SEM200

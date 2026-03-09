@@ -16,9 +16,13 @@ def test_spawn_builtin_semantic_ok():
     analyze(prog)
 
 
-def test_memory_builtins_semantic_ok():
+def test_memory_builtins_are_not_default_surface_api():
     prog = parse("fn main() Int{ p = alloc(32); free(p); return 0; }")
-    analyze(prog)
+    try:
+        analyze(prog)
+        assert False
+    except SemanticError as e:
+        assert "undefined function alloc" in str(e)
 
 
 def test_codegen_includes_thread_runtime_helpers():
@@ -28,10 +32,10 @@ def test_codegen_includes_thread_runtime_helpers():
     assert "def await_result(v):" in py
 
 
-def test_codegen_includes_memory_runtime_helpers():
+def test_codegen_does_not_expose_memory_runtime_helpers():
     py = to_python(parse("fn main() Int{ return 0; }"))
-    assert "def alloc(n):" in py
-    assert "def free(ptr):" in py
+    assert "def alloc(n):" not in py
+    assert "def free(ptr):" not in py
 
 
 def _manual_struct_literal_program() -> Program:
@@ -80,13 +84,13 @@ def test_python_codegen_coalesce_operator():
     assert "is not None else 5" in py
 
 
-def test_defer_executes_on_return(tmp_path: Path):
+def test_plain_expression_statement_executes(tmp_path: Path):
     src = tmp_path / "d.astra"
     out = tmp_path / "d.py"
     src.write_text(
         """
 fn main() Int{
-  defer print("deferred");
+  print("deferred");
   return 0;
 }
 """
@@ -268,37 +272,37 @@ def test_llvm_lowering_covers_extended_runtime_builtins():
 fn worker(x Int) Int{ return x + 1; }
 fn main() Int{
   t = spawn(worker, 1);
-  drop join(t);
-  drop await_result(1);
-  drop args();
-  drop arg(0);
+  join(t);
+  await_result(1);
+  args();
+  arg(0);
   xs = list_new();
-  drop list_push(xs, 1);
-  drop list_set(xs, 0, 2);
-  drop list_get(xs, 0);
-  drop list_len(xs);
+  list_push(xs, 1);
+  list_set(xs, 0, 2);
+  list_get(xs, 0);
+  list_len(xs);
   m = map_new();
-  drop map_set(m, 1, 2);
-  drop map_has(m, 1);
-  drop map_get(m, 1);
-  drop read_file("missing.txt");
-  drop write_file("tmp.txt", "x");
-  drop file_exists("tmp.txt");
-  drop file_remove("tmp.txt");
-  drop tcp_connect("127.0.0.1:1");
-  drop tcp_send(0, "x");
-  drop tcp_recv(0, 8);
-  drop tcp_close(0);
-  drop to_json(1);
-  drop from_json("1");
-  drop sha256("abc");
-  drop hmac_sha256("k", "v");
-  drop env_get("HOME");
-  drop cwd();
-  drop proc_run("true");
-  drop now_unix();
-  drop monotonic_ms();
-  drop sleep_ms(1);
+  map_set(m, 1, 2);
+  map_has(m, 1);
+  map_get(m, 1);
+  read_file("missing.txt");
+  write_file("tmp.txt", "x");
+  file_exists("tmp.txt");
+  file_remove("tmp.txt");
+  tcp_connect("127.0.0.1:1");
+  tcp_send(0, "x");
+  tcp_recv(0, 8);
+  tcp_close(0);
+  to_json(1);
+  from_json("1");
+  sha256("abc");
+  hmac_sha256("k", "v");
+  env_get("HOME");
+  cwd();
+  proc_run("true");
+  now_unix();
+  monotonic_ms();
+  sleep_ms(1);
   return 0;
 }
 """
@@ -370,8 +374,8 @@ fn main() Int{
   y: Int = x as Int;
   s: Any = "ok";
   s2: String = s as String;
-  drop len(s2);
-  drop to_json(s);
+  len(s2);
+  to_json(s);
   return y;
 }
 """
@@ -382,36 +386,22 @@ fn main() Int{
     assert "astra_any_box_str" in mod
 
 
-def test_memory_use_after_free_is_semantic_error():
-    prog = parse("fn main() Int{ p = alloc(8); free(p); return p; }")
+def test_alloc_call_is_semantic_error():
+    prog = parse("fn main() Int{ p = alloc(8); return p; }")
     try:
         analyze(prog)
         assert False
     except SemanticError as e:
-        assert "use-after-free" in str(e)
+        assert "undefined function alloc" in str(e)
 
 
-def test_memory_double_free_is_semantic_error():
-    prog = parse("fn main() Int{ p = alloc(8); free(p); free(p); return 0; }")
+def test_free_call_is_semantic_error():
+    prog = parse("fn main() Int{ free(8); return 0; }")
     try:
         analyze(prog)
         assert False
     except SemanticError as e:
-        assert "use-after-free" in str(e)
-
-
-def test_memory_move_semantics_for_owned_handles():
-    prog = parse("fn main() Int{ p = alloc(8); q = p; free(q); return 0; }")
-    analyze(prog)
-
-
-def test_memory_leak_detection_is_semantic_error():
-    prog = parse("fn main() Int{ p = alloc(8); return 0; }")
-    try:
-        analyze(prog)
-        assert False
-    except SemanticError as e:
-        assert "not released" in str(e)
+        assert "undefined function free" in str(e)
 
 
 def test_break_outside_loop_is_semantic_error():

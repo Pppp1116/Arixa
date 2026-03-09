@@ -144,7 +144,7 @@ markers =
 
 #### 2. Parser Coverage (90%+)
 - ✅ Expression parsing with precedence
-- ✅ Statement parsing (let, if, while, for, etc.)
+- ✅ Statement parsing (bindings, if, while, for, etc.)
 - ✅ Declaration parsing (fn, struct, enum, etc.)
 - ✅ Pattern matching
 - ✅ Error recovery
@@ -285,7 +285,7 @@ def test_type_mismatch_error():
     """Test type mismatch error detection."""
     src = """
     fn main() -> Int {
-        let x = "hello";  // Type mismatch
+        x = "hello";  // Type mismatch
         return x;
     }
     """
@@ -304,7 +304,7 @@ def test_large_program_compilation_speed():
     # Generate large program
     lines = ["fn main() -> Int {"]
     for i in range(1000):
-        lines.append(f"    let x{i} = {i};")
+        lines.append(f"    x{i} = {i};")
     lines.append("    return 0;")
     lines.append("}")
     src = "\n".join(lines)

@@ -56,7 +56,7 @@ fn main() Int {
     
     build_enhanced(str(src), str(out), target="py", profile="beta")
     cp = subprocess.run([sys.executable, str(out)], capture_output=True, text=True, timeout=5)
-    assert cp.returncode == 4950  # Sum of 0-99
+    assert cp.returncode == (4950 & 0xFF)  # Process exit code is 8-bit on POSIX.
     print("✓ ML-guided optimization working")
 
 

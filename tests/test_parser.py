@@ -10,9 +10,11 @@ from astra.ast import (
     CastExpr,
     ContinueStmt,
     EnumDecl,
+    ExprStmt,
     ExternFnDecl,
     FieldExpr,
     FnDecl,
+    ForStmt,
     IteratorForStmt,
     GuardedPattern,
     ImportDecl,
@@ -303,6 +305,15 @@ def test_parse_nullable_type_sugar():
     assert fn.ret == "Int | none"
 
 
+def test_removed_keywords_parse_as_identifiers_in_bindings():
+    src = "fn main() Int{ let = 1; defer = 2; drop = 3; return let + defer + drop; }"
+    prog = parse(src)
+    fn = prog.items[0]
+    assert isinstance(fn.body[0], LetStmt) and fn.body[0].name == "let"
+    assert isinstance(fn.body[1], LetStmt) and fn.body[1].name == "defer"
+    assert isinstance(fn.body[2], LetStmt) and fn.body[2].name == "drop"
+
+
 def test_parse_owned_and_borrowed_text_buffer_types():
     src = """
 type Bytes = Vec<u8>;
@@ -316,10 +327,10 @@ fn view(s &str, b Bytes, xs Vec<i16>, sl &[u8]) Void{ return; }
     assert fn.ret == "Void"
 
 
-def test_parse_defer_and_coalesce():
+def test_parse_coalesce_expression_statement():
     src = """
 fn main() Int{
-  defer print("done");
+  print("done");
   x: Int? = none;
   y = x ?? 7;
   return y;
@@ -327,7 +338,7 @@ fn main() Int{
 """
     prog = parse(src)
     fn = prog.items[0]
-    assert isinstance(fn.body[0], DeferStmt)
+    assert isinstance(fn.body[0], ExprStmt)
     assert isinstance(fn.body[1], LetStmt)
     assert isinstance(fn.body[2], LetStmt)
     assert isinstance(fn.body[2].expr, Binary)

@@ -499,8 +499,10 @@ def _llvm_type(ctx: _ModuleCtx, typ: str) -> ir.Type:
             ret_ll_ty = _llvm_type(ctx, ret_ty)
             return ir.FunctionType(ret_ll_ty, param_ll_tys).as_pointer()
         return ir.IntType(8).as_pointer()
-    if c in {"String", "str"} or _is_vec_type(c) or _is_slice_type(c):
+    if c in {"String", "str"}:
         return ir.IntType(8).as_pointer()
+    if _is_vec_type(c) or _is_slice_type(c):
+        return ctx.slice_header_ty.as_pointer()
     return ir.IntType(64)
 
 
@@ -773,6 +775,13 @@ def _coerce_value(ctx: _ModuleCtx, state: _FnState, v: ir.Value, from_ty: str, t
     from_c = _canonical_type(from_ty)
     to_c = _canonical_type(to_ty)
     if from_c == to_c:
+        # Keep semantic type identity but reconcile backend representation when
+        # aliases use pointer-erased values (e.g. Vec headers carried as i8*).
+        lt_same = _llvm_type(ctx, to_c)
+        if v.type == lt_same:
+            return v
+        if isinstance(v.type, ir.PointerType) and isinstance(lt_same, ir.PointerType):
+            return state.builder.bitcast(v, lt_same)
         return v
     b = state.builder
     i64 = ir.IntType(64)
@@ -965,10 +974,8 @@ def _expr_type(state: _FnState, e: Any) -> str:
     if isinstance(e, Call):
         if isinstance(e.fn, Name):
             name = e.resolved_name or e.fn.value
-            if name in {"print", "__print", "free", "panic", "__free", "__panic"}:
+            if name in {"print", "__print", "panic", "__panic"}:
                 return "Void"
-            if name in {"alloc", "__alloc"}:
-                return "usize"
             if name in {
                 "countOnes",
                 "leadingZeros",
@@ -1917,24 +1924,6 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
             
             return _Value(result, "String")
 
-    if base == "alloc":
-        if len(call.args) != 1:
-            raise CodegenError(_diag(call, "alloc expects 1 argument"))
-        sz = _compile_expr(ctx, state, call.args[0])
-        sv = _coerce_value(ctx, state, sz.value, sz.ty, "usize", call)
-        fn = _declare_runtime(ctx, "astra_alloc")
-        out = b.call(fn, [sv, ir.Constant(i64, 8)])
-        return _Value(out, "usize")
-
-    if base == "free":
-        if len(call.args) != 1:
-            raise CodegenError(_diag(call, "free expects 1 argument"))
-        p = _compile_expr(ctx, state, call.args[0])
-        pv = _coerce_value(ctx, state, p.value, p.ty, "usize", call)
-        fn = _declare_runtime(ctx, "astra_free")
-        b.call(fn, [pv, ir.Constant(i64, 0), ir.Constant(i64, 8)])
-        return _Value(ir.Constant(i64, 0), "Void")
-
     if base == "len":
         if len(call.args) != 1:
             raise CodegenError(_diag(call, "len expects 1 argument"))
@@ -2014,8 +2003,15 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
         arity = len(worker_param_tys)
         payload_ptr_i8 = _alloc_bytes(ctx, state, ir.Constant(i64, (arity + 1) * 8), ir.Constant(i64, 8), call)
         payload_ptr = b.bitcast(payload_ptr_i8, i64.as_pointer())
-        worker_ptr_i8 = _as_i8_ptr(state, worker.value, call.args[0])
-        worker_bits = b.ptrtoint(worker_ptr_i8, i64)
+        if _canonical_type(worker.ty) == "Any":
+            any_v = worker.value
+            if not (isinstance(any_v.type, ir.IntType) and any_v.type.width == 64):
+                any_v = b.bitcast(any_v, i64)
+            to_i64 = _declare_runtime(ctx, "astra_any_to_i64")
+            worker_bits = b.call(to_i64, [any_v])
+        else:
+            worker_ptr_i8 = _as_i8_ptr(state, worker.value, call.args[0])
+            worker_bits = b.ptrtoint(worker_ptr_i8, i64)
         b.store(worker_bits, b.gep(payload_ptr, [ir.Constant(i64, 0)]))
         for idx, arg_node in enumerate(call.args[1:]):
             av = _compile_expr(ctx, state, arg_node, overflow_mode=overflow_mode)
@@ -2046,62 +2042,39 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
     if base == "atomic_load":
         if len(call.args) != 1:
             raise CodegenError(_diag(call, "atomic_load expects 1 argument"))
-        # Get the AtomicInt pointer
-        atomic_ptr = _compile_expr(ctx, state, call.args[0])
-        # Get the handle field directly
-        handle_ptr = b.gep(atomic_ptr.value, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
-        handle_val = b.load(handle_ptr)
-        # Call runtime with the handle value
+        h = _compile_expr(ctx, state, call.args[0])
         fn = _declare_runtime(ctx, "astra_atomic_load")
-        out = b.call(fn, [handle_val])
+        out = b.call(fn, [_as_i64(h, call.args[0])])
         return _Value(out, "Int")
 
     if base == "atomic_store":
         if len(call.args) != 2:
             raise CodegenError(_diag(call, "atomic_store expects 2 arguments"))
-        # Get the AtomicInt pointer
-        atomic_ptr = _compile_expr(ctx, state, call.args[0])
-        # Get the handle field directly
-        handle_ptr = b.gep(atomic_ptr.value, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
-        handle_val = b.load(handle_ptr)
-        # Get the value to store
+        h = _compile_expr(ctx, state, call.args[0])
         v = _compile_expr(ctx, state, call.args[1])
-        # Call runtime with the handle value and store value
         fn = _declare_runtime(ctx, "astra_atomic_store")
-        out = b.call(fn, [handle_val, _as_i64(v, call.args[1])])
+        out = b.call(fn, [_as_i64(h, call.args[0]), _as_i64(v, call.args[1])])
         return _Value(out, "Int")
 
     if base == "atomic_fetch_add":
         if len(call.args) != 2:
             raise CodegenError(_diag(call, "atomic_fetch_add expects 2 arguments"))
-        # Get the AtomicInt pointer
-        atomic_ptr = _compile_expr(ctx, state, call.args[0])
-        # Get the handle field directly
-        handle_ptr = b.gep(atomic_ptr.value, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
-        handle_val = b.load(handle_ptr)
-        # Get the delta value
+        h = _compile_expr(ctx, state, call.args[0])
         d = _compile_expr(ctx, state, call.args[1])
-        # Call runtime with the handle value and delta
         fn = _declare_runtime(ctx, "astra_atomic_fetch_add")
-        out = b.call(fn, [handle_val, _as_i64(d, call.args[1])])
+        out = b.call(fn, [_as_i64(h, call.args[0]), _as_i64(d, call.args[1])])
         return _Value(out, "Int")
 
     if base == "atomic_compare_exchange":
         if len(call.args) != 3:
             raise CodegenError(_diag(call, "atomic_compare_exchange expects 3 arguments"))
-        # Get the AtomicInt pointer
-        atomic_ptr = _compile_expr(ctx, state, call.args[0])
-        # Get the handle field directly
-        handle_ptr = b.gep(atomic_ptr.value, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
-        handle_val = b.load(handle_ptr)
-        # Get expected and desired values
+        h = _compile_expr(ctx, state, call.args[0])
         expected = _compile_expr(ctx, state, call.args[1])
         desired = _compile_expr(ctx, state, call.args[2])
-        # Call runtime with the handle value and expected/desired values
         fn = _declare_runtime(ctx, "astra_atomic_compare_exchange")
         out = b.call(
             fn,
-            [handle_val, _as_i64(expected, call.args[1]), _as_i64(desired, call.args[2])],
+            [_as_i64(h, call.args[0]), _as_i64(expected, call.args[1]), _as_i64(desired, call.args[2])],
         )
         return _Value(out, "Bool")
 
@@ -2612,15 +2585,13 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
             fields = {fname: arg for (fname, _), arg in zip(sinfo.decl.fields, call.args)}
             return _compile_struct_init(ctx, state, name, fields, call, overflow_mode)
 
-        if resolved in {
+        if resolved not in ctx.fn_map and resolved in {
             "print",
             "len",
             "read_file",
             "write_file",
             "args",
             "arg",
-            "alloc",
-            "free",
             "spawn",
             "join",
             "await_result",
@@ -2681,8 +2652,6 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
             "__write_file",
             "__args",
             "__arg",
-            "__alloc",
-            "__free",
             "__spawn",
             "__join",
             "__await_result",
@@ -3419,20 +3388,7 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
         obj = _compile_expr(ctx, state, e.obj, overflow_mode=overflow_mode)
         obj_ty = _expr_type(state, e.obj)
         base_ty = _strip_ref_type(obj_ty)
-        
-        # Special handling for atomic operations - if field is 'handle' and base type is AtomicInt
-        if e.field == "handle":
-            # Check if obj.value is a pointer or a value
-            if isinstance(obj.value.type, ir.PointerType):
-                # Get the handle field directly from the pointer
-                handle_ptr = b.gep(obj.value, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
-                handle_val = b.load(handle_ptr)
-                return _Value(handle_val, "Int")
-            else:
-                # obj.value is the AtomicInt struct itself, extract field 0
-                handle_val = b.extract_value(obj.value, [0])
-                return _Value(handle_val, "Int")
-        
+
         if base_ty not in ctx.structs:
             raise CodegenError(_diag(e, f"field access requires struct receiver, got {base_ty}"))
         sinfo = ctx.structs[base_ty]
@@ -4225,6 +4181,65 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
             b.store(out, elem_ptr)
             return
 
+        if isinstance(st.target, Unary) and st.target.op == "*":
+            ptr_src = _compile_expr(ctx, state, st.target.expr, overflow_mode=overflow_mode)
+            tgt_ty = _expr_type(state, st.target)
+            ll_tgt = _llvm_type(ctx, tgt_ty)
+            base_ptr = ptr_src.value
+            if isinstance(base_ptr.type, ir.IntType):
+                base_ptr = b.inttoptr(base_ptr, ll_tgt.as_pointer())
+            elif isinstance(base_ptr.type, ir.PointerType):
+                if base_ptr.type != ll_tgt.as_pointer():
+                    base_ptr = b.bitcast(base_ptr, ll_tgt.as_pointer())
+            else:
+                raise CodegenError(_diag(st, f"cannot assign through non-pointer type {ptr_src.ty}"))
+            rhs = _compile_expr(ctx, state, st.expr, overflow_mode=overflow_mode)
+            rv = _coerce_value(ctx, state, rhs.value, rhs.ty, tgt_ty, st)
+            if st.op == "=":
+                b.store(rv, base_ptr)
+                return
+            lv = b.load(base_ptr)
+            if _is_float_type(tgt_ty):
+                if st.op == "+=":
+                    out = b.fadd(lv, rv)
+                elif st.op == "-=":
+                    out = b.fsub(lv, rv)
+                elif st.op == "*=":
+                    out = b.fmul(lv, rv)
+                elif st.op == "/=":
+                    out = b.fdiv(lv, rv)
+                elif st.op == "%=":
+                    out = b.frem(lv, rv)
+                else:
+                    raise CodegenError(_diag(st, f"internal: unexpected deref assignment op {st.op}"))
+            else:
+                info = _int_info(tgt_ty)
+                signed = True if info is None else info[1]
+                if st.op == "+=":
+                    out = b.add(lv, rv)
+                elif st.op == "-=":
+                    out = b.sub(lv, rv)
+                elif st.op == "*=":
+                    out = b.mul(lv, rv)
+                elif st.op == "/=":
+                    out = _lower_checked_divrem(ctx, state, lv, rv, signed=signed, is_div=True)
+                elif st.op == "%=":
+                    out = _lower_checked_divrem(ctx, state, lv, rv, signed=signed, is_div=False)
+                elif st.op == "&=":
+                    out = b.and_(lv, rv)
+                elif st.op == "|=":
+                    out = b.or_(lv, rv)
+                elif st.op == "^=":
+                    out = b.xor(lv, rv)
+                elif st.op == "<<=":
+                    out = _lower_checked_shift(ctx, state, lv, rv, signed=signed, left_shift=True)
+                elif st.op == ">>=":
+                    out = _lower_checked_shift(ctx, state, lv, rv, signed=signed, left_shift=False)
+                else:
+                    raise CodegenError(_diag(st, f"internal: unexpected deref assignment op {st.op}"))
+            b.store(out, base_ptr)
+            return
+
         raise CodegenError(_diag(st, "internal: unexpected assignment target"))
 
     if isinstance(st, ReturnStmt):
@@ -4690,7 +4705,9 @@ def _declare_functions(ctx: _ModuleCtx, prog: Program, freestanding: bool) -> tu
                 llvm_name = "__astra_user_main"
                 user_main_key = key
             fnty = ir.FunctionType(_llvm_type(ctx, sig.ret), [_llvm_type(ctx, t) for t in sig.params])
-            ctx.fn_map[key] = ir.Function(ctx.module, fnty, name=llvm_name)
+            fn_ir = ir.Function(ctx.module, fnty, name=llvm_name)
+            fn_ir.attributes.add("nounwind")
+            ctx.fn_map[key] = fn_ir
             user_fns.append(item)
 
     return user_fns, user_main_key
@@ -4721,6 +4738,8 @@ def _compile_function(ctx: _ModuleCtx, item: FnDecl, overflow_mode: str) -> None
         var_types={},
     )
 
+    body_stmts: list[Any] = list(item.body)
+
     for (pname, pty), arg in zip(item.params, fn_ir.args):
         ptype = _canonical_type(pty)
         ptr = b.alloca(_llvm_type(ctx, ptype), name=pname)
@@ -4728,7 +4747,7 @@ def _compile_function(ctx: _ModuleCtx, item: FnDecl, overflow_mode: str) -> None
         state.vars[pname] = ptr
         state.var_types[pname] = ptype
 
-    for st in item.body:
+    for st in body_stmts:
         _compile_stmt(ctx, state, st, overflow_mode)
         if _is_terminated(state):
             break
@@ -4737,8 +4756,6 @@ def _compile_function(ctx: _ModuleCtx, item: FnDecl, overflow_mode: str) -> None
         b.branch(epilogue)
 
     b.position_at_end(epilogue)
-    # Automatic cleanup handled by ownership system
-
     if ret_ty in {"Void", "Never"}:
         if not _is_terminated(state):
             b.ret_void()
@@ -4755,6 +4772,7 @@ def _emit_hosted_main_wrapper(ctx: _ModuleCtx, user_main_key: str | None) -> Non
         pass
     fnty = ir.FunctionType(ir.IntType(32), [])
     wrapper = ir.Function(ctx.module, fnty, name="main")
+    wrapper.attributes.add("nounwind")
     b = ir.IRBuilder(wrapper.append_basic_block("entry"))
 
     target = ctx.fn_map[user_main_key]
@@ -4804,7 +4822,11 @@ def to_llvm_ir(
     _init_llvm_once()
 
     # Ensure semantic annotations (symbols/inferred types) are present for direct backend use.
-    analyze(prog, filename=filename, freestanding=freestanding)
+    if (
+        not getattr(prog, "_analyzed", False)
+        or getattr(prog, "_analyzed_freestanding", None) != freestanding
+    ):
+        analyze(prog, filename=filename, freestanding=freestanding)
     lower_for_loops(prog)
 
     module = ir.Module(name="astra_module")

@@ -7,11 +7,10 @@ gpu fn scale(alpha Float, input GpuSlice<Float>, out GpuMutSlice<Float>) {
 }
 
 fn main() Int {
-    alpha = 3.0;
-    src: Vec<Float> = vec_from(vec(2.0, 4.0, 6.0, 8.0));
+    src: Vec<Float> = [2.0, 4.0, 6.0, 8.0];
     dsrc = gpu.copy(src);
     dout: GpuBuffer<Float> = gpu.alloc(len(src));
-    gpu.launch(scale, len(src), 64, alpha, dsrc, dout);
+    gpu.launch(scale, len(src), 64, 3.0, dsrc, dout);
     print(gpu.read(dout));
     return 0;
 }

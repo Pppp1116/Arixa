@@ -286,8 +286,6 @@ def test_build_native_runtime_builtins_link_and_run(tmp_path: Path):
         """
 fn main() Int{
   print("ok");
-  p = alloc(16);
-  free(p);
   return 0;
 }
 """
@@ -456,7 +454,7 @@ fn _start() Int{
 )
 @pytest.mark.skipif(
     True,
-    reason="drop builtin is not implemented yet",
+    reason="runtime environment dependent coverage test",
 )
 def test_build_native_supports_non_runtime_builtins(tmp_path: Path):
     src = tmp_path / "builtins.astra"
@@ -464,11 +462,11 @@ def test_build_native_supports_non_runtime_builtins(tmp_path: Path):
     src.write_text(
         """
 fn main() Int{
-  drop read_file("missing.txt");
-  drop cwd();
-  drop now_unix();
-  drop monotonic_ms();
-  drop len(1);
+  read_file("missing.txt");
+  cwd();
+  now_unix();
+  monotonic_ms();
+  len(1);
   return 0;
 }
 """

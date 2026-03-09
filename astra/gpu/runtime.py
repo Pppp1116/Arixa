@@ -153,6 +153,30 @@ class AstraGpuRuntime:
                 "cuda_name": getattr(kernel, "__astra_gpu_cuda_name__", ""),
             }
         if meta is None:
+            # Generated Python may launch the source kernel fn while metadata is
+            # only present in registered IR. Resolve by symbol/name when possible.
+            kernel_name = getattr(kernel, "__name__", "")
+            ir_meta = self._kernel_ir.get(kernel_name)
+            if ir_meta is None and kernel_name.startswith("__astra_cuda_kernel_"):
+                ir_meta = self._kernel_ir.get(kernel_name[len("__astra_cuda_kernel_") :])
+            if isinstance(ir_meta, dict):
+                raw_params = ir_meta.get("params", [])
+                if isinstance(raw_params, list):
+                    params = [
+                        str(p.get("type", "Any")) if isinstance(p, dict) else str(p)
+                        for p in raw_params
+                    ]
+                else:
+                    params = []
+                meta = {
+                    "name": str(ir_meta.get("name", kernel_name or "kernel")),
+                    "symbol": str(ir_meta.get("symbol", ir_meta.get("name", kernel_name or "kernel"))),
+                    "params": params,
+                    "ret": str(ir_meta.get("ret", "Void")),
+                    "cuda_source": "",
+                    "cuda_name": "",
+                }
+        if meta is None:
             raise GpuError("gpu.launch expects a gpu fn kernel")
         if str(meta.get("ret", "Void")) != "Void":
             raise GpuError("gpu.launch kernel must return Void")

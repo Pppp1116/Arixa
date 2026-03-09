@@ -817,6 +817,8 @@ class LSPServer:
         # Context-aware suggestions
         if context["in_function_call"]:
             self._add_argument_completions(doc, context, add)
+            # Keep full symbol visibility while typing call arguments.
+            self._add_standard_completions(doc, context, add)
         elif context["in_type_annotation"]:
             self._add_type_completions(doc, context, add)
         elif context["in_import"]:
@@ -873,7 +875,7 @@ class LSPServer:
                 context["function_name"] = func_match.group(1)
         
         # Type annotation context  
-        if ':' in prefix and ('fn' in prefix or 'let' in prefix or 'mut' in prefix):
+        if ':' in prefix and ('fn' in prefix or 'mut' in prefix):
             context["in_type_annotation"] = True
             type_match = re.search(r':\s*(\w*)$', prefix)
             if type_match:

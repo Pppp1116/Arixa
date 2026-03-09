@@ -1570,6 +1570,11 @@ def _cse_expr(expr: Any, avail: AvailableMap, stats: OptStats | None = None) -> 
     elif isinstance(expr, (SizeOfValueExpr, AlignOfValueExpr)):
         expr.expr = _cse_expr(expr.expr, avail, stats)
 
+    # Never rewrite atomic expressions directly; this can introduce invalid
+    # aliasing across loops/mutable state even when composite CSE is safe.
+    if isinstance(expr, (Name, Literal, BoolLit, NilLit)):
+        return expr
+
     # Centralized CSE logic: try to get key, if None, not a CSE candidate
     key = _expr_key(expr)
     if key is None:
@@ -1606,6 +1611,8 @@ def _expr_key(expr: Any) -> Any | None:
         # Array indexing may have bounds checking side effects
         return None
     
+    # Atomic leaves can participate in composite expression keys, but we avoid
+    # replacing atomic expressions directly in _cse_expr().
     if isinstance(expr, Name):
         return ("name", expr.value)
     if isinstance(expr, Literal):

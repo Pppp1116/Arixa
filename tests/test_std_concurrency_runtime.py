@@ -6,7 +6,7 @@ def test_std_thread_and_atomic_runtime(tmp_path) -> None:
 import "thread";
 import "atomic";
 
-fn fn worker() Int{() Int {
+fn worker() Int {
   return 41;
 }
 

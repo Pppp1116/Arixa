@@ -469,16 +469,25 @@ class EffectAnalyzer:
         effect1 = self.analyze_expression(expr1)
         effect2 = self.analyze_expression(expr2)
         
-        # Can reorder if both are pure OR if neither writes memory
+        # Can always reorder pure expressions.
         if effect1.is_pure and effect2.is_pure:
             return True
         
-        # Also allow reordering of read-only expressions
-        if not getattr(effect1, "writes_memory", False) and not getattr(effect2, "writes_memory", False):
-            return True
+        # Reordering becomes unsafe as soon as one side can perform observable
+        # effects beyond reads.
+        if effect1.calls_impure_functions or effect2.calls_impure_functions:
+            return False
+        if effect1.can_trap or effect2.can_trap:
+            return False
+        if EffectType.HAS_IO in effect1.effects or EffectType.HAS_IO in effect2.effects:
+            return False
+        if effect1.writes_globals or effect2.writes_globals:
+            return False
+        if effect1.writes_memory or effect2.writes_memory:
+            return False
         
-        # Otherwise, cannot reorder (conservative approach)
-        return False
+        # Read-only, non-trapping expressions can be reordered.
+        return True
     
     def can_eliminate_expression(self, expr: Any) -> bool:
         """Check if expression can be safely eliminated (dead code)."""

@@ -70,7 +70,7 @@ mut_data = &mut [1, 2, 3];
 - `while`
 - `for item in iterable { ... }`
 - `match`
-- `return`, `break`, `continue`, `defer`
+- `return`, `break`, `continue`
 
 ## Control Flow
 

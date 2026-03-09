@@ -260,28 +260,24 @@ fn tanh(x Float) Float {
 
 /// Calculate median of integer array.
 /// Returns `none` if array is empty.
+/// Note: This function requires hosted mode due to slice length operations.
 
-fn   bubble_sort_int(&sorted){
-    if n % 2 == 1 {
-        mid_val = vec_get(sorted, n / 2);
-        if mid_val != none {
-            return mid_val as Int | none as Float;
-        }
-        else {
-            return none;
-        }
+fn median_int(sorted &[Int]) Float | none {
+    mut count = 0;
+    for _ in sorted {
+        count += 1;
     }
-    else {
-        val1 = vec_get(sorted, n / 2 - 1);
-        val2 = vec_get(sorted, n / 2);
-        if val1 != none && val2 != none {
-            return (val1 as Int + val2 as Int) as Float / 2.0;
-        }
-        else {
-            return none;
-        }
+    if count == 0 {
+        return none;
     }
-
+    
+    mut mid = count / 2;
+    
+    if count % 2 == 1 {
+        return sorted[mid] as Float;
+    } else {
+        return ((sorted[mid - 1] as Float) + (sorted[mid] as Float)) / 2.0;
+    }
 }
 
 

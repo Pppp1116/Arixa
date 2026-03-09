@@ -21,7 +21,7 @@ def demo_basic_error_formatting():
     
     # Create sample source code
     source_code = """fn main() -> Int {
-    let x = 42
+    x = 42
     return x
 }"""
     
@@ -50,7 +50,7 @@ def demo_type_mismatch_error():
     print("=== Type Mismatch Error Demo ===\n")
     
     source_code = """fn main() -> Int {
-    let x = "hello"
+    x = "hello"
     return x
 }"""
     
@@ -78,9 +78,9 @@ def demo_borrow_checker_error():
     print("=== Borrow Checker Error Demo ===\n")
     
     source_code = """fn main() -> Int {
-    let x = 42;
-    let r1 = &x;
-    let r2 = &mut x;
+    x = 42;
+    r1 = &x;
+    r2 = &mut x;
     return *r2;
 }"""
     
@@ -108,8 +108,8 @@ def demo_multiple_errors():
     print("=== Multiple Errors Demo ===\n")
     
     source_code = """fn main() -> Int {
-    let x = "hello"
-    let y = undefined_var
+    x = "hello"
+    y = undefined_var
     return x
 }"""
     
@@ -148,7 +148,7 @@ def demo_warning_error():
     print("=== Warning Error Demo ===\n")
     
     source_code = """fn main() -> Int {
-    let unused = 42;
+    unused = 42;
     return 42;
 }"""
     
@@ -218,17 +218,17 @@ def demo_large_context():
     print("=== Large Context Demo ===\n")
     
     source_code = """fn calculate_average(numbers: Vec<Int>) -> Float {
-    let sum = 0;
+    sum = 0;
     for num in numbers {
         sum = sum + num;
     }
-    let average = sum / len(numbers);
+    average = sum / len(numbers);
     return average;
 }
 
 fn main() -> Int {
-    let numbers = [1, 2, 3, 4, 5];
-    let result = calculate_average(numbers);
+    numbers = [1, 2, 3, 4, 5];
+    result = calculate_average(numbers);
     print("Average: " + result);
     return 0;
 }"""
@@ -260,7 +260,7 @@ def demo_error_enhancement():
     original_error = "SEM example.arixa:3:12: Expected return type 'Int' but found 'String'"
     
     source_code = """fn main() -> Int {
-    let x = "hello";
+    x = "hello";
     return x;
 }"""
     

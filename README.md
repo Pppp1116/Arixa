@@ -137,9 +137,9 @@ ASTRA features an enhanced error reporting system that provides:
    📍 example.arixa:3:12
 
 📄 Context:
-   1 | fn main() -> Int {
-   2 |     let x = "hello"
-   3 |     return x
+   1 | fn main() Int {
+   2 |     x = "hello";
+   3 |     return x;
    4 | }
      |            ^
 

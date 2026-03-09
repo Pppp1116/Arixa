@@ -267,8 +267,6 @@ def to_python(
     
     lines += [
         "_astra_gpu_runtime = _astra_gpu_get_runtime() if '_astra_gpu_get_runtime' in globals() else None",
-        "_astra_heap = {}",
-        "_astra_next_ptr = 1",
         "_astra_threads = {}",
         "_astra_next_tid = 1",
         "_astra_atomics = {}",
@@ -333,16 +331,6 @@ def to_python(
         "def write_file(p,s): pathlib.Path(p).write_text(str(s)); return 0",
         "def args(): return sys.argv",
         "def arg(i): return sys.argv[i] if 0 <= int(i) < len(sys.argv) else ''",
-        "def alloc(n):",
-        "    global _astra_next_ptr",
-        "    with _astra_registry_lock:",
-        "        ptr = _astra_next_ptr",
-        "        _astra_next_ptr += 1",
-        "        _astra_heap[ptr] = bytearray(max(0, int(n)))",
-        "        return ptr",
-        "def free(ptr):",
-        "    _astra_heap.pop(ptr, None)",
-        "    return None",
         "def spawn(fn, *a):",
         "    global _astra_next_tid",
         "    with _astra_registry_lock:",
@@ -799,6 +787,7 @@ def to_python(
         
         params = ", ".join(n for n, _ in item.params)
         param_types = [typ for _, typ in item.params]
+        fn_body: list[Any] = list(item.body)
         if module_name:
             # Generate as standalone function for module
             safe_fn_name = f"__astra_mod_{module_name}_{fn_name}"
@@ -815,9 +804,9 @@ def to_python(
             else:
                 lines.append(f"def {fn_name}({params}):")
         lines.append("    try:")
-        if not item.body:
+        if not fn_body:
             lines.append("        pass")
-        for st in item.body:
+        for st in fn_body:
             if module_name:
                 # For module functions, just generate the body directly
                 lines.extend(_stmt_py(st, 2))
@@ -1108,6 +1097,12 @@ def _expr(e: Any) -> str:
             return f"astra_str_concat({_expr(e.left)}, {_expr(e.right)})"
         op = BIN_OP_MAP.get(e.op, e.op)
         return f"({_expr(e.left)} {op} {_expr(e.right)})"
+    if isinstance(e, RangeExpr):
+        start = _expr(e.start)
+        end = _expr(e.end)
+        if e.inclusive:
+            return f"range({start}, ({end}) + 1)"
+        return f"range({start}, {end})"
     if isinstance(e, Call):
         name = e.resolved_name or _call_name(e.fn)
         args = list(e.args)
@@ -1157,6 +1152,8 @@ def _expr(e: Any) -> str:
             return f"{name}({_expr(args[0])}, {_expr(args[1])}, {bits})"
         name = {"print": "print_", "format": "format_", "len": "len_"}.get(name, name)
         return f"{name}({', '.join(_expr(a) for a in args)})"
+    if isinstance(e, IndexExpr):
+        return f"({_expr(e.obj)})[{_expr(e.index)}]"
     if isinstance(e, FieldExpr):
         # Handle field access like obj.field
         obj_name = _expr(e.obj)
@@ -1395,5 +1392,10 @@ def _stmt_py(st: Any, ind: int) -> list[str]:
             lines.append(f"{'    ' * (ind + 1)}pass")
         return lines
     if isinstance(st, ForStmt):
-        raise CodegenError(_diag(st, "internal: unlowered for-in loop"))
+        lines = [f"{p}for {st.var_name} in {_expr(st.iterable)}:"]
+        for s in st.body:
+            lines.extend(_stmt_py(s, ind + 1))
+        if not st.body:
+            lines.append(f"{'    ' * (ind + 1)}pass")
+        return lines
     raise CodegenError(_diag(st, f"unsupported statement {type(st).__name__}"))

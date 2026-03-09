@@ -1,241 +1,44 @@
 import std.mem;
 
-// Test 1: Basic automatic cleanup
-fn test_basic_cleanup() Int {
-    // Resource is automatically cleaned up when function exits
-    data = alloc(100);
-    print("Allocated resource");
-    
-    // No explicit defer needed - cleanup happens automatically
-    return 0;
+// Example: ownership + scope cleanup without raw alloc/free builtins.
+
+struct Resource {
+    id Int,
 }
 
-// Test 2: Scope-based cleanup
+fn make_resource(id Int) Resource {
+    return Resource(id);
+}
+
 fn test_scope_cleanup() Int {
     {
-        // Resource allocated in inner scope
-        inner_data = alloc(50);
-        print("Inner resource allocated");
-        
-        // Resource automatically cleaned up when inner scope exits
+        inner = make_resource(1);
+        print("inner ready");
+        _ = inner.id;
     }
-    
-    // Outer scope continues
-    outer_data = alloc(200);
-    print("Outer resource allocated");
-    
-    // Outer resource cleaned up when function exits
-    return 0;
+
+    outer = make_resource(2);
+    print("outer ready");
+    return outer.id;
 }
 
-// Test 3: Multiple resources in same scope
-fn test_multiple_resources() Int {
-    data1 = alloc(10);
-    data2 = alloc(20);
-    data3 = alloc(30);
-    
-    print("Multiple resources allocated");
-    
-    // All resources automatically cleaned up in reverse order
-    return 0;
+fn test_move_cleanup() Int {
+    first = make_resource(10);
+    second = first;
+    return second.id;
 }
 
-// Test 4: Resources with ownership transfer
-fn test_ownership_transfer() Int {
-    data = alloc(100);
-    
-    // Transfer ownership
-    transferred_data = data;
-    
-    // Original data is no longer accessible (moved)
-    // transferred_data will be cleaned up when function exits
-    return 0;
-}
-
-// Test 5: Resources in control flow
-fn test_control_flow_cleanup() Int {
-    x = 42;
-    
-    if x > 0 {
-        condition_data = alloc(25);
-        print("Condition branch resource");
-        // Cleaned up when if block exits
-    } else {
-        else_data = alloc(35);
-        print("Else branch resource");
-        // Cleaned up when else block exits
-    }
-    
-    loop_data = alloc(45);
-    while x < 50 {
-        loop_inner = alloc(5);
-        print("Loop inner resource");
-        x = x + 1;
-        // loop_inner cleaned up each iteration
-        break; // Exit loop early
-    }
-    // loop_data cleaned up when loop scope exits
-    
-    return 0;
-}
-
-// Test 6: Resources with borrow checking
-fn test_borrow_cleanup() Int {
-    mut data = alloc(100);
-    
-    {
-        // Borrow data
-        ref_data = &data;
-        print("Borrowed resource");
-        // ref_data goes out of scope, borrow is released
-    }
-    
-    // Can use data again after borrow is released
-    print("Data available after borrow");
-    
-    return 0;
-}
-
-// Test 7: Nested scopes with cleanup
-fn test_nested_cleanup() Int {
-    outer = alloc(100);
-    
-    {
-        middle = alloc(50);
-        
-        {
-            inner = alloc(25);
-            print("Innermost resource");
-            // inner cleaned up here
-        }
-        
-        print("Middle resource");
-        // middle cleaned up here
-    }
-    
-    print("Outer resource");
-    // outer cleaned up here
-    
-    return 0;
-}
-
-// Test 8: Resources in pattern matching
-fn test_pattern_cleanup() Int {
-    option_data = Option::Some(alloc(75));
-    
-    match option_data {
-        Option::Some(data) => {
-            print("Got resource from option");
-            // data cleaned up when match arm exits
-        },
-        Option::None => {
-            print("No resource");
-        },
-    }
-    
-    // option_data cleaned up when function exits
-    return 0;
-}
-
-// Test 9: Resources with early returns
-fn test_early_return_cleanup(x: Int) Int {
-    resource1 = alloc(10);
-    
-    if x < 0 {
-        resource2 = alloc(20);
-        print("Early return path");
-        // Both resource1 and resource2 cleaned up automatically
-        return -1;
-    }
-    
-    resource3 = alloc(30);
-    print("Normal return path");
-    // All resources cleaned up automatically
-    return 1;
-}
-
-// Test 10: Resources in error handling
-fn test_error_cleanup() Int {
-    resource1 = alloc(10);
-    
-    // Simulate error condition
-    error_condition = true;
-    
-    if error_condition {
-        resource2 = alloc(20);
-        print("Error path");
-        // Resources cleaned up even on error
-        return -1;
-    }
-    
-    print("Success path");
-    return 0;
-}
-
-// Test 11: Resources with function calls
-fn create_resource() Int {
-    data = alloc(100);
-    print("Resource created in function");
-    // Resource cleaned up when function exits
-    return data.value;
-}
-
-fn test_function_call_cleanup() Int {
-    result = create_resource();
-    print("Function call completed");
-    return 0;
-}
-
-// Test 12: Complex cleanup scenario
-fn test_complex_cleanup() Int {
-    // Multiple nested scopes with different resource types
-    {
-        base_resource = alloc(1000);
-        
-        match 42 {
-            x if x > 0 => {
-                positive_resource = alloc(500);
-                
-                for i in 0..3 {
-                    loop_resource = alloc(100);
-                    print("Loop iteration " + to_string_int(i));
-                    // loop_resource cleaned up each iteration
-                }
-                
-                print("Positive branch");
-                // positive_resource cleaned up here
-            },
-            _ => {
-                negative_resource = alloc(300);
-                print("Negative branch");
-                // negative_resource cleaned up here
-            },
-        }
-        
-        // base_resource cleaned up here
-    }
-    
-    print("Complex cleanup completed");
-    return 0;
+fn test_collection_cleanup() Int {
+    mut xs: Vec<Int> = vec_new() as Vec<Int>;
+    vec_push(xs, 1);
+    vec_push(xs, 2);
+    vec_push(xs, 3);
+    return vec_len(xs);
 }
 
 fn main() Int {
-    print("Testing automatic cleanup...");
-    
-    test_basic_cleanup();
-    test_scope_cleanup();
-    test_multiple_resources();
-    test_ownership_transfer();
-    test_control_flow_cleanup();
-    test_borrow_cleanup();
-    test_nested_cleanup();
-    test_pattern_cleanup();
-    test_early_return_cleanup(10);
-    test_early_return_cleanup(-5);
-    test_error_cleanup();
-    test_function_call_cleanup();
-    test_complex_cleanup();
-    
-    print("All automatic cleanup tests completed!");
-    return 0;
+    a = test_scope_cleanup();
+    b = test_move_cleanup();
+    c = test_collection_cleanup();
+    return a + b + c;
 }

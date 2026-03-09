@@ -117,6 +117,11 @@ class LetStmt:
     # is a declaration or reassignment (dual mode) based on prior bindings.
     reassign_if_exists: bool = False
 
+    @property
+    def mutable(self) -> bool:
+        # Backward-compatible alias used by legacy tests/tools.
+        return self.mut
+
 
 
 
@@ -340,6 +345,20 @@ class IteratorForStmt:
     pos: int = 0
     line: int = 0
     col: int = 0
+
+    @property
+    def var(self) -> str:
+        # Backward-compatible alias used by formatter/tests.
+        return self.var_name
+
+    @property
+    def ident(self) -> str:
+        # Backward-compatible alias used by parser comprehensive tests.
+        return self.var_name
+
+
+# Backward-compatible alias used by formatter/tests.
+ForStmt = IteratorForStmt
 
 
 @dataclass

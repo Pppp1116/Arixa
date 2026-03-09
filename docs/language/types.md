@@ -79,10 +79,10 @@
 
 ### Type Annotations
 ```astra
-let x: Int = 42;           // Explicit type
-let y = 42;               // Inferred as Int
-let numbers: Vec<Int> = [1, 2, 3];
-let slice: &[Int] = &numbers;
+x: Int = 42;           // Explicit type
+y = 42;               // Inferred as Int
+numbers: Vec<Int> = [1, 2, 3];
+slice: &[Int] = &numbers;
 ```
 
 ### Nullable Types
@@ -112,8 +112,8 @@ fn accept_slice(data: &[Int]) Int {
     return data[0];
 }
 
-let vec_data: Vec<Int> = [1, 2, 3];
-let first = accept_slice(&vec_data);  // Automatic conversion
+vec_data: Vec<Int> = [1, 2, 3];
+first = accept_slice(&vec_data);  // Automatic conversion
 ```
 
 ## Any Type

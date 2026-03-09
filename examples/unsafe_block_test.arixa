@@ -174,10 +174,10 @@ fn test_unsafe_function_call() Int {
 fn test_unsafe_memory() Int {
     unsafe {
         // Simulate manual memory management
-        // ptr = alloc(sizeof(Int));
+        // ptr = c.malloc(sizeof(Int) as u64);
         // *ptr = 100;
         // value = *ptr;
-        // free(ptr);
+        // c.free(ptr as *Void);
         print("Unsafe memory management");
     }
     

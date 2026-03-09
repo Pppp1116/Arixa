@@ -19,10 +19,11 @@ fn memory_barrier(barrier_type MemoryBarrier) {}
 /// 
 /// Returns the old value and whether the swap succeeded.
 fn atomic_compare_exchange_loop(ptr &mut AtomicInt, expected Int, desired Int) Int {
+    mut current_expected = expected;
     while true {
         old_val = atomic_load(ptr);
-        if old_val == expected {
-            if atomic_compare_exchange(ptr, expected, desired) {
+        if old_val == current_expected {
+            if atomic_compare_exchange(ptr, current_expected, desired) {
                 return old_val;
             }
             else {}
@@ -30,7 +31,7 @@ fn atomic_compare_exchange_loop(ptr &mut AtomicInt, expected Int, desired Int) I
         else {
             return old_val;
         }
-        expected = old_val;
+        current_expected = old_val;
     }
 }
 
@@ -171,7 +172,7 @@ fn wait_for_reg_field(addr &Int, mask Int, expected Int, timeout Int) Bool {
         return false;
     }
     else {}
-    current = read_reg(addr);
+    mut current = read_reg(addr);
     if (current & mask) == expected {
         return true;
     }
@@ -179,7 +180,7 @@ fn wait_for_reg_field(addr &Int, mask Int, expected Int, timeout Int) Bool {
     mut current_time = __read_timestamp_impl();
     if current_time == none {
         mut elapsed = 0;
-        current = read_reg(addr);
+        mut current = read_reg(addr);
         while elapsed < timeout {
             if (current & mask) == expected {
                 return true;
@@ -191,7 +192,7 @@ fn wait_for_reg_field(addr &Int, mask Int, expected Int, timeout Int) Bool {
     }
     else {
         current = read_reg(addr);
-        while current_time as Int - start as Int < timeout {
+        while (current_time as Int) - (start as Int) < timeout {
             if (current & mask) == expected {
                 return true;
             }

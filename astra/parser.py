@@ -846,8 +846,14 @@ class Parser:
             none
         
         Returns:
-            Value produced by the routine, if any.
+            Value described by the function return annotation.
         """
+        def parse_type_atom_with_suffix() -> str:
+            typ = type_text(parse_atom_type())
+            while self.opt("?"):
+                typ = _normalize_union([typ, "none"])
+            return typ
+
         def parse_atom_type():
             typ: str
             if self.opt("*"):
@@ -897,14 +903,20 @@ class Parser:
                                 typ = str(ArbitraryIntType(signed=signed, width=bits))
                         else:
                             typ = name
+                    if self.opt("<"):
+                        args = [type_text(self.parse_type())]
+                        while self.opt(","):
+                            args.append(type_text(self.parse_type()))
+                        self.eat(">")
+                        typ = f"{typ}<{', '.join(args)}>"
                 else:
                     self._err(f"expected type, got {self.cur().kind}")
                     raise ParseError(self.errors[-1])
             return typ
         
-        parts = [type_text(parse_atom_type())]
+        parts = [parse_type_atom_with_suffix()]
         while self.opt("|"):
-            parts.append(type_text(parse_atom_type()))
+            parts.append(parse_type_atom_with_suffix())
         return _normalize_union(parts)
 
     def parse_block(self) -> list[Any]:
@@ -1387,6 +1399,7 @@ class Parser:
         """
         expr = self.parse_atom()
         while True:
+            pending_type_args: list[str] | None = None
             if self.opt("."):
                 field_tok = self.eat("IDENT")
                 expr = FieldExpr(expr, field_tok.text, field_tok.pos, field_tok.line, field_tok.col)
@@ -1396,6 +1409,8 @@ class Parser:
                 rb = self.eat("]")
                 expr = IndexExpr(expr, idx, rb.pos, rb.line, rb.col)
                 continue
+            if self.cur().kind == "<" and self._looks_like_call_type_args():
+                pending_type_args = self._parse_call_type_args()
             if self.opt("("):
                 args: list[Any] = []
                 if self.cur().kind != ")":
@@ -1403,7 +1418,10 @@ class Parser:
                     while self.opt(","):
                         args.append(self.parse_expr())
                 end = self.eat(")")
-                expr = Call(expr, args, end.pos, end.line, end.col)
+                call = Call(expr, args, end.pos, end.line, end.col)
+                if pending_type_args is not None:
+                    setattr(call, "type_args", pending_type_args)
+                expr = call
                 continue
             if self.opt("!"):
                 q = self.toks[self.i - 1]
@@ -1411,6 +1429,34 @@ class Parser:
                 continue
             break
         return expr
+
+    def _looks_like_call_type_args(self) -> bool:
+        if self.cur().kind != "<":
+            return False
+        depth = 0
+        j = self.i
+        while j < len(self.toks):
+            kind = self.toks[j].kind
+            if kind == "<":
+                depth += 1
+            elif kind == ">":
+                depth -= 1
+                if depth == 0:
+                    return j + 1 < len(self.toks) and self.toks[j + 1].kind == "("
+            elif kind in {";", "}", "{", "EOF"}:
+                return False
+            j += 1
+        return False
+
+    def _parse_call_type_args(self) -> list[str]:
+        args: list[str] = []
+        self.eat("<")
+        if self.cur().kind != ">":
+            args.append(type_text(self.parse_type()))
+            while self.opt(","):
+                args.append(type_text(self.parse_type()))
+        self.eat(">")
+        return args
 
     def parse_atom(self):
         """Parse the `atom` grammar production from the token stream.

@@ -4,7 +4,7 @@ GPU kernels are intentionally restricted.
 
 Disallowed in `gpu fn`:
 - async/await
-- `defer`, `comptime`, `unsafe` blocks
+- `comptime`, `unsafe` blocks
 - host runtime builtins (I/O, filesystem, networking, process, dynamic containers)
 - calling non-GPU functions
 - unsupported local/parameter types (for example `String`, `Vec<T>`, `Any`, references)

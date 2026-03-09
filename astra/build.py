@@ -859,14 +859,51 @@ def _build_native_llvm(
                 else:
                     cmd.insert(-2, "-lm")
         elif freestanding:
+            entry_c = Path(td) / "freestanding_entry.c"
+            entry_c.write_text(
+                """
+extern long _start(void);
+
+__attribute__((noreturn)) static void __astra_exit(long code) {
+#if defined(__x86_64__)
+    __asm__ __volatile__(
+        "movq $60, %%rax\\n\\t"
+        "movq %0, %%rdi\\n\\t"
+        "syscall\\n\\t"
+        :
+        : "r"(code)
+        : "rax", "rdi", "rcx", "r11", "memory"
+    );
+#elif defined(__aarch64__)
+    __asm__ __volatile__(
+        "mov x8, #93\\n\\t"
+        "mov x0, %0\\n\\t"
+        "svc #0\\n\\t"
+        :
+        : "r"(code)
+        : "x0", "x8", "memory"
+    );
+#else
+    for (;;) {}
+#endif
+    __builtin_unreachable();
+}
+
+__attribute__((noreturn)) void __astra_entry(void) {
+    __astra_exit(_start());
+}
+""".strip()
+                + "\n"
+            )
             cmd = [
                 clang,
                 opt_flag,
             ] + debug_flags + define_flags + [
                 str(ll_path),
+                str(entry_c),
                 "-nostdlib",
                 "-nostartfiles",
-                "-Wl,-e,_start",
+                "-Wl,-e,__astra_entry",
                 "-o",
                 str(out),
             ]
