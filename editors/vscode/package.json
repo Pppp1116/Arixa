@@ -604,7 +604,7 @@
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
-    "@types/vscode": "^1.88.0",
+    "@types/vscode": "^1.110.0",
     "@vscode/vsce": "^3.6.2"
   },
   "license": "MIT"
