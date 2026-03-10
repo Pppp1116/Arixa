@@ -39,7 +39,7 @@ def test_use_after_move_is_error() -> None:
     src = "fn main() Int{ s = \"hello\"; t = s; return len(s); }"
     with pytest.raises(SemanticError) as exc:
         analyze(parse(src))
-    assert "use-after-move" in str(exc.value)
+    assert "cannot be used afterwards" in str(exc.value)
 
 
 def test_mutable_borrow_conflict_is_error() -> None:
