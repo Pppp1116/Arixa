@@ -1111,6 +1111,8 @@ def _expr(e: Any) -> str:
             args = [ufcs_receiver] + args
         if name == "panic" and len(args) == 1:
             return f"panic({_expr(args[0])})"
+        if name in {"static_assert", "__static_assert"}:
+            return "None"
         if name == "format":
             # Handle format function with string interpolation support
             if len(args) == 1 and isinstance(args[0], StringInterpolation):
@@ -1340,6 +1342,10 @@ def _stmt_py(st: Any, ind: int) -> list[str]:
     if isinstance(st, ComptimeStmt):
         return []
     if isinstance(st, ExprStmt):
+        if isinstance(st.expr, Call):
+            call_name = st.expr.resolved_name or _call_name(st.expr.fn)
+            if call_name in {"static_assert", "__static_assert"}:
+                return []
         return [f"{p}{_expr(st.expr)}"]
     if isinstance(st, IfStmt):
         lines = [f"{p}if {_expr(st.cond)}:"]

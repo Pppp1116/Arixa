@@ -548,6 +548,13 @@ def _is_gpu_kernel_param_type(typ: str, structs: dict[str, StructDecl]) -> bool:
     return False
 
 
+
+
+def _gpu_elem_type_match(expected: str, actual: str) -> bool:
+    exp = _canonical_type(expected)
+    act = _canonical_type(actual)
+    return exp == act or act == "Any"
+
 def _gpu_launch_arg_compatible(expected: str, actual: str) -> bool:
     exp = _canonical_type(expected)
     act = _canonical_type(actual)
@@ -558,12 +565,57 @@ def _gpu_launch_arg_compatible(expected: str, actual: str) -> bool:
     if exp_el is None or act_el is None:
         return False
     if _is_gpu_slice_type(exp) and (_is_gpu_buffer_type(act) or _is_gpu_slice_type(act) or _is_gpu_mut_slice_type(act)):
-        return _same_type(exp_el, act_el)
+        return _gpu_elem_type_match(exp_el, act_el)
     if _is_gpu_mut_slice_type(exp) and (_is_gpu_buffer_type(act) or _is_gpu_mut_slice_type(act)):
-        return _same_type(exp_el, act_el)
+        return _gpu_elem_type_match(exp_el, act_el)
     if _is_gpu_buffer_type(exp) and _is_gpu_buffer_type(act):
-        return _same_type(exp_el, act_el)
+        return _gpu_elem_type_match(exp_el, act_el)
     return False
+
+
+def _gpu_launch_arg_error(expected: str, actual: str) -> str:
+    exp = _canonical_type(expected)
+    act = _canonical_type(actual)
+    exp_el = _gpu_element_type(exp)
+    act_el = _gpu_element_type(act)
+    if exp_el is not None and act_el is not None and not _gpu_elem_type_match(exp_el, act_el):
+        return (
+            f"element type mismatch: expected `{exp_el}` but got `{act_el}`. "
+            f"kernel parameter type is `{exp}` and argument type is `{act}`"
+        )
+    if _is_gpu_memory_type(exp) and not _is_gpu_memory_type(act):
+        return (
+            f"expected device memory `{exp}` but got host value `{act}`. "
+            "Use gpu.copy(...) to transfer host data to device memory"
+        )
+    return f"expected {exp}, got {act}"
+
+
+def _gpu_static_len(expr: Any, const_values: dict[str, object]) -> int | None:
+    if isinstance(expr, (ArrayLit, VectorLiteral)):
+        return len(expr.elements)
+    if isinstance(expr, Name):
+        value = const_values.get(expr.value)
+        if isinstance(value, int) and value >= 0:
+            return int(value)
+        return None
+    if isinstance(expr, (TypeAnnotated, CastExpr)):
+        return _gpu_static_len(expr.expr, const_values)
+    if isinstance(expr, Call):
+        if isinstance(expr.fn, Name) and expr.fn.value in {"vec_from", "__vec_from"} and len(expr.args) == 1:
+            return _gpu_static_len(expr.args[0], const_values)
+        if (
+            isinstance(expr.fn, FieldExpr)
+            and isinstance(expr.fn.obj, Name)
+            and expr.fn.obj.value == "gpu"
+            and expr.fn.field == "copy"
+            and len(expr.args) == 1
+        ):
+            return _gpu_static_len(expr.args[0], const_values)
+    if isinstance(expr, MethodCall):
+        if isinstance(expr.obj, Name) and expr.obj.value == "gpu" and expr.method == "copy" and len(expr.args) == 1:
+            return _gpu_static_len(expr.args[0], const_values)
+    return None
 
 
 def _validate_decl_type(typ: Any, filename: str, line: int, col: int) -> None:
@@ -619,6 +671,7 @@ BUILTIN_SIGS: dict[str, BuiltinSig] = {
     "write_file": BuiltinSig(["String", "String"], "Int"),
     "args": BuiltinSig([], "Any"),
     "arg": BuiltinSig(["Int"], "String"),
+    "static_assert": BuiltinSig(None, "Void"),
     "spawn": BuiltinSig(["Any"], "Int"),
     "join": BuiltinSig(["Int"], "Any"),
     "__atomic_int_new": BuiltinSig(["Int"], "Int"),
@@ -737,6 +790,29 @@ _FREESTANDING_FORBIDDEN_BUILTINS: set[str] = {
     "proc_exit",
 }
 _FREESTANDING_MODE_STACK: list[bool] = []
+
+
+BUILTIN_DOCS: dict[str, str] = {
+    "static_assert": "Compile-time assertion. Use static_assert(condition[, message]).",
+    "len": "Returns the length of a slice/vector/string-like value.",
+    "format": "Formats values into a string.",
+}
+
+GPU_API_DOCS: dict[str, str] = {
+    "available": "Returns whether a CUDA-capable GPU backend is available.",
+    "device_count": "Returns the number of visible GPU devices.",
+    "device_name": "Returns the name of a device by index.",
+    "alloc": "Allocates a GPU buffer with the requested element count.",
+    "copy": "Copies host Vec/slice data to a new GPU buffer.",
+    "read": "Copies device buffer/slice data back to host memory.",
+    "launch": "Launches a gpu fn kernel as gpu.launch(kernel, grid_size, block_size, ...args).",
+    "global_id": "Kernel builtin: global thread id.",
+    "thread_id": "Kernel builtin: thread id within the block.",
+    "block_id": "Kernel builtin: block id in the launch grid.",
+    "block_dim": "Kernel builtin: threads per block.",
+    "grid_dim": "Kernel builtin: number of blocks in the launch grid.",
+    "barrier": "Kernel builtin: block-level synchronization barrier.",
+}
 
 GPU_KERNEL_BUILTINS: set[str] = {
     "global_id",
@@ -1223,46 +1299,103 @@ class _LifetimeAnalyzer:
                 f"Consider waiting for the mutable reference to go out of scope."))
 
 
+
+
+class _ConstState:
+    def __init__(self):
+        self.values: dict[str, object] = {}
+
+    def copy(self):
+        nxt = _ConstState()
+        nxt.values = self.values.copy()
+        return nxt
+
+    def merge(self, left: "_ConstState", right: "_ConstState"):
+        merged: dict[str, object] = {}
+        for name, lval in left.values.items():
+            if name in right.values and right.values[name] == lval:
+                merged[name] = lval
+        self.values = merged
+
+    def set_value(self, name: str, value: object | None):
+        if value is None:
+            self.values.pop(name, None)
+        else:
+            self.values[name] = value
+
 class _MoveState:
     def __init__(self):
         self.moved: dict[str, bool] = {}
+        self.move_sites: dict[str, Span] = {}
         self.fn_ret: str | None = None
 
     def copy(self):
         nxt = _MoveState()
         nxt.moved = self.moved.copy()
+        nxt.move_sites = self.move_sites.copy()
         nxt.fn_ret = self.fn_ret
         return nxt
 
     def merge(self, left: "_MoveState", right: "_MoveState"):
         merged: dict[str, bool] = {}
+        merged_sites: dict[str, Span] = {}
         for name in set(left.moved) | set(right.moved):
-            merged[name] = left.moved.get(name, False) or right.moved.get(name, False)
+            l = left.moved.get(name, False)
+            r = right.moved.get(name, False)
+            merged[name] = l or r
+            if l and name in left.move_sites:
+                merged_sites[name] = left.move_sites[name]
+            elif r and name in right.move_sites:
+                merged_sites[name] = right.move_sites[name]
         self.moved = merged
+        self.move_sites = merged_sites
         self.fn_ret = left.fn_ret or right.fn_ret
 
     def release_scope(self, scope_prev: dict[str, bool | None]):
         for name, prev in scope_prev.items():
             if prev is None:
                 self.moved.pop(name, None)
+                self.move_sites.pop(name, None)
             else:
                 self.moved[name] = prev
+                if not prev:
+                    self.move_sites.pop(name, None)
 
     def declare(self, name: str):
         self.moved[name] = False
+        self.move_sites.pop(name, None)
 
     def reinitialize(self, name: str):
         if name in self.moved:
             self.moved[name] = False
+            self.move_sites.pop(name, None)
+
+    def _moved_error(self, name: str, filename: str, line: int, col: int) -> str:
+        where = self.move_sites.get(name)
+        if where is None:
+            return (
+                f"Value `{name}` was moved and cannot be used afterwards. "
+                "Consider cloning the value or borrowing it instead of moving."
+            )
+        return (
+            f"Value `{name}` was moved here:\n"
+            f"  {where.filename}:{where.line}:{where.col}\n"
+            "But used again here:\n"
+            f"  {filename}:{line}:{col}\n"
+            "The value cannot be used afterwards. "
+            "Consider cloning the value or borrowing it instead of moving."
+        )
+
 
     def consume(self, name: str, filename: str, line: int, col: int):
         if self.moved.get(name, False):
-            raise SemanticError(_diag(filename, line, col, f"use-after-move of {name}"))
+            raise SemanticError(_diag(filename, line, col, self._moved_error(name, filename, line, col)))
         self.moved[name] = True
+        self.move_sites[name] = Span.at(filename, line, col)
 
     def check_use(self, name: str, filename: str, line: int, col: int):
         if self.moved.get(name, False):
-            raise SemanticError(_diag(filename, line, col, f"use-after-move of {name}"))
+            raise SemanticError(_diag(filename, line, col, self._moved_error(name, filename, line, col)))
 
 
 def _assign_base_name(target: Any) -> str | None:
@@ -2447,6 +2580,109 @@ def _const_expr_type(expr: Any, known: dict[str, str]) -> str | None:
     return None
 
 
+def _get_const_values() -> dict[str, object]:
+    return getattr(_get_const_values, "current", {})
+
+
+def _get_global_const_values() -> dict[str, object]:
+    return getattr(_get_global_const_values, "current", {})
+
+
+def _active_const_values(local_values: dict[str, object]) -> dict[str, object]:
+    merged = _get_global_const_values().copy()
+    merged.update(local_values)
+    return merged
+
+
+def _eval_const_expr(expr: Any, const_values: dict[str, object]) -> object | None:
+    if isinstance(expr, BoolLit):
+        return bool(expr.value)
+    if isinstance(expr, Literal):
+        if isinstance(expr.value, (bool, int, float, str)):
+            return expr.value
+        return None
+    if isinstance(expr, Name):
+        return const_values.get(expr.value)
+    if isinstance(expr, TypeAnnotated):
+        return _eval_const_expr(expr.expr, const_values)
+    if isinstance(expr, CastExpr):
+        return _eval_const_expr(expr.expr, const_values)
+    if isinstance(expr, Unary):
+        inner = _eval_const_expr(expr.expr, const_values)
+        if inner is None:
+            return None
+        if expr.op == "+":
+            if isinstance(inner, (int, float)):
+                return +inner
+            return None
+        if expr.op == "-":
+            if isinstance(inner, (int, float)):
+                return -inner
+            return None
+        if expr.op == "!":
+            if isinstance(inner, bool):
+                return (not inner)
+            return None
+        return None
+    if isinstance(expr, Binary):
+        left = _eval_const_expr(expr.left, const_values)
+        right = _eval_const_expr(expr.right, const_values)
+        if left is None or right is None:
+            return None
+        op = expr.op
+        if op == "+":
+            if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+                return left + right
+            return None
+        if op == "-":
+            if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+                return left - right
+            return None
+        if op == "*":
+            if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+                return left * right
+            return None
+        if op == "/":
+            if isinstance(left, (int, float)) and isinstance(right, (int, float)) and right != 0:
+                return left / right
+            return None
+        if op == "%":
+            if isinstance(left, int) and isinstance(right, int) and right != 0:
+                return left % right
+            return None
+        if op in {"<", "<=", ">", ">="}:
+            if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+                if op == "<":
+                    return left < right
+                if op == "<=":
+                    return left <= right
+                if op == ">":
+                    return left > right
+                return left >= right
+            return None
+        if op in {"==", "!="}:
+            return left == right if op == "==" else left != right
+        if op == "&&":
+            if isinstance(left, bool) and isinstance(right, bool):
+                return left and right
+            return None
+        if op == "||":
+            if isinstance(left, bool) and isinstance(right, bool):
+                return left or right
+            return None
+        return None
+    return None
+
+
+def _const_int_value(expr: Any, const_values: dict[str, object]) -> int | None:
+    value = _eval_const_expr(expr, const_values)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return int(value)
+    return None
+
+
 def _load_imported_program_items(
     importer_file: str,
     import_decl: ImportDecl,
@@ -2520,7 +2756,10 @@ def analyze(
     any_usage = AnyUsageInfo()
     setattr(prog, "any_usage", any_usage)
     _get_any_usage.current = any_usage
-    
+    const_values: dict[str, object] = {}
+    _get_const_values.current = const_values
+    _get_global_const_values.current = const_values
+
     try:
         errors: list[str] = []
         seen_errors: set[str] = set()
@@ -2590,6 +2829,9 @@ def analyze(
                     # Type check the const expression
                     inferred = _infer(item.expr, [global_scope], [], fn_groups, structs, enums, None, _BorrowState(), _MoveState(), item_filename, "", False, False)
                     _validate_decl_type(inferred, item_filename, item.line, item.col)
+                    value = _eval_const_expr(item.expr, const_values)
+                    if value is not None:
+                        const_values[item.name] = value
                     # Store const in global scope for later use
                     global_scope[item.name] = inferred
                     continue
@@ -2836,6 +3078,8 @@ def analyze(
             raise SemanticError("\n".join(errors))
     finally:
         _FREESTANDING_MODE_STACK.pop()
+        _get_const_values.current = {}
+        _get_global_const_values.current = {}
     setattr(prog, "_analyzed", True)
     setattr(prog, "_analyzed_freestanding", freestanding)
     return prog
@@ -2863,6 +3107,7 @@ def _analyze_fn(
     borrow = _BorrowState()
     move = _MoveState()
     move.fn_ret = _canonical_type(fn.ret)
+    const_state = _ConstState()
     for n, _ in fn.params:
         move.declare(n)
     borrow_scopes: list[set[str]] = [set()]
@@ -2886,6 +3131,7 @@ def _analyze_fn(
         0,
         fn.unsafe,
         bool(getattr(fn, "gpu_kernel", False)),
+        const_state,
     )
     if _canonical_type(fn.ret) not in {"Void", "Never"} and not _has_value_return(fn.body):
         raise SemanticError(_diag(filename, fn.line, fn.col, f"function {fn.name} must return {fn.ret}"))
@@ -2942,50 +3188,58 @@ def _check_block(
     loop_depth: int,
     unsafe_ok: bool,
     gpu_kernel: bool,
+    const_state: _ConstState,
 ):
     # Track variables declared in this scope for automatic cleanup
     scope_vars: set[str] = set()
     
-    for st in body:
-        _check_stmt(
-            st,
-            scopes,
-            mut_scopes,
-            borrow_scopes,
-            move_scopes,
-            fn_groups,
-            structs,
-            enums,
-            fn_ret,
-            ref_param_names,
-            owned,
-            borrow,
-            move,
-            filename,
-            fn_name,
-            loop_depth,
-            unsafe_ok,
-            gpu_kernel,
-        )
-        
-        # Track variables declared in this scope
-        if isinstance(st, LetStmt) and st.name != "_":
-            scope_vars.add(st.name)
-    
-    # Automatic cleanup when scope exits
-    # Variables with owned allocations are automatically cleaned up
-    for var_name in scope_vars:
-        if owned.is_owned(var_name):
-            # The ownership system will handle cleanup automatically
-            # This is where we would emit cleanup code if needed
-            pass
-    
-    # Release borrow scopes
-    borrow.release_scope(borrow_scopes[-1])
-    
-    # Release move scopes
-    if move_scopes:
-        move.release_scope(move_scopes[-1])
+    prev_const_values = _get_const_values().copy()
+    _get_const_values.current = _active_const_values(const_state.values)
+    try:
+        for st in body:
+            _get_const_values.current = _active_const_values(const_state.values)
+            _check_stmt(
+                st,
+                scopes,
+                mut_scopes,
+                borrow_scopes,
+                move_scopes,
+                fn_groups,
+                structs,
+                enums,
+                fn_ret,
+                ref_param_names,
+                owned,
+                borrow,
+                move,
+                filename,
+                fn_name,
+                loop_depth,
+                unsafe_ok,
+                gpu_kernel,
+                const_state,
+            )
+
+            # Track variables declared in this scope
+            if isinstance(st, LetStmt) and st.name != "_":
+                scope_vars.add(st.name)
+
+        # Automatic cleanup when scope exits
+        # Variables with owned allocations are automatically cleaned up
+        for var_name in scope_vars:
+            if owned.is_owned(var_name):
+                # The ownership system will handle cleanup automatically
+                # This is where we would emit cleanup code if needed
+                pass
+
+        # Release borrow scopes
+        borrow.release_scope(borrow_scopes[-1])
+
+        # Release move scopes
+        if move_scopes:
+            move.release_scope(move_scopes[-1])
+    finally:
+        _get_const_values.current = prev_const_values
 
 
 def _flatten_or_pattern(pat: Any) -> list[Any]:
@@ -3352,6 +3606,7 @@ def _check_stmt(
     loop_depth: int,
     unsafe_ok: bool,
     gpu_kernel: bool,
+    const_state: _ConstState,
 ):
     def _is_narrowing_cond(expr: Any) -> tuple[str, str] | None:
         if not (isinstance(expr, Binary) and expr.op == "is"):
@@ -3414,6 +3669,7 @@ def _check_stmt(
                 loop_depth,
                 unsafe_ok,
                 gpu_kernel,
+                const_state,
             )
             return
         if gpu_kernel and not _is_gpu_safe_type(ty, structs):
@@ -3425,6 +3681,10 @@ def _check_stmt(
         move.declare(st.name)
         scopes[-1][st.name] = ty
         mut_scopes[-1][st.name] = bool(st.mut)
+        if bool(st.mut):
+            const_state.set_value(st.name, None)
+        else:
+            const_state.set_value(st.name, _eval_const_expr(st.expr, _active_const_values(const_state.values)))
         borrow_scopes[-1].add(st.name)
         if _is_ref_type(ty):
             if isinstance(st.expr, Unary) and st.expr.op in {"&", "&mut"} and isinstance(st.expr.expr, Name):
@@ -3470,6 +3730,7 @@ def _check_stmt(
         base = _assign_base_name(st.target)
         if base is not None:
             borrow.check_write(base, filename, st.line, st.col)
+            const_state.set_value(base, None)
         if isinstance(st.target, Name):
             is_mutable = _lookup_mut(st.target.value, mut_scopes)
             if is_mutable is None:
@@ -3546,6 +3807,7 @@ def _check_stmt(
             raise SemanticError(_diag(filename, st.line, st.col, "continue used outside loop"))
         return
     if isinstance(st, ComptimeStmt):
+        comptime_const = const_state.copy()
         _check_block(
             st.body,
             scopes + [{}],
@@ -3565,12 +3827,15 @@ def _check_stmt(
             loop_depth,
             unsafe_ok,
             gpu_kernel,
+            comptime_const,
         )
+        const_state.merge(const_state, comptime_const)
         return
     if isinstance(st, UnsafeStmt):
         # Enter unsafe context
         _enter_unsafe_context(filename, st.line, st.col)
         try:
+            unsafe_const = const_state.copy()
             _check_block(
                 st.body,
                 scopes + [{}],
@@ -3590,6 +3855,7 @@ def _check_stmt(
                 loop_depth,
                 True,  # unsafe_ok=True
                 gpu_kernel,
+                unsafe_const,
             )
         finally:
             _exit_unsafe_context()
@@ -3604,6 +3870,7 @@ def _check_stmt(
         then_move = move.copy()
         then_borrow_scopes = borrow_scopes + [set()]
         then_move_scopes = move_scopes + [{}]
+        then_const = const_state.copy()
         narrow = _is_narrowing_cond(st.cond)
         if narrow is not None:
             n_name, n_type = narrow
@@ -3630,6 +3897,7 @@ def _check_stmt(
             loop_depth,
             unsafe_ok,
             gpu_kernel,
+            then_const,
         )
         else_owned = owned.copy()
         else_scopes = scopes + [{}]
@@ -3638,6 +3906,7 @@ def _check_stmt(
         else_move = move.copy()
         else_borrow_scopes = borrow_scopes + [set()]
         else_move_scopes = move_scopes + [{}]
+        else_const = const_state.copy()
         if narrow is not None:
             n_name, n_type = narrow
             cur_ty = _lookup(n_name, scopes)
@@ -3662,10 +3931,12 @@ def _check_stmt(
             loop_depth,
             unsafe_ok,
             gpu_kernel,
+            else_const,
         )
         owned.merge(then_owned, else_owned)
         borrow.merge(then_borrow, else_borrow)
         move.merge(then_move, else_move)
+        const_state.merge(then_const, else_const)
         return
     if isinstance(st, WhileStmt):
         cond_ty = _infer(st.cond, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
@@ -3677,6 +3948,7 @@ def _check_stmt(
         loop_move = move.copy()
         loop_borrow_scopes = borrow_scopes + [set()]
         loop_move_scopes = move_scopes + [{}]
+        loop_const = const_state.copy()
         _check_block(
             st.body,
             loop_scopes,
@@ -3696,10 +3968,12 @@ def _check_stmt(
             loop_depth + 1,
             unsafe_ok,
             gpu_kernel,
+            loop_const,
         )
         owned.merge(owned, loop_owned)
         borrow.merge(borrow, loop_borrow)
         move.merge(move, loop_move)
+        const_state.merge(const_state, loop_const)
         return
     if isinstance(st, IteratorForStmt):
         loop_var_ty: str
@@ -3740,6 +4014,8 @@ def _check_stmt(
         loop_scopes[-1][st.var_name] = loop_var_ty
         loop_mut_scopes[-1][st.var_name] = False
         loop_move_scopes[-1][st.var_name] = loop_move.moved.get(st.var_name, False)
+        loop_const = const_state.copy()
+        loop_const.set_value(st.var_name, None)
         _check_block(
             st.body,
             loop_scopes,
@@ -3759,10 +4035,12 @@ def _check_stmt(
             loop_depth + 1,
             unsafe_ok,
             gpu_kernel,
+            loop_const,
         )
         owned.merge(owned, loop_owned)
         borrow.merge(borrow, loop_borrow)
         move.merge(move, loop_move)
+        const_state.merge(const_state, loop_const)
         return
     if isinstance(st, MatchStmt):
         subject_ty = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
@@ -3974,6 +4252,7 @@ def _check_stmt(
                     loop_depth,
                     unsafe_ok,
                     gpu_kernel,
+                    const_state.copy(),
                 )
             else:
                 # Expression body (enhanced match)
@@ -4022,7 +4301,7 @@ def _check_stmt(
     if isinstance(st, EnhancedWhileStmt):
         # Analyze binding
         if st.var_decl:
-            _check_stmt(st.var_decl, scopes, mut_scopes, borrow_scopes, move_scopes, fn_groups, structs, enums, fn_ret, ref_param_names, owned, borrow, move, filename, fn_name, loop_depth, unsafe_ok, gpu_kernel)
+            _check_stmt(st.var_decl, scopes, mut_scopes, borrow_scopes, move_scopes, fn_groups, structs, enums, fn_ret, ref_param_names, owned, borrow, move, filename, fn_name, loop_depth, unsafe_ok, gpu_kernel, const_state)
         
         # Analyze condition
         cond_ty = _infer(st.cond, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
@@ -4032,7 +4311,7 @@ def _check_stmt(
         loop_owned = owned.copy()
         loop_borrow = borrow.enter()
         loop_move = move.enter()
-        _check_block(st.body, scopes, mut_scopes, [loop_borrow], [loop_move], fn_groups, structs, enums, fn_ret, ref_param_names, loop_owned, borrow, move, filename, fn_name, loop_depth + 1, unsafe_ok, gpu_kernel)
+        _check_block(st.body, scopes, mut_scopes, [loop_borrow], [loop_move], fn_groups, structs, enums, fn_ret, ref_param_names, loop_owned, borrow, move, filename, fn_name, loop_depth + 1, unsafe_ok, gpu_kernel, const_state.copy())
         borrow.merge(borrow, loop_borrow)
         move.merge(move, loop_move)
         return
@@ -4060,7 +4339,7 @@ def _check_stmt(
         _check_stmt.loop_stack.append(('iterator', st.var_name))
         
         # Analyze body
-        _check_block(st.body, scopes, mut_scopes, [loop_borrow], [loop_move], fn_groups, structs, enums, fn_ret, ref_param_names, loop_owned, borrow, move, filename, fn_name, loop_depth + 1, unsafe_ok, gpu_kernel)
+        _check_block(st.body, scopes, mut_scopes, [loop_borrow], [loop_move], fn_groups, structs, enums, fn_ret, ref_param_names, loop_owned, borrow, move, filename, fn_name, loop_depth + 1, unsafe_ok, gpu_kernel, const_state.copy())
         
         # Clean up loop stack
         if hasattr(_check_stmt, 'loop_stack') and _check_stmt.loop_stack:
@@ -4744,6 +5023,21 @@ def _infer_gpu_namespace_call(
         raise SemanticError(_diag(filename, e.line, e.col, "gpu.launch expects at least 3 args: kernel, grid_size, block_size"))
     _require_type(filename, e.args[1].line, e.args[1].col, "Int", arg_types[1], "arg 1 for gpu.launch")
     _require_type(filename, e.args[2].line, e.args[2].col, "Int", arg_types[2], "arg 2 for gpu.launch")
+    const_values = _get_const_values()
+    grid_const = _const_int_value(e.args[1], const_values)
+    block_const = _const_int_value(e.args[2], const_values)
+    if grid_const is not None and grid_const <= 0:
+        raise SemanticError(_diag(filename, e.args[1].line, e.args[1].col, "gpu.launch grid_size must be > 0 (evaluated at compile time)"))
+    if block_const is not None:
+        if block_const <= 0:
+            raise SemanticError(_diag(filename, e.args[2].line, e.args[2].col, "gpu.launch block_size must be > 0 (evaluated at compile time)"))
+        if block_const > 1024:
+            raise SemanticError(_diag(filename, e.args[2].line, e.args[2].col, "gpu.launch block_size exceeds CUDA limit 1024 (evaluated at compile time)"))
+    if grid_const is not None and block_const is not None:
+        total_threads = grid_const * block_const
+        max_i64 = (1 << 63) - 1
+        if total_threads > max_i64:
+            raise SemanticError(_diag(filename, e.line, e.col, "gpu.launch total thread count overflows Int (grid_size * block_size)"))
 
     kernel_expr = e.args[0]
     launch_arg_types = arg_types[3:]
@@ -4762,14 +5056,39 @@ def _infer_gpu_namespace_call(
             if all(_gpu_launch_arg_compatible(pty, aty) for (_, pty), aty in zip(cand.params, launch_arg_types)):
                 matching.append(cand)
         if not matching:
+            typed_candidates = [c for c in candidates if len(c.params) == len(launch_arg_types)]
+            if typed_candidates:
+                first = typed_candidates[0]
+                for i, ((_, expected), arg, aty) in enumerate(zip(first.params, launch_args, launch_arg_types), start=3):
+                    if not _gpu_launch_arg_compatible(expected, aty):
+                        raise SemanticError(_diag(filename, arg.line, arg.col, f"arg {i} for gpu.launch kernel {_gpu_launch_arg_error(expected, aty)}"))
             sig = ", ".join(launch_arg_types)
             raise SemanticError(_diag(filename, e.line, e.col, f"no matching gpu kernel overload for launch {kernel_name}({sig})"))
         if len(matching) > 1:
             raise SemanticError(_diag(filename, e.line, e.col, f"ambiguous gpu kernel overload for launch {kernel_name}"))
         chosen = matching[0]
-        for i, ((_, expected), arg, aty) in enumerate(zip(chosen.params, launch_args, launch_arg_types), start=3):
+        const_values = _get_const_values()
+        static_lengths: list[tuple[int, str, int]] = []
+        for i, ((pname, expected), arg, aty) in enumerate(zip(chosen.params, launch_args, launch_arg_types), start=3):
             if not _gpu_launch_arg_compatible(expected, aty):
-                raise SemanticError(_diag(filename, arg.line, arg.col, f"arg {i} for gpu.launch kernel expects {expected}, got {aty}"))
+                raise SemanticError(_diag(filename, arg.line, arg.col, f"arg {i} for gpu.launch kernel `{kernel_name}` {_gpu_launch_arg_error(expected, aty)}"))
+            if _is_gpu_memory_type(expected):
+                static_len = _gpu_static_len(arg, const_values)
+                if static_len is not None:
+                    static_lengths.append((i, pname, static_len))
+        if len(static_lengths) >= 2:
+            base_i, base_name, base_len = static_lengths[0]
+            for idx, pname, plen in static_lengths[1:]:
+                if plen != base_len:
+                    raise SemanticError(
+                        _diag(
+                            filename,
+                            e.line,
+                            e.col,
+                            f"gpu.launch static length mismatch: arg {base_i} `{base_name}` has {base_len} elements, "
+                            f"arg {idx} `{pname}` has {plen} elements",
+                        )
+                    )
         setattr(e, "launch_resolved_name", chosen.symbol or chosen.name)
         return "Void"
 
@@ -4782,9 +5101,20 @@ def _infer_gpu_namespace_call(
         raise SemanticError(_diag(filename, kernel_expr.line, kernel_expr.col, "gpu.launch kernel function must return Void"))
     if len(param_tys) != len(launch_arg_types):
         raise SemanticError(_diag(filename, e.line, e.col, f"gpu.launch kernel expects {len(param_tys)} args, got {len(launch_arg_types)}"))
+    const_values = _get_const_values()
+    static_lengths: list[tuple[int, int]] = []
     for i, (expected, arg, aty) in enumerate(zip(param_tys, launch_args, launch_arg_types), start=3):
         if not _gpu_launch_arg_compatible(expected, aty):
-            raise SemanticError(_diag(filename, arg.line, arg.col, f"arg {i} for gpu.launch kernel expects {expected}, got {aty}"))
+            raise SemanticError(_diag(filename, arg.line, arg.col, f"arg {i} for gpu.launch kernel {_gpu_launch_arg_error(expected, aty)}"))
+        if _is_gpu_memory_type(expected):
+            static_len = _gpu_static_len(arg, const_values)
+            if static_len is not None:
+                static_lengths.append((i, static_len))
+    if len(static_lengths) >= 2:
+        base_i, base_len = static_lengths[0]
+        for idx, plen in static_lengths[1:]:
+            if plen != base_len:
+                raise SemanticError(_diag(filename, e.line, e.col, f"gpu.launch static length mismatch: arg {base_i} has {base_len} elements, arg {idx} has {plen} elements"))
     return "Void"
 
 
@@ -4907,6 +5237,19 @@ def _infer_call(
                     _require_sync(_strip_ref(aty), structs, filename, arg.line, arg.col, f"spawn arg {i}")
             _require_send(worker_ret_ty, structs, filename, e.line, e.col, "spawn worker return")
             return "Int"
+        if builtin_base == "static_assert":
+            if len(e.args) not in {1, 2}:
+                raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects 1 or 2 args, got {len(e.args)}"))
+            _require_type(filename, e.args[0].line, e.args[0].col, "Bool", arg_types[0], "arg 0 for static_assert")
+            if len(e.args) == 2:
+                _require_type(filename, e.args[1].line, e.args[1].col, "String", arg_types[1], "arg 1 for static_assert")
+            const_bool = _eval_const_expr(e.args[0], _get_const_values())
+            if const_bool is False:
+                detail = ""
+                if len(e.args) == 2 and isinstance(e.args[1], Literal) and isinstance(e.args[1].value, str):
+                    detail = f": {e.args[1].value}"
+                raise SemanticError(_diag(filename, e.args[0].line, e.args[0].col, f"static assertion failed{detail}"))
+            return "Void"
         if builtin_base in {"countOnes", "leadingZeros", "trailingZeros", "popcnt", "clz", "ctz"}:
             if len(e.args) != 1:
                 raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects 1 args, got {len(e.args)}"))
