@@ -96,3 +96,14 @@ npm run package
 
 This creates a `.vsix` package you can install in VS Code.
 `npm run package` automatically refreshes the bundled compiler/server copy before building VSIX.
+
+## One-Click Publish (latest syntax + LSP)
+
+From repo root:
+
+```bash
+python scripts/release_vscode_extension.py --publish --npm-update
+```
+
+This always runs syntax/LSP sync checks, rebuilds the bundled server, updates extension npm deps, and publishes.
+Set `VSCE_PAT` in your environment before running.

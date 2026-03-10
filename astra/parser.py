@@ -109,6 +109,8 @@ def _parse_int_literal(text: str) -> int:
         return int(t[2:], 16)
     if t.startswith(("0b", "0B")):
         return int(t[2:], 2)
+    if t.startswith(("0o", "0O")):
+        return int(t[2:], 8)
     return int(t, 10)
 
 
@@ -1205,29 +1207,25 @@ class Parser:
         if self.cur().kind == "IDENT" and self.cur().text == "_":
             wtok = self.eat("IDENT")
             return WildcardPattern(wtok.pos, wtok.line, wtok.col)
-        
-        # Parse literal patterns
-        if self.cur().kind in ("INT_LIT", "FLOAT_LIT", "STR_LIT", "TRUE", "FALSE"):
-            return self.parse_literal_pattern()
-        
-        # Parse range patterns
-        if self.cur().kind == "IDENT" and self.peek().kind == "..":
-            return self.parse_range_pattern()
-        
+
         # Parse slice patterns
         if self.cur().kind == "[":
             return self.parse_slice_pattern()
-        
+
         # Parse tuple patterns
         if self.cur().kind == "(":
             return self.parse_tuple_pattern()
-        
+
         # Parse struct patterns
         if self.cur().kind == "IDENT" and self.peek().kind == "{":
             return self.parse_struct_pattern()
-        
-        # Keep `|` available for match-pattern alternatives.
-        return self.parse_expr(5)
+
+        # Keep `|` available for match-pattern alternatives and normalize
+        # `a..b` / `a..=b` forms into pattern nodes.
+        expr = self.parse_expr(5)
+        if isinstance(expr, RangeExpr):
+            return RangePattern(expr.start, expr.end, expr.inclusive, expr.pos, expr.line, expr.col)
+        return expr
 
     def parse_literal_pattern(self):
         """Parse literal patterns like 42, "hello", true."""
@@ -1306,6 +1304,9 @@ class Parser:
         if self.cur().kind != "}":
             while True:
                 field_name = self.eat("IDENT").text
+                if field_name in field_patterns:
+                    self._err(f"duplicate field {field_name} in struct pattern")
+                    raise ParseError(self.errors[-1])
                 if self.opt(":"):
                     pattern = self.parse_match_pattern_atom()
                     field_patterns[field_name] = pattern

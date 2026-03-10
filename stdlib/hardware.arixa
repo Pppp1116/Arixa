@@ -66,6 +66,15 @@ fn spin_wait(condition fn() Bool, timeout Int) Bool {
 /// CPU pause instruction to yield in spin loops.
 fn cpu_pause() {}
 
+/// Busy delay for a fixed number of CPU pause cycles.
+fn spin_delay(cycles Int) {
+    mut n = 0;
+    while n < cycles {
+        cpu_pause();
+        n += 1;
+    }
+}
+
 /// Read CPU cycle counter (if available).
 /// 
 /// Returns `none` if cycle counter not supported.
@@ -165,6 +174,27 @@ fn modify_reg(addr &mut Int, mask Int, value Int) {
     write_reg(addr, new);
 }
 
+/// Set register bits defined by `mask`.
+fn set_reg_bits(addr &mut Int, mask Int) {
+    modify_reg(addr, mask, mask);
+}
+
+/// Clear register bits defined by `mask`.
+fn clear_reg_bits(addr &mut Int, mask Int) {
+    modify_reg(addr, mask, 0);
+}
+
+/// Toggle register bits defined by `mask`.
+fn toggle_reg_bits(addr &mut Int, mask Int) {
+    old = read_reg(addr);
+    write_reg(addr, old ^ mask);
+}
+
+/// Read masked register bits.
+fn read_reg_bits(addr &Int, mask Int) Int {
+    return read_reg(addr) & mask;
+}
+
 /// Wait for a register field to match `expected` with timeout.
 fn wait_for_reg_field(addr &Int, mask Int, expected Int, timeout Int) Bool {
     start = __read_timestamp_impl();
@@ -202,4 +232,14 @@ fn wait_for_reg_field(addr &Int, mask Int, expected Int, timeout Int) Bool {
         }
     }
     return false;
+}
+
+/// Wait for all bits in `mask` to become set.
+fn wait_for_reg_set(addr &Int, mask Int, timeout Int) Bool {
+    return wait_for_reg_field(addr, mask, mask, timeout);
+}
+
+/// Wait for all bits in `mask` to become cleared.
+fn wait_for_reg_clear(addr &Int, mask Int, timeout Int) Bool {
+    return wait_for_reg_field(addr, mask, 0, timeout);
 }

@@ -61,6 +61,11 @@ fn list_len(xs Any) Int {
     return __list_len(xs);
 }
 
+/// Return true when list has no entries.
+fn list_is_empty(xs Any) Bool {
+    return list_len(xs) == 0;
+}
+
 /// Create a new map/dictionary.
 /// 
 /// Parameters:
@@ -109,6 +114,11 @@ fn map_set(m Any, key Any, value Any) Int {
     return __map_set(m, key, value);
 }
 
+/// Upsert alias for map_set.
+fn map_put(m Any, key Any, value Any) Int {
+    return map_set(m, key, value);
+}
+
 /// Read a map value or return `fallback` when key is missing.
 /// 
 /// Parameters:
@@ -124,6 +134,15 @@ fn map_get_or(m Any, key Any, fallback Any) Any {
     }
     else {}
     return fallback;
+}
+
+/// Return map value as nullable option-like union.
+fn map_get_opt(m Any, key Any) Any | none {
+    if !map_has(m, key) {
+        return none;
+    }
+    else {}
+    return map_get(m, key);
 }
 
 /// Typed wrappers over dynamic collection handles.

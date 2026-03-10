@@ -16,6 +16,44 @@ from astra.parser import parse
 from astra.error_reporting import ErrorReporter, EnhancedError
 
 
+@dataclass
+class AnyUsageInfo:
+    """Tracks Any type usage in a program for opt-in runtime support."""
+    uses_any_type: bool = False
+    uses_dynamic_containers: bool = False
+    uses_any_casting: bool = False
+    uses_any_lists: bool = False
+    uses_any_maps: bool = False
+    uses_any_functions: bool = False
+    
+    def mark_any_type_used(self):
+        self.uses_any_type = True
+    
+    def mark_dynamic_containers_used(self):
+        self.uses_dynamic_containers = True
+        self.mark_any_type_used()
+    
+    def mark_any_casting_used(self):
+        self.uses_any_casting = True
+        self.mark_any_type_used()
+    
+    def mark_any_lists_used(self):
+        self.uses_any_lists = True
+        self.mark_dynamic_containers_used()
+    
+    def mark_any_maps_used(self):
+        self.uses_any_maps = True
+        self.mark_dynamic_containers_used()
+    
+    def mark_any_functions_used(self):
+        self.uses_any_functions = True
+        self.mark_any_type_used()
+    
+    def needs_any_runtime(self) -> bool:
+        """Check if Any runtime support is needed."""
+        return self.uses_any_type
+
+
 class DeadCodeAnalyzer:
     """Analyzes AST for dead code and unreachable code patterns."""
     
@@ -222,6 +260,8 @@ _TRAIT_IMPLS_STACK: list[dict[str, set[str]]] = [{}]
 _KNOWN_TRAITS_STACK: list[set[str]] = [set()]
 _TRAITS_STACK: list[dict[str, TraitDecl]] = [{}]
 _FN_GROUPS_STACK: list[dict[str, list[FnDecl | ExternFnDecl]]] = [{}]
+_OVERLOAD_CACHE_STACK: list[dict[tuple[Any, ...], FnDecl | ExternFnDecl]] = [{}]
+_MONOMORPH_INSTANCE_STACK: list[dict[tuple[Any, ...], str]] = [{}]
 
 
 
@@ -353,6 +393,8 @@ def _strip_ref(typ: Any) -> str:
         return t[5:]
     if t.startswith("&"):
         return t[1:]
+    if t.startswith("*"):
+        return t[1:]
     return t
 
 
@@ -434,6 +476,17 @@ def _is_numeric_scalar_type(typ: str) -> bool:
     return _is_int_type(typ) or _is_float_type(typ)
 
 
+def _is_generic_type(t: str) -> bool:
+    """Check if a type is a generic type like Vec<T>, Map<K,V>, etc."""
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*<.*>", t))
+
+
+def _get_generic_base(t: str) -> str:
+    """Get the base name of a generic type, e.g., Vec<Int> -> Vec"""
+    match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)<", t)
+    return match.group(1) if match else t
+
+
 def _is_unsized_value_type(typ: str) -> bool:
     c = _canonical_type(typ)
     return c == "str" or _is_slice_type(c)
@@ -497,6 +550,13 @@ def _is_gpu_kernel_param_type(typ: str, structs: dict[str, StructDecl]) -> bool:
     return False
 
 
+
+
+def _gpu_elem_type_match(expected: str, actual: str) -> bool:
+    exp = _canonical_type(expected)
+    act = _canonical_type(actual)
+    return exp == act or act == "Any"
+
 def _gpu_launch_arg_compatible(expected: str, actual: str) -> bool:
     exp = _canonical_type(expected)
     act = _canonical_type(actual)
@@ -507,12 +567,57 @@ def _gpu_launch_arg_compatible(expected: str, actual: str) -> bool:
     if exp_el is None or act_el is None:
         return False
     if _is_gpu_slice_type(exp) and (_is_gpu_buffer_type(act) or _is_gpu_slice_type(act) or _is_gpu_mut_slice_type(act)):
-        return _same_type(exp_el, act_el)
+        return _gpu_elem_type_match(exp_el, act_el)
     if _is_gpu_mut_slice_type(exp) and (_is_gpu_buffer_type(act) or _is_gpu_mut_slice_type(act)):
-        return _same_type(exp_el, act_el)
+        return _gpu_elem_type_match(exp_el, act_el)
     if _is_gpu_buffer_type(exp) and _is_gpu_buffer_type(act):
-        return _same_type(exp_el, act_el)
+        return _gpu_elem_type_match(exp_el, act_el)
     return False
+
+
+def _gpu_launch_arg_error(expected: str, actual: str) -> str:
+    exp = _canonical_type(expected)
+    act = _canonical_type(actual)
+    exp_el = _gpu_element_type(exp)
+    act_el = _gpu_element_type(act)
+    if exp_el is not None and act_el is not None and not _gpu_elem_type_match(exp_el, act_el):
+        return (
+            f"element type mismatch: expected `{exp_el}` but got `{act_el}`. "
+            f"kernel parameter type is `{exp}` and argument type is `{act}`"
+        )
+    if _is_gpu_memory_type(exp) and not _is_gpu_memory_type(act):
+        return (
+            f"expected device memory `{exp}` but got host value `{act}`. "
+            "Use gpu.copy(...) to transfer host data to device memory"
+        )
+    return f"expected {exp}, got {act}"
+
+
+def _gpu_static_len(expr: Any, const_values: dict[str, object]) -> int | None:
+    if isinstance(expr, (ArrayLit, VectorLiteral)):
+        return len(expr.elements)
+    if isinstance(expr, Name):
+        value = const_values.get(expr.value)
+        if isinstance(value, int) and value >= 0:
+            return int(value)
+        return None
+    if isinstance(expr, (TypeAnnotated, CastExpr)):
+        return _gpu_static_len(expr.expr, const_values)
+    if isinstance(expr, Call):
+        if isinstance(expr.fn, Name) and expr.fn.value in {"vec_from", "__vec_from"} and len(expr.args) == 1:
+            return _gpu_static_len(expr.args[0], const_values)
+        if (
+            isinstance(expr.fn, FieldExpr)
+            and isinstance(expr.fn.obj, Name)
+            and expr.fn.obj.value == "gpu"
+            and expr.fn.field == "copy"
+            and len(expr.args) == 1
+        ):
+            return _gpu_static_len(expr.args[0], const_values)
+    if isinstance(expr, MethodCall):
+        if isinstance(expr.obj, Name) and expr.obj.value == "gpu" and expr.method == "copy" and len(expr.args) == 1:
+            return _gpu_static_len(expr.args[0], const_values)
+    return None
 
 
 def _validate_decl_type(typ: Any, filename: str, line: int, col: int) -> None:
@@ -568,6 +673,7 @@ BUILTIN_SIGS: dict[str, BuiltinSig] = {
     "write_file": BuiltinSig(["String", "String"], "Int"),
     "args": BuiltinSig([], "Any"),
     "arg": BuiltinSig(["Int"], "String"),
+    "static_assert": BuiltinSig(None, "Void"),
     "spawn": BuiltinSig(["Any"], "Int"),
     "join": BuiltinSig(["Int"], "Any"),
     "__atomic_int_new": BuiltinSig(["Int"], "Int"),
@@ -583,8 +689,6 @@ BUILTIN_SIGS: dict[str, BuiltinSig] = {
     "chan_recv_try": BuiltinSig(["Int"], "Any?"),
     "chan_recv_blocking": BuiltinSig(["Int"], "Any"),
     "chan_close": BuiltinSig(["Int"], "Int"),
-    "alloc": BuiltinSig(["Int"], "Int"),
-    "free": BuiltinSig(["Int"], "Void"),
     "await_result": BuiltinSig(["Any"], "Any"),
     "list_new": BuiltinSig([], "Any"),
     "list_push": BuiltinSig(["Any", "Any"], "Int"),
@@ -625,7 +729,7 @@ BUILTIN_SIGS: dict[str, BuiltinSig] = {
     "ctz": BuiltinSig(["Any"], "Int"),
     "rotl": BuiltinSig(["Any", "Any"], "Any"),
     "rotr": BuiltinSig(["Any", "Any"], "Any"),
-    "vec_new": BuiltinSig([], "Any"),
+    "vec_new": BuiltinSig([], "Vec<Unknown>"),  # Generic, will be inferred
     "vec_from": BuiltinSig(["Any"], "Any"),
     "vec_len": BuiltinSig(["Any"], "Int"),
     "vec_get": BuiltinSig(["Any", "Int"], "Any | none"),
@@ -636,7 +740,7 @@ BUILTIN_SIGS: dict[str, BuiltinSig] = {
 for _name, _sig in list(BUILTIN_SIGS.items()):
     if _name.startswith("__"):
         continue
-    if _name in {"print", "len", "read_file", "write_file", "args", "arg", "spawn", "join", "alloc", "free", "await_result"}:
+    if _name in {"print", "len", "read_file", "write_file", "args", "arg", "spawn", "join", "await_result"}:
         continue
     BUILTIN_SIGS[f"__{_name}"] = _sig
 
@@ -650,8 +754,6 @@ _FREESTANDING_FORBIDDEN_BUILTINS: set[str] = {
     "arg",
     "spawn",
     "join",
-    "alloc",
-    "free",
     "list_new",
     "list_push",
     "list_get",
@@ -690,6 +792,29 @@ _FREESTANDING_FORBIDDEN_BUILTINS: set[str] = {
     "proc_exit",
 }
 _FREESTANDING_MODE_STACK: list[bool] = []
+
+
+BUILTIN_DOCS: dict[str, str] = {
+    "static_assert": "Compile-time assertion. Use static_assert(condition[, message]).",
+    "len": "Returns the length of a slice/vector/string-like value.",
+    "format": "Formats values into a string.",
+}
+
+GPU_API_DOCS: dict[str, str] = {
+    "available": "Returns whether a CUDA-capable GPU backend is available.",
+    "device_count": "Returns the number of visible GPU devices.",
+    "device_name": "Returns the name of a device by index.",
+    "alloc": "Allocates a GPU buffer with the requested element count.",
+    "copy": "Copies host Vec/slice data to a new GPU buffer.",
+    "read": "Copies device buffer/slice data back to host memory.",
+    "launch": "Launches a gpu fn kernel as gpu.launch(kernel, grid_size, block_size, ...args).",
+    "global_id": "Kernel builtin: global thread id.",
+    "thread_id": "Kernel builtin: thread id within the block.",
+    "block_id": "Kernel builtin: block id in the launch grid.",
+    "block_dim": "Kernel builtin: threads per block.",
+    "grid_dim": "Kernel builtin: number of blocks in the launch grid.",
+    "barrier": "Kernel builtin: block-level synchronization barrier.",
+}
 
 GPU_KERNEL_BUILTINS: set[str] = {
     "global_id",
@@ -745,20 +870,13 @@ def _require_freestanding_builtin_allowed(name: str, filename: str, line: int, c
 class _OwnedState:
     def __init__(self):
         self.owners: dict[str, str] = {}
-        self.allocation_sites: dict[str, tuple[str, int, int]] = {}  # name -> (filename, line, col)
         self.move_chains: dict[str, list[str]] = {}  # dst -> [src1, src2, ...] move history
 
     def copy(self):
         nxt = _OwnedState()
         nxt.owners = self.owners.copy()
-        nxt.allocation_sites = self.allocation_sites.copy()
         nxt.move_chains = {k: v.copy() for k, v in self.move_chains.items()}
         return nxt
-
-    def track_alloc(self, name: str, filename: str = "", line: int = 0, col: int = 0):
-        self.owners[name] = "alive"
-        self.allocation_sites[name] = (filename, line, col)
-        self.move_chains[name] = []
 
     def move(self, src: str, dst: str, span: Span):
         self._require_alive(src, span)
@@ -769,14 +887,6 @@ class _OwnedState:
         if dst not in self.move_chains:
             self.move_chains[dst] = []
         self.move_chains[dst].append(src)
-        
-        # Propagate allocation site info
-        if src in self.allocation_sites:
-            self.allocation_sites[dst] = self.allocation_sites[src]
-
-    def free(self, name: str, span: Span):
-        self._require_alive(name, span)
-        self.owners[name] = "freed"
 
     def invalidate(self, name: str):
         if name in self.owners and self.owners[name] == "alive":
@@ -793,10 +903,6 @@ class _OwnedState:
         if name in self.owners:
             self._require_alive(name, span)
 
-    def get_allocation_site(self, name: str) -> tuple[str, int, int] | None:
-        """Get the original allocation site for a variable."""
-        return self.allocation_sites.get(name)
-
     def get_move_history(self, name: str) -> list[str]:
         """Get the complete move history for a variable."""
         return self.move_chains.get(name, [])
@@ -812,15 +918,7 @@ class _OwnedState:
     def check_no_live_leaks(self, fn_name: str, filename: str, line: int, col: int):
         leaked = sorted(k for k, v in self.owners.items() if v == "alive")
         if leaked:
-            # Provide detailed leak information with allocation sites
-            leak_details = []
-            for var in leaked:
-                site = self.get_allocation_site(var)
-                if site:
-                    leak_details.append(f"{var} (allocated at {site[0]}:{site[1]}:{site[2]})")
-                else:
-                    leak_details.append(var)
-            raise SemanticError(_diag(filename, line, col, f"owned allocation(s) not released in {fn_name}: {', '.join(leak_details)}"))
+            raise SemanticError(_diag(filename, line, col, f"live owned value(s) not released in {fn_name}: {', '.join(leaked)}"))
 
     def merge(self, left: "_OwnedState", right: "_OwnedState"):
         merged: dict[str, str] = {}
@@ -832,18 +930,11 @@ class _OwnedState:
                 merged[k] = lv
             elif lv == "moved" or rv == "moved":
                 merged[k] = "moved"
-            elif lv == "freed" or rv == "freed":
-                merged[k] = "freed"
             else:
                 merged[k] = "alive"
         
         self.owners = merged
-        
-        # Merge allocation sites (prefer left)
-        merged_sites = left.allocation_sites.copy()
-        merged_sites.update(right.allocation_sites)
-        self.allocation_sites = merged_sites
-        
+
         # Merge move chains
         self.move_chains = {k: v.copy() for k, v in left.move_chains.items()}
         for k, v in right.move_chains.items():
@@ -854,17 +945,13 @@ class _OwnedState:
 
     def _require_alive(self, name: str, span: Span):
         st = self.owners.get(name)
-        if st == "freed":
-            raise SemanticError(_diag(span.filename, span.line, span.col, f"use-after-free of {name}"))
         if st == "moved":
             raise SemanticError(_diag(span.filename, span.line, span.col, f"use-after-move of {name}"))
 
     def _require_reassigned_before_reassign(self, name: str, span: Span):
         st = self.owners.get(name)
         if st == "alive":
-            raise SemanticError(
-                _diag(span.filename, span.line, span.col, f"reassignment would leak owned allocation in {name}; free or move it first")
-            )
+            raise SemanticError(_diag(span.filename, span.line, span.col, f"reassignment would overwrite tracked owned value {name}; move it first"))
 
 
 @dataclass
@@ -975,30 +1062,66 @@ class _BorrowState:
         self.lifetime_regions[owner].add(ref_name)
 
     def ensure_can_borrow(self, owner: str, mutable: bool, owner_mutable: bool, filename: str, line: int, col: int):
+        shared_count = self.shared_counts.get(owner, 0)
+        has_mut = owner in self.mutable_borrowed
         if mutable and not owner_mutable:
-            raise SemanticError(_diag(filename, line, col, f"cannot borrow {owner} mutably as it's not declared mutable"))
-        if mutable and owner in self.mutable_borrowed:
-            raise SemanticError(_diag(filename, line, col, f"cannot borrow {owner} mutably while it's already mutably borrowed"))
-        if mutable and self.shared_counts.get(owner, 0) > 0:
-            raise SemanticError(_diag(filename, line, col, f"cannot borrow {owner} mutably while it's already immutably borrowed"))
-        if not mutable and owner in self.mutable_borrowed:
-            raise SemanticError(_diag(filename, line, col, f"cannot borrow {owner} immutably while it's already mutably borrowed"))
+            raise SemanticError(
+                _diag(
+                    filename,
+                    line,
+                    col,
+                    f"cannot create mutable reference to `{owner}` because it is declared as immutable",
+                )
+            )
+        if mutable and has_mut:
+            raise SemanticError(
+                _diag(
+                    filename,
+                    line,
+                    col,
+                    f"cannot create mutable reference to `{owner}` because it is already mutably borrowed",
+                )
+            )
+        if mutable and shared_count > 0:
+            raise SemanticError(
+                _diag(
+                    filename,
+                    line,
+                    col,
+                    f"cannot create mutable reference to `{owner}` because it has {shared_count} active immutable reference(s)",
+                )
+            )
+        if not mutable and has_mut:
+            raise SemanticError(
+                _diag(
+                    filename,
+                    line,
+                    col,
+                    f"cannot create immutable reference to `{owner}` because it is mutably borrowed",
+                )
+            )
 
     def ensure_can_move(self, name: str, filename: str, line: int, col: int):
         if name in self.mutable_borrowed:
-            raise SemanticError(_diag(filename, line, col, f"cannot move {name} while it's mutably borrowed"))
-        if self.shared_counts.get(name, 0) > 0:
-            raise SemanticError(_diag(filename, line, col, f"cannot move {name} while it's borrowed"))
+            raise SemanticError(_diag(filename, line, col, f"cannot read from `{name}` while it is mutably borrowed"))
+        shared_count = self.shared_counts.get(name, 0)
+        if shared_count > 0:
+            raise SemanticError(
+                _diag(filename, line, col, f"cannot move `{name}` because it has {shared_count} active immutable reference(s)")
+            )
 
     def check_read(self, name: str, filename: str, line: int, col: int):
-        # Reading is always allowed, but we track the access
-        pass
+        if name in self.ref_bindings:
+            return
+        if name in self.mutable_borrowed:
+            raise SemanticError(_diag(filename, line, col, f"cannot read from `{name}` while it is mutably borrowed"))
 
     def check_write(self, name: str, filename: str, line: int, col: int):
+        shared_count = self.shared_counts.get(name, 0)
+        if shared_count > 0:
+            raise SemanticError(_diag(filename, line, col, f"cannot mutate `{name}` because it has {shared_count} active immutable reference(s)"))
         if name in self.mutable_borrowed:
-            raise SemanticError(_diag(filename, line, col, f"cannot write to {name} while it's mutably borrowed"))
-        if self.shared_counts.get(name, 0) > 0:
-            raise SemanticError(_diag(filename, line, col, f"cannot write to {name} while it's immutably borrowed"))
+            raise SemanticError(_diag(filename, line, col, f"cannot mutate `{name}` because it is mutably borrowed"))
 
     def get_borrow_site(self, ref_name: str) -> tuple[str, int, int] | None:
         """Get the site where a reference was created."""
@@ -1178,46 +1301,103 @@ class _LifetimeAnalyzer:
                 f"Consider waiting for the mutable reference to go out of scope."))
 
 
+
+
+class _ConstState:
+    def __init__(self):
+        self.values: dict[str, object] = {}
+
+    def copy(self):
+        nxt = _ConstState()
+        nxt.values = self.values.copy()
+        return nxt
+
+    def merge(self, left: "_ConstState", right: "_ConstState"):
+        merged: dict[str, object] = {}
+        for name, lval in left.values.items():
+            if name in right.values and right.values[name] == lval:
+                merged[name] = lval
+        self.values = merged
+
+    def set_value(self, name: str, value: object | None):
+        if value is None:
+            self.values.pop(name, None)
+        else:
+            self.values[name] = value
+
 class _MoveState:
     def __init__(self):
         self.moved: dict[str, bool] = {}
+        self.move_sites: dict[str, Span] = {}
         self.fn_ret: str | None = None
 
     def copy(self):
         nxt = _MoveState()
         nxt.moved = self.moved.copy()
+        nxt.move_sites = self.move_sites.copy()
         nxt.fn_ret = self.fn_ret
         return nxt
 
     def merge(self, left: "_MoveState", right: "_MoveState"):
         merged: dict[str, bool] = {}
+        merged_sites: dict[str, Span] = {}
         for name in set(left.moved) | set(right.moved):
-            merged[name] = left.moved.get(name, False) or right.moved.get(name, False)
+            l = left.moved.get(name, False)
+            r = right.moved.get(name, False)
+            merged[name] = l or r
+            if l and name in left.move_sites:
+                merged_sites[name] = left.move_sites[name]
+            elif r and name in right.move_sites:
+                merged_sites[name] = right.move_sites[name]
         self.moved = merged
+        self.move_sites = merged_sites
         self.fn_ret = left.fn_ret or right.fn_ret
 
     def release_scope(self, scope_prev: dict[str, bool | None]):
         for name, prev in scope_prev.items():
             if prev is None:
                 self.moved.pop(name, None)
+                self.move_sites.pop(name, None)
             else:
                 self.moved[name] = prev
+                if not prev:
+                    self.move_sites.pop(name, None)
 
     def declare(self, name: str):
         self.moved[name] = False
+        self.move_sites.pop(name, None)
 
     def reinitialize(self, name: str):
         if name in self.moved:
             self.moved[name] = False
+            self.move_sites.pop(name, None)
+
+    def _moved_error(self, name: str, filename: str, line: int, col: int) -> str:
+        where = self.move_sites.get(name)
+        if where is None:
+            return (
+                f"Value `{name}` was moved and cannot be used afterwards. "
+                "Consider cloning the value or borrowing it instead of moving."
+            )
+        return (
+            f"Value `{name}` was moved here:\n"
+            f"  {where.filename}:{where.line}:{where.col}\n"
+            "But used again here:\n"
+            f"  {filename}:{line}:{col}\n"
+            "The value cannot be used afterwards. "
+            "Consider cloning the value or borrowing it instead of moving."
+        )
+
 
     def consume(self, name: str, filename: str, line: int, col: int):
         if self.moved.get(name, False):
-            raise SemanticError(_diag(filename, line, col, f"use-after-move of {name}"))
+            raise SemanticError(_diag(filename, line, col, self._moved_error(name, filename, line, col)))
         self.moved[name] = True
+        self.move_sites[name] = Span.at(filename, line, col)
 
     def check_use(self, name: str, filename: str, line: int, col: int):
         if self.moved.get(name, False):
-            raise SemanticError(_diag(filename, line, col, f"use-after-move of {name}"))
+            raise SemanticError(_diag(filename, line, col, self._moved_error(name, filename, line, col)))
 
 
 def _assign_base_name(target: Any) -> str | None:
@@ -1229,7 +1409,15 @@ def _assign_base_name(target: Any) -> str | None:
     return None
 
 
-def _same_type(expected: str, actual: str) -> bool:
+def _get_any_usage() -> AnyUsageInfo:
+    """Get the current Any usage context from the program."""
+    # This is a bit of a hack - we'll store it in a global during analysis
+    return getattr(_get_any_usage, 'current', AnyUsageInfo())
+
+
+def _same_type(expected: str, actual: str, any_usage: AnyUsageInfo | None = None) -> bool:
+    if any_usage is None:
+        any_usage = _get_any_usage()
     if expected == actual:
         return True
     if actual == "Never":
@@ -1270,8 +1458,12 @@ def _same_type(expected: str, actual: str) -> bool:
         act_elem = actual[5:-1]   # Remove &Vec< and >
         return _same_type(exp_elem, act_elem)
     if expected == "Any":
+        if any_usage:
+            any_usage.mark_any_type_used()
         return True
     if actual == "Any":
+        if any_usage:
+            any_usage.mark_any_type_used()
         return False
     # Handle type aliases - if both are custom types that resolve to the same underlying type
     if expected in {"Float"} | FLOAT_TYPES and _is_int_type(actual):
@@ -1422,24 +1614,13 @@ def _require_type(filename: str, line: int, col: int, expected: str, actual: str
             if any(_is_int_type(t) for t in union_types if t != "none"):
                 return
     
-        # Allow safe implicit integer conversions (only for int-to-int)
+        # Integer assignments are strict: implicit conversion is only allowed
+        # from default `Int` literals/temporaries. All other int-width or
+        # signedness changes require explicit casts.
         if _is_int_type(exp) and _is_int_type(act):
-            exp_info = _int_info(exp)
-            act_info = _int_info(act)
-            if exp_info and act_info:
-                # Allow conversions from Int (default) to any integer type
-                if act == "Int":
-                    return
-                # Allow widening conversions (smaller to larger bits)
-                if exp_info[0] > act_info[0] and exp_info[1] >= act_info[1]:
-                    # Target type is wider
-                    return
-                # Allow same-width conversions with signedness change
-                if exp_info[0] == act_info[0]:
-                    return
-                # Reject narrowing conversions (larger to smaller bits) unless from Int
-                if exp_info[0] < act_info[0] and act != "Int":
-                    raise SemanticError(_diag(filename, line, col, f"cannot implicitly convert {act} to {exp}, use explicit cast"))
+            if act == "Int":
+                return
+            raise SemanticError(_diag(filename, line, col, f"cannot implicitly convert {act} to {exp}, use explicit cast"))
             
         # Handle slice type conversion (&Vec<T> to &[T])
         if (exp.startswith("&[") and act.startswith("&Vec")):
@@ -1471,10 +1652,12 @@ def _require_strict_int_operands(filename: str, line: int, col: int, op: str, le
         raise SemanticError(_diag(filename, line, col, f"operator {op} requires matching integer types, got {left} and {right}"))
 
 
-def _cast_supported(src: str, dst: str) -> bool:
+def _cast_supported(src: str, dst: str, any_usage: AnyUsageInfo | None = None) -> bool:
+    if any_usage is None:
+        any_usage = _get_any_usage()
     src_c = _canonical_type(src)
     dst_c = _canonical_type(dst)
-    if _same_type(src_c, dst_c):
+    if _same_type(src_c, dst_c, any_usage):
         return True
     # Support casting between equivalent nullable types
     if _is_nullable_union(src_c) and _is_nullable_union(dst_c):
@@ -1499,10 +1682,14 @@ def _cast_supported(src: str, dst: str) -> bool:
     if dst_c == "Bool" and (_is_numeric_scalar_type(src_c) or src_c == "Bool"):
         return True
     if src_c == "Any":
+        if any_usage:
+            any_usage.mark_any_casting_used()
         if _is_generic_symbol_name(dst_c):
             return True
         return _is_any_dynamic_cast_target(dst_c)
     if dst_c == "Any":
+        if any_usage:
+            any_usage.mark_any_casting_used()
         if _is_generic_symbol_name(src_c):
             return True
         return _is_any_dynamic_cast_target(src_c) or _is_ref_type(src_c) or src_c.startswith("fn(")
@@ -1519,6 +1706,14 @@ def _cast_supported(src: str, dst: str) -> bool:
     # Support none to pointer conversions (null pointer)
     if src_c == NONE_LIT_TYPE and _is_ref_type(dst_c):
         return True
+    
+    # Support casting from Unknown generic types to concrete generic types
+    if _is_generic_type(src_c) and _is_generic_type(dst_c):
+        src_base = _get_generic_base(src_c)
+        dst_base = _get_generic_base(dst_c)
+        # Allow casting from Unknown to same generic base type
+        if src_base == dst_base and "Unknown" in src_c:
+            return True
     
     return False
 
@@ -1919,6 +2114,14 @@ def _current_fn_groups() -> dict[str, list[FnDecl | ExternFnDecl]]:
     return _FN_GROUPS_STACK[-1] if _FN_GROUPS_STACK else {}
 
 
+def _current_overload_cache() -> dict[tuple[Any, ...], FnDecl | ExternFnDecl]:
+    return _OVERLOAD_CACHE_STACK[-1] if _OVERLOAD_CACHE_STACK else {}
+
+
+def _current_monomorph_instances() -> dict[tuple[Any, ...], str]:
+    return _MONOMORPH_INSTANCE_STACK[-1] if _MONOMORPH_INSTANCE_STACK else {}
+
+
 def _replace_self_type(typ: str, concrete: str) -> str:
     t = _canonical_type(typ)
     if t == "Self":
@@ -2300,6 +2503,16 @@ def _choose_impl(
     line: int,
     col: int,
 ) -> FnDecl | ExternFnDecl:
+    cache_key = (
+        name,
+        tuple(_canonical_type(t) for t in arg_types),
+        tuple(id(d) for d in decls),
+    )
+    overload_cache = _current_overload_cache()
+    cached = overload_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     ranked: list[tuple[tuple[int, int, int, int], FnDecl | ExternFnDecl]] = []
     for d in decls:
         sc = _specialization_score(d, arg_types, known_types)
@@ -2358,6 +2571,7 @@ def _choose_impl(
                 f"ambiguous overload for {name}({', '.join(arg_types)}): candidates {candidates}",
             )
         )
+    overload_cache[cache_key] = best[0]
     return best[0]
 
 
@@ -2384,6 +2598,156 @@ def _const_expr_type(expr: Any, known: dict[str, str]) -> str | None:
         inner = _const_expr_type(expr.expr, known)
         if inner in {"Int", "Float"} or _is_int_type(inner or "") or _is_float_type(inner or ""):
             return inner
+    return None
+
+
+def _monomorph_typevars_for_decl(
+    decl: FnDecl,
+    bindings: dict[str, str],
+    known_types: set[str],
+) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for tv in list(getattr(decl, "generics", [])):
+        if tv not in seen:
+            out.append(tv)
+            seen.add(tv)
+    for _, pty in decl.params:
+        if _is_typevar(pty, known_types) and pty not in seen:
+            out.append(pty)
+            seen.add(pty)
+    for tv in sorted(bindings.keys()):
+        if tv not in seen:
+            out.append(tv)
+            seen.add(tv)
+    return out
+
+
+def _register_monomorph_instance(
+    decl: FnDecl,
+    bindings: dict[str, str],
+    known_types: set[str],
+) -> tuple[str, tuple[Any, ...]] | None:
+    typevars = _monomorph_typevars_for_decl(decl, bindings, known_types)
+    if not typevars:
+        return None
+    base_symbol = decl.symbol or decl.name
+    concrete = tuple(_canonical_type(bindings.get(tv, "Any")) for tv in typevars)
+    if any(c == "Any" for c in concrete):
+        # Keep this call polymorphic; unresolved bindings are not a real monomorph instance.
+        return None
+    key = (base_symbol, tuple(typevars), concrete)
+    cache = _current_monomorph_instances()
+    symbol = cache.get(key)
+    if symbol is None:
+        base_count = sum(1 for k in cache.keys() if isinstance(k, tuple) and k and k[0] == base_symbol)
+        symbol = f"{base_symbol}__mono{base_count}"
+        cache[key] = symbol
+    return symbol, key
+
+
+def _get_const_values() -> dict[str, object]:
+    return getattr(_get_const_values, "current", {})
+
+
+def _get_global_const_values() -> dict[str, object]:
+    return getattr(_get_global_const_values, "current", {})
+
+
+def _active_const_values(local_values: dict[str, object]) -> dict[str, object]:
+    merged = _get_global_const_values().copy()
+    merged.update(local_values)
+    return merged
+
+
+def _eval_const_expr(expr: Any, const_values: dict[str, object]) -> object | None:
+    if isinstance(expr, BoolLit):
+        return bool(expr.value)
+    if isinstance(expr, Literal):
+        if isinstance(expr.value, (bool, int, float, str)):
+            return expr.value
+        return None
+    if isinstance(expr, Name):
+        return const_values.get(expr.value)
+    if isinstance(expr, TypeAnnotated):
+        return _eval_const_expr(expr.expr, const_values)
+    if isinstance(expr, CastExpr):
+        return _eval_const_expr(expr.expr, const_values)
+    if isinstance(expr, Unary):
+        inner = _eval_const_expr(expr.expr, const_values)
+        if inner is None:
+            return None
+        if expr.op == "+":
+            if isinstance(inner, (int, float)):
+                return +inner
+            return None
+        if expr.op == "-":
+            if isinstance(inner, (int, float)):
+                return -inner
+            return None
+        if expr.op == "!":
+            if isinstance(inner, bool):
+                return (not inner)
+            return None
+        return None
+    if isinstance(expr, Binary):
+        left = _eval_const_expr(expr.left, const_values)
+        right = _eval_const_expr(expr.right, const_values)
+        if left is None or right is None:
+            return None
+        op = expr.op
+        if op == "+":
+            if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+                return left + right
+            return None
+        if op == "-":
+            if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+                return left - right
+            return None
+        if op == "*":
+            if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+                return left * right
+            return None
+        if op == "/":
+            if isinstance(left, int) and isinstance(right, int) and right != 0:
+                return int(left / right)
+            if isinstance(left, (int, float)) and isinstance(right, (int, float)) and right != 0:
+                return left / right
+            return None
+        if op == "%":
+            if isinstance(left, int) and isinstance(right, int) and right != 0:
+                return left % right
+            return None
+        if op in {"<", "<=", ">", ">="}:
+            if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+                if op == "<":
+                    return left < right
+                if op == "<=":
+                    return left <= right
+                if op == ">":
+                    return left > right
+                return left >= right
+            return None
+        if op in {"==", "!="}:
+            return left == right if op == "==" else left != right
+        if op == "&&":
+            if isinstance(left, bool) and isinstance(right, bool):
+                return left and right
+            return None
+        if op == "||":
+            if isinstance(left, bool) and isinstance(right, bool):
+                return left or right
+            return None
+        return None
+    return None
+
+
+def _const_int_value(expr: Any, const_values: dict[str, object]) -> int | None:
+    value = _eval_const_expr(expr, const_values)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return int(value)
     return None
 
 
@@ -2421,6 +2785,16 @@ def _load_imported_program_items(
             continue
         sub_items, _ = _load_imported_program_items(str(resolved_path), sub, seen=seen)
         items.extend(sub_items)
+    
+    # Store module function information for codegen inlining
+    for item in imported_prog.items:
+        if isinstance(item, ImportDecl):
+            if not hasattr(import_decl, 'module_functions'):
+                import_decl.module_functions = {}
+            for sub_item in imported_prog.items:
+                if isinstance(sub_item, FnDecl):
+                    import_decl.module_functions[sub_item.name] = sub_item
+    
     return items, resolved_path
 
 
@@ -2445,6 +2819,17 @@ def analyze(
         Value produced by the routine, if any.
     """
     _FREESTANDING_MODE_STACK.append(freestanding)
+    any_usage = AnyUsageInfo()
+    setattr(prog, "any_usage", any_usage)
+    _get_any_usage.current = any_usage
+    const_values: dict[str, object] = {}
+    _get_const_values.current = const_values
+    _get_global_const_values.current = const_values
+    overload_cache: dict[tuple[Any, ...], FnDecl | ExternFnDecl] = {}
+    monomorph_instances: dict[tuple[Any, ...], str] = {}
+    _OVERLOAD_CACHE_STACK.append(overload_cache)
+    _MONOMORPH_INSTANCE_STACK.append(monomorph_instances)
+
     try:
         errors: list[str] = []
         seen_errors: set[str] = set()
@@ -2514,6 +2899,9 @@ def analyze(
                     # Type check the const expression
                     inferred = _infer(item.expr, [global_scope], [], fn_groups, structs, enums, None, _BorrowState(), _MoveState(), item_filename, "", False, False)
                     _validate_decl_type(inferred, item_filename, item.line, item.col)
+                    value = _eval_const_expr(item.expr, const_values)
+                    if value is not None:
+                        const_values[item.name] = value
                     # Store const in global scope for later use
                     global_scope[item.name] = inferred
                     continue
@@ -2715,7 +3103,7 @@ def analyze(
                 entry = entries[0]
                 if entry.params:
                     raise SemanticError(_diag(filename, entry.line, entry.col, f"{require_entrypoint}() must not take parameters"))
-                if require_entrypoint == "main" and _canonical_type(entry.ret) != "i64":
+                if require_entrypoint == "main" and _canonical_type(entry.ret) not in {"Int", "i64"}:
                     raise SemanticError(_diag(filename, entry.line, entry.col, "main() must return Int"))
             except SemanticError as err:
                 _record(err)
@@ -2735,6 +3123,17 @@ def analyze(
                     except SemanticError as err:
                         _record(err)
                         continue
+            setattr(prog, "monomorph_instances", dict(monomorph_instances))
+            setattr(
+                prog,
+                "monomorph_symbol_to_base",
+                {
+                    symbol: key[0]
+                    for key, symbol in monomorph_instances.items()
+                    if isinstance(key, tuple) and key and isinstance(key[0], str) and isinstance(symbol, str)
+                },
+            )
+            setattr(prog, "overload_resolution_cache_entries", len(overload_cache))
         finally:
             _FN_GROUPS_STACK.pop()
             _TRAITS_STACK.pop()
@@ -2759,7 +3158,14 @@ def analyze(
         if errors:
             raise SemanticError("\n".join(errors))
     finally:
+        _MONOMORPH_INSTANCE_STACK.pop()
+        _OVERLOAD_CACHE_STACK.pop()
         _FREESTANDING_MODE_STACK.pop()
+        _get_const_values.current = {}
+        _get_global_const_values.current = {}
+    setattr(prog, "_analyzed", True)
+    setattr(prog, "_analyzed_freestanding", freestanding)
+    return prog
 
 
 def _analyze_fn(
@@ -2784,6 +3190,7 @@ def _analyze_fn(
     borrow = _BorrowState()
     move = _MoveState()
     move.fn_ret = _canonical_type(fn.ret)
+    const_state = _ConstState()
     for n, _ in fn.params:
         move.declare(n)
     borrow_scopes: list[set[str]] = [set()]
@@ -2807,6 +3214,7 @@ def _analyze_fn(
         0,
         fn.unsafe,
         bool(getattr(fn, "gpu_kernel", False)),
+        const_state,
     )
     if _canonical_type(fn.ret) not in {"Void", "Never"} and not _has_value_return(fn.body):
         raise SemanticError(_diag(filename, fn.line, fn.col, f"function {fn.name} must return {fn.ret}"))
@@ -2863,50 +3271,58 @@ def _check_block(
     loop_depth: int,
     unsafe_ok: bool,
     gpu_kernel: bool,
+    const_state: _ConstState,
 ):
     # Track variables declared in this scope for automatic cleanup
     scope_vars: set[str] = set()
     
-    for st in body:
-        _check_stmt(
-            st,
-            scopes,
-            mut_scopes,
-            borrow_scopes,
-            move_scopes,
-            fn_groups,
-            structs,
-            enums,
-            fn_ret,
-            ref_param_names,
-            owned,
-            borrow,
-            move,
-            filename,
-            fn_name,
-            loop_depth,
-            unsafe_ok,
-            gpu_kernel,
-        )
-        
-        # Track variables declared in this scope
-        if isinstance(st, LetStmt) and st.name != "_":
-            scope_vars.add(st.name)
-    
-    # Automatic cleanup when scope exits
-    # Variables with owned allocations are automatically cleaned up
-    for var_name in scope_vars:
-        if owned.is_owned(var_name):
-            # The ownership system will handle cleanup automatically
-            # This is where we would emit cleanup code if needed
-            pass
-    
-    # Release borrow scopes
-    borrow.release_scope(borrow_scopes[-1])
-    
-    # Release move scopes
-    if move_scopes:
-        move.release_scope(move_scopes[-1])
+    prev_const_values = _get_const_values().copy()
+    _get_const_values.current = _active_const_values(const_state.values)
+    try:
+        for st in body:
+            _get_const_values.current = _active_const_values(const_state.values)
+            _check_stmt(
+                st,
+                scopes,
+                mut_scopes,
+                borrow_scopes,
+                move_scopes,
+                fn_groups,
+                structs,
+                enums,
+                fn_ret,
+                ref_param_names,
+                owned,
+                borrow,
+                move,
+                filename,
+                fn_name,
+                loop_depth,
+                unsafe_ok,
+                gpu_kernel,
+                const_state,
+            )
+
+            # Track variables declared in this scope
+            if isinstance(st, LetStmt) and st.name != "_":
+                scope_vars.add(st.name)
+
+        # Automatic cleanup when scope exits
+        # Variables with owned allocations are automatically cleaned up
+        for var_name in scope_vars:
+            if owned.is_owned(var_name):
+                # The ownership system will handle cleanup automatically
+                # This is where we would emit cleanup code if needed
+                pass
+
+        # Release borrow scopes
+        borrow.release_scope(borrow_scopes[-1])
+
+        # Release move scopes
+        if move_scopes:
+            move.release_scope(move_scopes[-1])
+    finally:
+        _get_const_values.current = prev_const_values
 
 
 def _flatten_or_pattern(pat: Any) -> list[Any]:
@@ -3081,6 +3497,20 @@ def _coverage_axes_for_pattern(
                 return None
             axes.extend(inner_axes)
         return axes
+    if exp_c in structs and isinstance(pat, StructPattern) and pat.struct_name == exp_c:
+        decl = structs[exp_c]
+        axes: list[tuple[set[str], set[str]]] = []
+        for fname, fty in decl.fields:
+            pnode = pat.field_patterns.get(fname, WildcardPattern())
+            inner_axes = _coverage_axes_for_pattern(pnode, fty, structs, enums)
+            if inner_axes is None:
+                return None
+            axes.extend(inner_axes)
+        return axes
+
+    if isinstance(pat, (SlicePattern, TuplePattern)):
+        # Dynamic-length sequence patterns are not modeled in finite coverage axes.
+        return None
 
     # Non-finite domains (e.g., Int/String) are only analyzable when total, which
     # is handled by wildcard/name above.
@@ -3112,6 +3542,7 @@ def _pattern_is_total_for_type(pat: Any, expected_ty: str, structs: dict[str, St
     if isinstance(pat, Name):
         return True
     exp_c = _canonical_type(expected_ty)
+    exp_base = _canonical_type(_strip_ref(expected_ty))
     enum_decl = _enum_decl_for_type(exp_c, enums)
     if enum_decl is not None:
         variant_name = _enum_variant_name_for_pattern(pat, enum_decl.name)
@@ -3125,6 +3556,29 @@ def _pattern_is_total_for_type(pat: Any, expected_ty: str, structs: dict[str, St
         if len(pat.args) != len(decl.fields):
             return False
         return all(_pattern_is_total_for_type(pp, pty, structs, enums) for pp, (_, pty) in zip(pat.args, decl.fields))
+    if exp_c in structs and isinstance(pat, StructPattern):
+        if pat.struct_name != exp_c:
+            return False
+        decl = structs[exp_c]
+        field_types = {fname: fty for fname, fty in decl.fields}
+        for fname, pnode in pat.field_patterns.items():
+            fty = field_types.get(fname)
+            if fty is None:
+                return False
+            if not _pattern_is_total_for_type(pnode, fty, structs, enums):
+                return False
+        return True
+    if isinstance(pat, SlicePattern):
+        if not (_is_vec_type(exp_base) or _is_slice_type(exp_base)):
+            return False
+        # `[..]` is a catch-all for sequence subjects in current syntax.
+        if pat.rest_pattern is None or pat.patterns:
+            return False
+        return isinstance(pat.rest_pattern, WildcardPattern)
+    if isinstance(pat, TuplePattern):
+        # Tuple patterns currently lower over sequence subjects with exact length,
+        # so they are never total over dynamic-length sequences.
+        return False
     return False
 
 
@@ -3162,6 +3616,132 @@ def _analyze_pattern_against_type(
                 )
             )
         bindings_for_arm[pat.value] = exp_c
+        return
+
+    if isinstance(pat, (RangePattern, RangeExpr)):
+        exp_c = _canonical_type(expected_ty)
+        if not _is_int_type(exp_c):
+            raise SemanticError(
+                _diag(
+                    filename,
+                    pat.line,
+                    pat.col,
+                    f"range pattern expects integer subject type, got {expected_ty}",
+                )
+            )
+        start_ty = _infer(
+            pat.start,
+            scopes,
+            mut_scopes,
+            fn_groups,
+            structs,
+            enums,
+            owned,
+            borrow,
+            move,
+            filename,
+            fn_name,
+            unsafe_ok,
+            gpu_kernel,
+        )
+        end_ty = _infer(
+            pat.end,
+            scopes,
+            mut_scopes,
+            fn_groups,
+            structs,
+            enums,
+            owned,
+            borrow,
+            move,
+            filename,
+            fn_name,
+            unsafe_ok,
+            gpu_kernel,
+        )
+        if not _is_int_type(start_ty) or not _is_int_type(end_ty):
+            raise SemanticError(
+                _diag(
+                    filename,
+                    pat.line,
+                    pat.col,
+                    f"range pattern bounds must be integers, got {start_ty}..{end_ty}",
+                )
+            )
+        _require_type(filename, pat.line, pat.col, exp_c, start_ty, "range pattern start")
+        _require_type(filename, pat.line, pat.col, exp_c, end_ty, "range pattern end")
+        return
+
+    if isinstance(pat, SlicePattern):
+        exp_c = _canonical_type(_strip_ref(expected_ty))
+        if _is_vec_type(exp_c):
+            elem_ty = _vec_inner(exp_c)
+        elif _is_slice_type(exp_c):
+            elem_ty = _slice_inner(exp_c)
+        else:
+            raise SemanticError(
+                _diag(
+                    filename,
+                    pat.line,
+                    pat.col,
+                    f"slice pattern expects sequence subject type, got {expected_ty}",
+                )
+            )
+        for sub_pat in pat.patterns:
+            _analyze_pattern_against_type(
+                sub_pat,
+                elem_ty,
+                scopes,
+                mut_scopes,
+                fn_groups,
+                structs,
+                enums,
+                owned,
+                borrow,
+                move,
+                filename,
+                fn_name,
+                unsafe_ok,
+                gpu_kernel,
+                bindings_for_arm,
+            )
+        if pat.rest_pattern is not None and not isinstance(pat.rest_pattern, WildcardPattern):
+            raise SemanticError(_diag(filename, pat.line, pat.col, "slice rest pattern must be `..`"))
+        return
+
+    if isinstance(pat, TuplePattern):
+        exp_c = _canonical_type(_strip_ref(expected_ty))
+        if _is_vec_type(exp_c):
+            elem_ty = _vec_inner(exp_c)
+        elif _is_slice_type(exp_c):
+            elem_ty = _slice_inner(exp_c)
+        else:
+            raise SemanticError(
+                _diag(
+                    filename,
+                    pat.line,
+                    pat.col,
+                    f"tuple pattern expects sequence subject type, got {expected_ty}",
+                )
+            )
+        for sub_pat in pat.patterns:
+            _analyze_pattern_against_type(
+                sub_pat,
+                elem_ty,
+                scopes,
+                mut_scopes,
+                fn_groups,
+                structs,
+                enums,
+                owned,
+                borrow,
+                move,
+                filename,
+                fn_name,
+                unsafe_ok,
+                gpu_kernel,
+                bindings_for_arm,
+            )
         return
 
     exp_c = _canonical_type(expected_ty)
@@ -3236,6 +3816,34 @@ def _analyze_pattern_against_type(
             )
         return
 
+    if exp_c in structs and isinstance(pat, StructPattern):
+        if pat.struct_name != exp_c:
+            raise SemanticError(_diag(filename, pat.line, pat.col, f"match pattern expects {exp_c}, got {pat.struct_name}"))
+        decl = structs[exp_c]
+        field_types = {fname: fty for fname, fty in decl.fields}
+        for fname, pnode in pat.field_patterns.items():
+            fty = field_types.get(fname)
+            if fty is None:
+                raise SemanticError(_diag(filename, pat.line, pat.col, f"unknown field {fname} for struct pattern {exp_c}"))
+            _analyze_pattern_against_type(
+                pnode,
+                fty,
+                scopes,
+                mut_scopes,
+                fn_groups,
+                structs,
+                enums,
+                owned,
+                borrow,
+                move,
+                filename,
+                fn_name,
+                unsafe_ok,
+                gpu_kernel,
+                bindings_for_arm,
+            )
+        return
+
     pty = _infer(
         pat,
         scopes,
@@ -3273,6 +3881,7 @@ def _check_stmt(
     loop_depth: int,
     unsafe_ok: bool,
     gpu_kernel: bool,
+    const_state: _ConstState,
 ):
     def _is_narrowing_cond(expr: Any) -> tuple[str, str] | None:
         if not (isinstance(expr, Binary) and expr.op == "is"):
@@ -3335,6 +3944,7 @@ def _check_stmt(
                 loop_depth,
                 unsafe_ok,
                 gpu_kernel,
+                const_state,
             )
             return
         if gpu_kernel and not _is_gpu_safe_type(ty, structs):
@@ -3346,6 +3956,10 @@ def _check_stmt(
         move.declare(st.name)
         scopes[-1][st.name] = ty
         mut_scopes[-1][st.name] = bool(st.mut)
+        if bool(st.mut):
+            const_state.set_value(st.name, None)
+        else:
+            const_state.set_value(st.name, _eval_const_expr(st.expr, _active_const_values(const_state.values)))
         borrow_scopes[-1].add(st.name)
         if _is_ref_type(ty):
             if isinstance(st.expr, Unary) and st.expr.op in {"&", "&mut"} and isinstance(st.expr.expr, Name):
@@ -3367,8 +3981,6 @@ def _check_stmt(
         if isinstance(st.expr, Name):
             owned.assign_name(st.name, st.expr.value, Span.at(filename, st.line, st.col))
         _consume_if_move_name(st.expr, ty, borrow, move, filename, st.line, st.col)
-        if _is_alloc_call(st.expr):
-            owned.track_alloc(st.name, filename, st.line, st.col)
         return
     if isinstance(st, AssignStmt):
         rhs = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
@@ -3393,6 +4005,7 @@ def _check_stmt(
         base = _assign_base_name(st.target)
         if base is not None:
             borrow.check_write(base, filename, st.line, st.col)
+            const_state.set_value(base, None)
         if isinstance(st.target, Name):
             is_mutable = _lookup_mut(st.target.value, mut_scopes)
             if is_mutable is None:
@@ -3469,6 +4082,7 @@ def _check_stmt(
             raise SemanticError(_diag(filename, st.line, st.col, "continue used outside loop"))
         return
     if isinstance(st, ComptimeStmt):
+        comptime_const = const_state.copy()
         _check_block(
             st.body,
             scopes + [{}],
@@ -3488,12 +4102,15 @@ def _check_stmt(
             loop_depth,
             unsafe_ok,
             gpu_kernel,
+            comptime_const,
         )
+        const_state.merge(const_state, comptime_const)
         return
     if isinstance(st, UnsafeStmt):
         # Enter unsafe context
         _enter_unsafe_context(filename, st.line, st.col)
         try:
+            unsafe_const = const_state.copy()
             _check_block(
                 st.body,
                 scopes + [{}],
@@ -3513,6 +4130,7 @@ def _check_stmt(
                 loop_depth,
                 True,  # unsafe_ok=True
                 gpu_kernel,
+                unsafe_const,
             )
         finally:
             _exit_unsafe_context()
@@ -3527,6 +4145,7 @@ def _check_stmt(
         then_move = move.copy()
         then_borrow_scopes = borrow_scopes + [set()]
         then_move_scopes = move_scopes + [{}]
+        then_const = const_state.copy()
         narrow = _is_narrowing_cond(st.cond)
         if narrow is not None:
             n_name, n_type = narrow
@@ -3553,6 +4172,7 @@ def _check_stmt(
             loop_depth,
             unsafe_ok,
             gpu_kernel,
+            then_const,
         )
         else_owned = owned.copy()
         else_scopes = scopes + [{}]
@@ -3561,6 +4181,7 @@ def _check_stmt(
         else_move = move.copy()
         else_borrow_scopes = borrow_scopes + [set()]
         else_move_scopes = move_scopes + [{}]
+        else_const = const_state.copy()
         if narrow is not None:
             n_name, n_type = narrow
             cur_ty = _lookup(n_name, scopes)
@@ -3585,10 +4206,12 @@ def _check_stmt(
             loop_depth,
             unsafe_ok,
             gpu_kernel,
+            else_const,
         )
         owned.merge(then_owned, else_owned)
         borrow.merge(then_borrow, else_borrow)
         move.merge(then_move, else_move)
+        const_state.merge(then_const, else_const)
         return
     if isinstance(st, WhileStmt):
         cond_ty = _infer(st.cond, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
@@ -3600,6 +4223,7 @@ def _check_stmt(
         loop_move = move.copy()
         loop_borrow_scopes = borrow_scopes + [set()]
         loop_move_scopes = move_scopes + [{}]
+        loop_const = const_state.copy()
         _check_block(
             st.body,
             loop_scopes,
@@ -3619,10 +4243,12 @@ def _check_stmt(
             loop_depth + 1,
             unsafe_ok,
             gpu_kernel,
+            loop_const,
         )
         owned.merge(owned, loop_owned)
         borrow.merge(borrow, loop_borrow)
         move.merge(move, loop_move)
+        const_state.merge(const_state, loop_const)
         return
     if isinstance(st, IteratorForStmt):
         loop_var_ty: str
@@ -3652,7 +4278,7 @@ def _check_stmt(
                     )
                 )
         if gpu_kernel and not _is_gpu_safe_type(loop_var_ty, structs):
-            raise SemanticError(_diag(filename, st.line, st.col, f"gpu kernel loop variable {st.var} uses unsupported type {loop_var_ty}"))
+            raise SemanticError(_diag(filename, st.line, st.col, f"gpu kernel loop variable {st.var_name} uses unsupported type {loop_var_ty}"))
         loop_scopes = scopes + [{}]
         loop_mut_scopes = mut_scopes + [{}]
         loop_owned = owned.copy()
@@ -3660,9 +4286,11 @@ def _check_stmt(
         loop_move = move.copy()
         loop_borrow_scopes = borrow_scopes + [set()]
         loop_move_scopes = move_scopes + [{}]
-        loop_scopes[-1][st.var] = loop_var_ty
-        loop_mut_scopes[-1][st.var] = False
-        loop_move_scopes[-1][st.var] = loop_move.moved.get(st.var, False)
+        loop_scopes[-1][st.var_name] = loop_var_ty
+        loop_mut_scopes[-1][st.var_name] = False
+        loop_move_scopes[-1][st.var_name] = loop_move.moved.get(st.var_name, False)
+        loop_const = const_state.copy()
+        loop_const.set_value(st.var_name, None)
         _check_block(
             st.body,
             loop_scopes,
@@ -3682,10 +4310,12 @@ def _check_stmt(
             loop_depth + 1,
             unsafe_ok,
             gpu_kernel,
+            loop_const,
         )
         owned.merge(owned, loop_owned)
         borrow.merge(borrow, loop_borrow)
         move.merge(move, loop_move)
+        const_state.merge(const_state, loop_const)
         return
     if isinstance(st, MatchStmt):
         subject_ty = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
@@ -3897,6 +4527,7 @@ def _check_stmt(
                     loop_depth,
                     unsafe_ok,
                     gpu_kernel,
+                    const_state.copy(),
                 )
             else:
                 # Expression body (enhanced match)
@@ -3939,18 +4570,13 @@ def _check_stmt(
         return
     if isinstance(st, ExprStmt):
         _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
-        if _is_free_call(st.expr):
-            ptr = st.expr.args[0]
-            if not isinstance(ptr, Name):
-                raise SemanticError(_diag(filename, st.line, st.col, "free() expects a named owner"))
-            owned.free(ptr.value, Span.at(filename, st.line, st.col))
         return
     
     # Enhanced syntax semantic analysis
     if isinstance(st, EnhancedWhileStmt):
         # Analyze binding
         if st.var_decl:
-            _check_stmt(st.var_decl, scopes, mut_scopes, borrow_scopes, move_scopes, fn_groups, structs, enums, fn_ret, ref_param_names, owned, borrow, move, filename, fn_name, loop_depth, unsafe_ok, gpu_kernel)
+            _check_stmt(st.var_decl, scopes, mut_scopes, borrow_scopes, move_scopes, fn_groups, structs, enums, fn_ret, ref_param_names, owned, borrow, move, filename, fn_name, loop_depth, unsafe_ok, gpu_kernel, const_state)
         
         # Analyze condition
         cond_ty = _infer(st.cond, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
@@ -3960,7 +4586,7 @@ def _check_stmt(
         loop_owned = owned.copy()
         loop_borrow = borrow.enter()
         loop_move = move.enter()
-        _check_block(st.body, scopes, mut_scopes, [loop_borrow], [loop_move], fn_groups, structs, enums, fn_ret, ref_param_names, loop_owned, borrow, move, filename, fn_name, loop_depth + 1, unsafe_ok, gpu_kernel)
+        _check_block(st.body, scopes, mut_scopes, [loop_borrow], [loop_move], fn_groups, structs, enums, fn_ret, ref_param_names, loop_owned, borrow, move, filename, fn_name, loop_depth + 1, unsafe_ok, gpu_kernel, const_state.copy())
         borrow.merge(borrow, loop_borrow)
         move.merge(move, loop_move)
         return
@@ -3988,7 +4614,7 @@ def _check_stmt(
         _check_stmt.loop_stack.append(('iterator', st.var_name))
         
         # Analyze body
-        _check_block(st.body, scopes, mut_scopes, [loop_borrow], [loop_move], fn_groups, structs, enums, fn_ret, ref_param_names, loop_owned, borrow, move, filename, fn_name, loop_depth + 1, unsafe_ok, gpu_kernel)
+        _check_block(st.body, scopes, mut_scopes, [loop_borrow], [loop_move], fn_groups, structs, enums, fn_ret, ref_param_names, loop_owned, borrow, move, filename, fn_name, loop_depth + 1, unsafe_ok, gpu_kernel, const_state.copy())
         
         # Clean up loop stack
         if hasattr(_check_stmt, 'loop_stack') and _check_stmt.loop_stack:
@@ -3998,8 +4624,6 @@ def _check_stmt(
         borrow.merge(borrow, loop_borrow)
         move.merge(move, loop_move)
         return
-    
-    # DeferStmt removed - automatic cleanup handled by ownership system
     
     raise SemanticError(_diag(filename, st.line, st.col, f"unsupported statement type: {type(st).__name__}"))
 
@@ -4025,6 +4649,14 @@ def _infer(
         raise SemanticError(_diag(filename, e.line, e.col, "or-patterns are only valid in match arms"))
     if isinstance(e, GuardedPattern):
         raise SemanticError(_diag(filename, e.line, e.col, "match guards are only valid in match arms"))
+    if isinstance(e, RangePattern):
+        raise SemanticError(_diag(filename, e.line, e.col, "range patterns are only valid in match arms"))
+    if isinstance(e, SlicePattern):
+        raise SemanticError(_diag(filename, e.line, e.col, "slice patterns are only valid in match arms"))
+    if isinstance(e, TuplePattern):
+        raise SemanticError(_diag(filename, e.line, e.col, "tuple patterns are only valid in match arms"))
+    if isinstance(e, StructPattern):
+        raise SemanticError(_diag(filename, e.line, e.col, "struct patterns are only valid in match arms"))
     if isinstance(e, BoolLit):
         return _typed(e, "Bool")
     if isinstance(e, NilLit):
@@ -4496,7 +5128,19 @@ def _infer(
             arg_ty = _infer(arg, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
             arg_types.append(arg_ty)
         
-        # Return Any for now - would be resolved in full method resolution
+        # Basic method resolution for common built-in methods
+        obj_ty_canonical = _canonical_type(obj_ty)
+        
+        # Handle array/slice .get() method
+        if e.method == "get" and _is_slice_type(obj_ty_canonical):
+            if len(e.args) != 1:
+                raise SemanticError(_diag(filename, e.line, e.col, f".get() method takes 1 argument, got {len(e.args)}"))
+            arg_ty = _infer(e.args[0], scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
+            _require_type(filename, e.args[0].line, e.args[0].col, "Int", arg_ty, "get() index")
+            element_ty = _slice_inner(obj_ty_canonical)
+            return _typed(e, f"{element_ty} | none")
+        
+        # For other methods, return Any for now - would be resolved in full method resolution
         return _typed(e, "Any")
     
     if isinstance(e, VectorLiteral):
@@ -4662,6 +5306,21 @@ def _infer_gpu_namespace_call(
         raise SemanticError(_diag(filename, e.line, e.col, "gpu.launch expects at least 3 args: kernel, grid_size, block_size"))
     _require_type(filename, e.args[1].line, e.args[1].col, "Int", arg_types[1], "arg 1 for gpu.launch")
     _require_type(filename, e.args[2].line, e.args[2].col, "Int", arg_types[2], "arg 2 for gpu.launch")
+    const_values = _get_const_values()
+    grid_const = _const_int_value(e.args[1], const_values)
+    block_const = _const_int_value(e.args[2], const_values)
+    if grid_const is not None and grid_const <= 0:
+        raise SemanticError(_diag(filename, e.args[1].line, e.args[1].col, "gpu.launch grid_size must be > 0 (evaluated at compile time)"))
+    if block_const is not None:
+        if block_const <= 0:
+            raise SemanticError(_diag(filename, e.args[2].line, e.args[2].col, "gpu.launch block_size must be > 0 (evaluated at compile time)"))
+        if block_const > 1024:
+            raise SemanticError(_diag(filename, e.args[2].line, e.args[2].col, "gpu.launch block_size exceeds CUDA limit 1024 (evaluated at compile time)"))
+    if grid_const is not None and block_const is not None:
+        total_threads = grid_const * block_const
+        max_i64 = (1 << 63) - 1
+        if total_threads > max_i64:
+            raise SemanticError(_diag(filename, e.line, e.col, "gpu.launch total thread count overflows Int (grid_size * block_size)"))
 
     kernel_expr = e.args[0]
     launch_arg_types = arg_types[3:]
@@ -4680,14 +5339,39 @@ def _infer_gpu_namespace_call(
             if all(_gpu_launch_arg_compatible(pty, aty) for (_, pty), aty in zip(cand.params, launch_arg_types)):
                 matching.append(cand)
         if not matching:
+            typed_candidates = [c for c in candidates if len(c.params) == len(launch_arg_types)]
+            if typed_candidates:
+                first = typed_candidates[0]
+                for i, ((_, expected), arg, aty) in enumerate(zip(first.params, launch_args, launch_arg_types), start=3):
+                    if not _gpu_launch_arg_compatible(expected, aty):
+                        raise SemanticError(_diag(filename, arg.line, arg.col, f"arg {i} for gpu.launch kernel {_gpu_launch_arg_error(expected, aty)}"))
             sig = ", ".join(launch_arg_types)
             raise SemanticError(_diag(filename, e.line, e.col, f"no matching gpu kernel overload for launch {kernel_name}({sig})"))
         if len(matching) > 1:
             raise SemanticError(_diag(filename, e.line, e.col, f"ambiguous gpu kernel overload for launch {kernel_name}"))
         chosen = matching[0]
-        for i, ((_, expected), arg, aty) in enumerate(zip(chosen.params, launch_args, launch_arg_types), start=3):
+        const_values = _get_const_values()
+        static_lengths: list[tuple[int, str, int]] = []
+        for i, ((pname, expected), arg, aty) in enumerate(zip(chosen.params, launch_args, launch_arg_types), start=3):
             if not _gpu_launch_arg_compatible(expected, aty):
-                raise SemanticError(_diag(filename, arg.line, arg.col, f"arg {i} for gpu.launch kernel expects {expected}, got {aty}"))
+                raise SemanticError(_diag(filename, arg.line, arg.col, f"arg {i} for gpu.launch kernel `{kernel_name}` {_gpu_launch_arg_error(expected, aty)}"))
+            if _is_gpu_memory_type(expected):
+                static_len = _gpu_static_len(arg, const_values)
+                if static_len is not None:
+                    static_lengths.append((i, pname, static_len))
+        if len(static_lengths) >= 2:
+            base_i, base_name, base_len = static_lengths[0]
+            for idx, pname, plen in static_lengths[1:]:
+                if plen != base_len:
+                    raise SemanticError(
+                        _diag(
+                            filename,
+                            e.line,
+                            e.col,
+                            f"gpu.launch static length mismatch: arg {base_i} `{base_name}` has {base_len} elements, "
+                            f"arg {idx} `{pname}` has {plen} elements",
+                        )
+                    )
         setattr(e, "launch_resolved_name", chosen.symbol or chosen.name)
         return "Void"
 
@@ -4700,9 +5384,20 @@ def _infer_gpu_namespace_call(
         raise SemanticError(_diag(filename, kernel_expr.line, kernel_expr.col, "gpu.launch kernel function must return Void"))
     if len(param_tys) != len(launch_arg_types):
         raise SemanticError(_diag(filename, e.line, e.col, f"gpu.launch kernel expects {len(param_tys)} args, got {len(launch_arg_types)}"))
+    const_values = _get_const_values()
+    static_lengths: list[tuple[int, int]] = []
     for i, (expected, arg, aty) in enumerate(zip(param_tys, launch_args, launch_arg_types), start=3):
         if not _gpu_launch_arg_compatible(expected, aty):
-            raise SemanticError(_diag(filename, arg.line, arg.col, f"arg {i} for gpu.launch kernel expects {expected}, got {aty}"))
+            raise SemanticError(_diag(filename, arg.line, arg.col, f"arg {i} for gpu.launch kernel {_gpu_launch_arg_error(expected, aty)}"))
+        if _is_gpu_memory_type(expected):
+            static_len = _gpu_static_len(arg, const_values)
+            if static_len is not None:
+                static_lengths.append((i, static_len))
+    if len(static_lengths) >= 2:
+        base_i, base_len = static_lengths[0]
+        for idx, plen in static_lengths[1:]:
+            if plen != base_len:
+                raise SemanticError(_diag(filename, e.line, e.col, f"gpu.launch static length mismatch: arg {base_i} has {base_len} elements, arg {idx} has {plen} elements"))
     return "Void"
 
 
@@ -4825,6 +5520,28 @@ def _infer_call(
                     _require_sync(_strip_ref(aty), structs, filename, arg.line, arg.col, f"spawn arg {i}")
             _require_send(worker_ret_ty, structs, filename, e.line, e.col, "spawn worker return")
             return "Int"
+        if builtin_base == "static_assert":
+            if len(e.args) not in {1, 2}:
+                raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects 1 or 2 args, got {len(e.args)}"))
+            _require_type(filename, e.args[0].line, e.args[0].col, "Bool", arg_types[0], "arg 0 for static_assert")
+            if len(e.args) == 2:
+                _require_type(filename, e.args[1].line, e.args[1].col, "String", arg_types[1], "arg 1 for static_assert")
+            const_bool = _eval_const_expr(e.args[0], _get_const_values())
+            if const_bool is None:
+                raise SemanticError(
+                    _diag(
+                        filename,
+                        e.args[0].line,
+                        e.args[0].col,
+                        "static_assert condition must be a compile-time constant",
+                    )
+                )
+            if const_bool is False:
+                detail = ""
+                if len(e.args) == 2 and isinstance(e.args[1], Literal) and isinstance(e.args[1].value, str):
+                    detail = f": {e.args[1].value}"
+                raise SemanticError(_diag(filename, e.args[0].line, e.args[0].col, f"static assertion failed{detail}"))
+            return "Void"
         if builtin_base in {"countOnes", "leadingZeros", "trailingZeros", "popcnt", "clz", "ctz"}:
             if len(e.args) != 1:
                 raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects 1 args, got {len(e.args)}"))
@@ -4845,7 +5562,9 @@ def _infer_call(
         if builtin_base == "vec_new":
             if len(e.args) != 0:
                 raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects 0 args, got {len(e.args)}"))
-            return "Any"
+            # vec_new creates a typed container, not an Any-based one
+            # Return a generic type that will be inferred from usage
+            return "Vec<Unknown>"
         if builtin_base == "vec_from":
             if len(e.args) != 1:
                 raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects 1 args, got {len(e.args)}"))
@@ -4887,6 +5606,21 @@ def _infer_call(
                 raise SemanticError(_diag(filename, e.args[0].line, e.args[0].col, f"{name} expects Vec<T>, got {src_ty}"))
             _require_type(filename, e.args[1].line, e.args[1].col, _vec_inner(src_ty), arg_types[1], f"arg 1 for {name}")
             return "Int"
+        
+        # Handle dynamic Any-based containers
+        if builtin_base == "list_new":
+            if len(e.args) != 0:
+                raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects 0 args, got {len(e.args)}"))
+            any_usage = _get_any_usage()
+            any_usage.mark_any_lists_used()
+            return "Any"
+        if builtin_base == "map_new":
+            if len(e.args) != 0:
+                raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects 0 args, got {len(e.args)}"))
+            any_usage = _get_any_usage()
+            any_usage.mark_any_maps_used()
+            return "Any"
+        
         if name in fn_groups:
             known_types = set(PRIMITIVES) | set(structs.keys()) | set(enums.keys())
             if not gpu_kernel:
@@ -4911,6 +5645,22 @@ def _infer_call(
             elif len(e.args) != len(decl.params):
                 raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects {len(decl.params)} args, got {len(e.args)}"))
             type_bindings: dict[str, str] = {}
+            explicit_type_args = list(getattr(e, "type_args", []) or [])
+            if explicit_type_args:
+                decl_generics = list(getattr(decl, "generics", []))
+                if not decl_generics:
+                    raise SemanticError(_diag(filename, e.line, e.col, f"{name} does not accept explicit type arguments"))
+                if len(explicit_type_args) != len(decl_generics):
+                    raise SemanticError(
+                        _diag(
+                            filename,
+                            e.line,
+                            e.col,
+                            f"{name} expects {len(decl_generics)} type args, got {len(explicit_type_args)}",
+                        )
+                    )
+                for tv, ty in zip(decl_generics, explicit_type_args):
+                    type_bindings[tv] = _canonical_type(ty)
             for i, ((_, pty), arg) in enumerate(zip(decl.params, e.args)):
                 aty = arg_types[i]
                 if _is_typevar(pty, known_types):
@@ -4923,8 +5673,17 @@ def _infer_call(
                     _require_type(filename, arg.line, arg.col, pty, aty, f"arg {i} for {name}")
                 if not _is_ref_type(pty) and pty != "Any" and not _is_typevar(pty, known_types):
                     _consume_if_move_name(arg, aty, borrow, move, filename, arg.line, arg.col)
+            decl_match = _match_decl_bindings(decl, arg_types, known_types)
+            if decl_match is not None:
+                type_bindings.update(decl_match[3])
             if isinstance(decl, FnDecl):
                 e.resolved_name = decl.symbol or decl.name
+                setattr(e, "resolved_source_filename", getattr(decl, "_source_filename", filename))
+                mono = _register_monomorph_instance(decl, type_bindings, known_types)
+                if mono is not None:
+                    mono_symbol, mono_key = mono
+                    setattr(e, "monomorph_symbol", mono_symbol)
+                    setattr(e, "monomorph_key", mono_key)
             return _substitute_typevars(decl.ret, type_bindings)
         local = _lookup(name, scopes)
         if local is not None:
@@ -5069,8 +5828,17 @@ def _infer_call(
                 _require_type(filename, arg.line, arg.col, pty, aty, f"arg {i} for {ufcs_name}")
                 if not _is_ref_type(pty) and pty != "Any" and not _is_typevar(pty, known_types):
                     _consume_if_move_name(arg, aty, borrow, move, filename, arg.line, arg.col)
+            decl_match = _match_decl_bindings(decl, all_arg_types, known_types)
+            if decl_match is not None:
+                type_bindings.update(decl_match[3])
             if isinstance(decl, FnDecl):
                 e.resolved_name = decl.symbol or decl.name
+                setattr(e, "resolved_source_filename", getattr(decl, "_source_filename", filename))
+                mono = _register_monomorph_instance(decl, type_bindings, known_types)
+                if mono is not None:
+                    mono_symbol, mono_key = mono
+                    setattr(e, "monomorph_symbol", mono_symbol)
+                    setattr(e, "monomorph_key", mono_key)
             setattr(e, "ufcs_receiver", e.fn.obj)
             setattr(e, "ufcs_receiver_ty", obj_ty)
             return _substitute_typevars(decl.ret, type_bindings)
@@ -5108,11 +5876,3 @@ def _infer_call(
         if not _is_ref_type(expected) and expected != "Any":
             _consume_if_move_name(arg, aty, borrow, move, filename, arg.line, arg.col)
     return ret_ty
-
-
-def _is_alloc_call(expr):
-    return isinstance(expr, Call) and isinstance(expr.fn, Name) and expr.fn.value == "alloc"
-
-
-def _is_free_call(expr):
-    return isinstance(expr, Call) and isinstance(expr.fn, Name) and expr.fn.value == "free" and len(expr.args) == 1

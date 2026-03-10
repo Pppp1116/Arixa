@@ -169,3 +169,124 @@ fn swap_bytes(x Int) Int {
     }
     return result;
 }
+
+/// Return minimum of two Int values.
+fn min_int2(a Int, b Int) Int {
+    if a < b {
+        return a;
+    }
+    else {}
+    return b;
+}
+
+/// Return maximum of two Int values.
+fn max_int2(a Int, b Int) Int {
+    if a > b {
+        return a;
+    }
+    else {}
+    return b;
+}
+
+/// Clamp Int value to [lo, hi].
+fn clamp_int2(v Int, lo Int, hi Int) Int {
+    if v < lo {
+        return lo;
+    }
+    else {}
+    if v > hi {
+        return hi;
+    }
+    else {}
+    return v;
+}
+
+/// Return true when x is a positive power of two.
+fn is_power_of_two(x Int) Bool {
+    if x <= 0 {
+        return false;
+    }
+    else {}
+    return (x & (x - 1)) == 0;
+}
+
+/// Align `value` up to `alignment` (power-of-two only).
+///
+/// Returns none for invalid alignment or arithmetic overflow.
+fn align_up_checked(value Int, alignment Int) Int | none {
+    if alignment <= 0 || !is_power_of_two(alignment) {
+        return none;
+    }
+    else {}
+    extra = add_checked(value, alignment - 1);
+    if extra == none {
+        return none;
+    }
+    else {}
+    mask = alignment - 1;
+    return (extra as Int | none ?? 0 as Int) & ~mask;
+}
+
+/// Align `value` down to `alignment` (power-of-two only).
+fn align_down_checked(value Int, alignment Int) Int | none {
+    if alignment <= 0 || !is_power_of_two(alignment) {
+        return none;
+    }
+    else {}
+    mask = alignment - 1;
+    return value & ~mask;
+}
+
+/// Absolute value with overflow safety for `minVal(Int)`.
+fn abs_checked(x Int) Int | none {
+    if x == minVal(Int) {
+        return none;
+    }
+    else {}
+    if x < 0 {
+        return -x;
+    }
+    else {}
+    return x;
+}
+
+/// Returns -1, 0, 1 based on signed comparison.
+fn cmp_int(a Int, b Int) Int {
+    if a < b {
+        return -1;
+    }
+    else {}
+    if a > b {
+        return 1;
+    }
+    else {}
+    return 0;
+}
+
+/// Saturating integer addition.
+fn saturating_add(a Int, b Int) Int {
+    r = add_checked(a, b);
+    if r != none {
+        return r as Int;
+    }
+    else {}
+    if b > 0 {
+        return maxVal(Int);
+    }
+    else {}
+    return minVal(Int);
+}
+
+/// Saturating integer subtraction.
+fn saturating_sub(a Int, b Int) Int {
+    r = sub_checked(a, b);
+    if r != none {
+        return r as Int;
+    }
+    else {}
+    if b > 0 {
+        return minVal(Int);
+    }
+    else {}
+    return maxVal(Int);
+}

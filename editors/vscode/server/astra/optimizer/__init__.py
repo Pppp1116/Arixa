@@ -8,8 +8,13 @@ from .optimizer_interprocedural import *
 from .optimizer_loops_advanced import *
 from .optimizer_memory import *
 from .optimizer_pgo import *
-from .optimizer_ssa import *
 from .optimizer_target_specific import *
+from .pass_manager import *
+from .cfg import *
+from .effects import *
+from .expressions import *
+from .safe_optimizations import *
+from .advanced_optimizations import *
 
 __all__ = [
     'optimizer',
@@ -20,6 +25,11 @@ __all__ = [
     'optimizer_loops_advanced',
     'optimizer_memory',
     'optimizer_pgo',
-    'optimizer_ssa',
-    'optimizer_target_specific'
+    'optimizer_target_specific',
+    'pass_manager',
+    'cfg',
+    'effects', 
+    'expressions',
+    'safe_optimizations',
+    'advanced_optimizations'
 ]

@@ -252,10 +252,20 @@ def to_python(
     if gpu_ir_payload.get('kernels'):
         lines.append("from astra.gpu.runtime import get_runtime as _astra_gpu_get_runtime")
     
+    # Generate import statements for modules
+    module_objects = {}
+    module_function_attachments = {}  # Track which functions to attach to which modules
+    for item in prog.items:
+        if isinstance(item, ImportDecl):
+            alias = item.alias or ".".join(item.path)
+            module_objects[alias] = {}
+            module_function_attachments[alias] = []
+            # Store the import info for potential module object creation
+            if hasattr(item, 'module_functions'):
+                module_objects[alias] = item.module_functions
+    
     lines += [
         "_astra_gpu_runtime = _astra_gpu_get_runtime() if '_astra_gpu_get_runtime' in globals() else None",
-        "_astra_heap = {}",
-        "_astra_next_ptr = 1",
         "_astra_threads = {}",
         "_astra_next_tid = 1",
         "_astra_atomics = {}",
@@ -320,16 +330,6 @@ def to_python(
         "def write_file(p,s): pathlib.Path(p).write_text(str(s)); return 0",
         "def args(): return sys.argv",
         "def arg(i): return sys.argv[i] if 0 <= int(i) < len(sys.argv) else ''",
-        "def alloc(n):",
-        "    global _astra_next_ptr",
-        "    with _astra_registry_lock:",
-        "        ptr = _astra_next_ptr",
-        "        _astra_next_ptr += 1",
-        "        _astra_heap[ptr] = bytearray(max(0, int(n)))",
-        "        return ptr",
-        "def free(ptr):",
-        "    _astra_heap.pop(ptr, None)",
-        "    return None",
         "def spawn(fn, *a):",
         "    global _astra_next_tid",
         "    with _astra_registry_lock:",
@@ -762,21 +762,53 @@ def to_python(
         if not isinstance(item, FnDecl):
             continue
         fn_name = item.symbol or item.name
+        
+        # Check if this function belongs to a module
+        module_name = None
+        for import_item in prog.items:
+            if isinstance(import_item, ImportDecl):
+                alias = import_item.alias or ".".join(import_item.path)
+                # Check if this function is from the imported module
+                if hasattr(import_item, 'module_functions') and fn_name in import_item.module_functions:
+                    module_name = alias
+                    break
         params = ", ".join(n for n, _ in item.params)
         param_types = [typ for _, typ in item.params]
-        if item.async_fn:
-            lines.append(f"async def {fn_name}({params}):")
+        fn_body: list[Any] = list(item.body)
+        if module_name:
+            # Generate as standalone function for module
+            safe_fn_name = f"__astra_mod_{module_name}_{fn_name}"
+            if item.async_fn:
+                lines.append(f"async def {safe_fn_name}({params}):")
+            else:
+                lines.append(f"def {safe_fn_name}({params}):")
+            # Track this function for attachment
+            module_function_attachments[module_name].append((fn_name, safe_fn_name))
         else:
-            lines.append(f"def {fn_name}({params}):")
+            # Generate as regular function
+            if item.async_fn:
+                lines.append(f"async def {fn_name}({params}):")
+            else:
+                lines.append(f"def {fn_name}({params}):")
         lines.append("    try:")
-        if not item.body:
+        if not fn_body:
             lines.append("        pass")
-        for st in item.body:
-            lines.extend(_stmt_py(st, 2))
+        for st in fn_body:
+            if module_name:
+                # For module functions, just generate the body directly
+                lines.extend(_stmt_py(st, 2))
+            else:
+                lines.extend(_stmt_py(st, 2))
         lines.append("    except _AstraTryNone:")
-        lines.append("        return None")
+        if module_name:
+            lines.append("        return None")
+        else:
+            lines.append("        return None")
         lines.append("    except _AstraTryResultErr as __astra_err:")
-        lines.append("        return __astra_result_err(__astra_err.value)")
+        if module_name:
+            lines.append("        return __astra_result_err(__astra_err.value)")
+        else:
+            lines.append("        return __astra_result_err(__astra_err.value)")
         # Automatic cleanup handled by ownership system
         cuda_source, cuda_kernel_name = _emit_cuda_kernel_source(item, fn_name)
         if cuda_kernel_name and cuda_source:
@@ -791,12 +823,22 @@ def to_python(
             lines.append(
                 f"else: setattr({cuda_kernel_name}, '__astra_gpu_kernel__', True); setattr({cuda_kernel_name}, '__astra_gpu_name__', {item.name!r}); setattr({cuda_kernel_name}, '__astra_gpu_symbol__', {fn_name!r})"
             )
+    # Create module namespace objects and attach functions BEFORE main execution
+    lines.append("from types import SimpleNamespace")
+    for alias, functions in module_function_attachments.items():
+        if functions:  # Only create if there are functions to attach
+            lines.append(f"# Create module namespace for {alias}")
+            lines.append(f"_astra_module_{alias} = SimpleNamespace()")
+            for fn_name, safe_fn_name in functions:
+                lines.append(f"_astra_module_{alias}.{fn_name} = {safe_fn_name}")
+    
     if emit_entrypoint and not freestanding:
         lines.append("if __name__ == '__main__':")
         lines.append(f"    _main_out = {main_entry}()")
         lines.append("    if inspect.isawaitable(_main_out):")
         lines.append("        _main_out = asyncio.run(_main_out)")
         lines.append("    raise SystemExit(_main_out if isinstance(_main_out, int) else 0)")
+    
     return "\n".join(lines) + "\n"
 
 
@@ -1042,6 +1084,12 @@ def _expr(e: Any) -> str:
             return f"astra_str_concat({_expr(e.left)}, {_expr(e.right)})"
         op = BIN_OP_MAP.get(e.op, e.op)
         return f"({_expr(e.left)} {op} {_expr(e.right)})"
+    if isinstance(e, RangeExpr):
+        start = _expr(e.start)
+        end = _expr(e.end)
+        if e.inclusive:
+            return f"range({start}, ({end}) + 1)"
+        return f"range({start}, {end})"
     if isinstance(e, Call):
         name = e.resolved_name or _call_name(e.fn)
         args = list(e.args)
@@ -1050,6 +1098,8 @@ def _expr(e: Any) -> str:
             args = [ufcs_receiver] + args
         if name == "panic" and len(args) == 1:
             return f"panic({_expr(args[0])})"
+        if name in {"static_assert", "__static_assert"}:
+            return "None"
         if name == "format":
             # Handle format function with string interpolation support
             if len(args) == 1 and isinstance(args[0], StringInterpolation):
@@ -1065,8 +1115,8 @@ def _expr(e: Any) -> str:
                     if isinstance(arg, Literal):
                         if isinstance(arg.value, (int, float, bool)):
                             exprs[i] = f"str({expr})"
-                    elif arg_type in {'Int', 'isize', 'usize', 'Float', 'f64', 'Bool'}:
-                        exprs[i] = f"str({expr})"
+                        elif arg_type in {'Int', 'isize', 'usize', 'Float', 'f64', 'Bool'}:
+                            exprs[i] = f"str({expr})"
                     # Handle boolean literals that might have lost type info
                     elif expr == "True" or expr == "False":
                         exprs[i] = f"str({expr})"
@@ -1077,7 +1127,6 @@ def _expr(e: Any) -> str:
             "leadingZeros",
             "__leadingZeros",
             "trailingZeros",
-            "__trailingZeros",
             "popcnt",
             "__popcnt",
             "clz",
@@ -1095,7 +1144,24 @@ def _expr(e: Any) -> str:
     if isinstance(e, IndexExpr):
         return f"({_expr(e.obj)})[{_expr(e.index)}]"
     if isinstance(e, FieldExpr):
-        return f"({_expr(e.obj)}).{e.field}"
+        # Handle field access like obj.field
+        obj_name = _expr(e.obj)
+        field_name = e.field
+        # Avoid conflicts with Python built-ins
+        safe_obj_name = obj_name
+        if obj_name in ('bytes', 'str', 'list', 'dict', 'int', 'float', 'bool'):
+            safe_obj_name = f"_astra_module_{obj_name}"
+        return f"{safe_obj_name}.{field_name}"
+    if isinstance(e, MethodCall):
+        # Handle module function calls with arguments like bytes.len(data)
+        obj_name = _expr(e.obj)
+        method_name = e.method
+        args_str = ', '.join(_expr(a) for a in e.args)
+        # Avoid conflicts with Python built-ins
+        safe_obj_name = obj_name
+        if obj_name in ('bytes', 'str', 'list', 'dict', 'int', 'float', 'bool'):
+            safe_obj_name = f"_astra_module_{obj_name}"
+        return f"{safe_obj_name}.{method_name}({args_str})"
     if isinstance(e, ArrayLit):
         return f"[{', '.join(_expr(x) for x in e.elements)}]"
     if isinstance(e, StructLit):
@@ -1157,6 +1223,32 @@ def _match_cond_py(match_value_name: str, pat: Any) -> str:
         return f"({' or '.join(conds)})"
     if isinstance(pat, GuardedPattern):
         return _match_cond_py(match_value_name, pat.pattern)
+    if isinstance(pat, (RangePattern, RangeExpr)):
+        lo = _expr(pat.start)
+        hi = _expr(pat.end)
+        upper_op = "<=" if pat.inclusive else "<"
+        return (
+            f"(({match_value_name}) >= ({lo}) and "
+            f"({match_value_name}) {upper_op} ({hi}))"
+        )
+    if isinstance(pat, SlicePattern):
+        parts = [f"isinstance({match_value_name}, (list, tuple))"]
+        needed = len(pat.patterns)
+        if pat.rest_pattern is None:
+            parts.append(f"len({match_value_name}) == {needed}")
+        else:
+            parts.append(f"len({match_value_name}) >= {needed}")
+        for i, sub in enumerate(pat.patterns):
+            parts.append(_match_cond_py(f"({match_value_name})[{i}]", sub))
+        return f"({' and '.join(parts)})"
+    if isinstance(pat, TuplePattern):
+        parts = [
+            f"isinstance({match_value_name}, (list, tuple))",
+            f"len({match_value_name}) == {len(pat.patterns)}",
+        ]
+        for i, sub in enumerate(pat.patterns):
+            parts.append(_match_cond_py(f"({match_value_name})[{i}]", sub))
+        return f"({' and '.join(parts)})"
     if isinstance(pat, FieldExpr) and isinstance(pat.obj, Name):
         enum_name = pat.obj.value
         variant_name = pat.field
@@ -1188,6 +1280,18 @@ def _match_cond_py(match_value_name: str, pat: Any) -> str:
         for (fname, _), sub in zip(decl.fields, pat.args):
             parts.append(_match_cond_py(f"({match_value_name}).{fname}", sub))
         return f"({' and '.join(parts)})"
+    if isinstance(pat, StructPattern):
+        struct_name = pat.struct_name
+        decl = _PY_STRUCTS.get(struct_name)
+        if decl is None:
+            return "False"
+        declared = {fname for fname, _ in decl.fields}
+        parts = [f"isinstance({match_value_name}, {struct_name})"]
+        for fname, sub in pat.field_patterns.items():
+            if fname not in declared:
+                return "False"
+            parts.append(_match_cond_py(f"({match_value_name}).{fname}", sub))
+        return f"({' and '.join(parts)})"
     return f"{match_value_name} == {_expr(pat)}"
 
 
@@ -1215,6 +1319,16 @@ def _match_bindings_py(match_value_name: str, pat: Any) -> list[tuple[str, str]]
         return []
     if isinstance(pat, GuardedPattern):
         return _match_bindings_py(match_value_name, pat.pattern)
+    if isinstance(pat, SlicePattern):
+        out: list[tuple[str, str]] = []
+        for i, sub in enumerate(pat.patterns):
+            out.extend(_match_bindings_py(f"({match_value_name})[{i}]", sub))
+        return out
+    if isinstance(pat, TuplePattern):
+        out: list[tuple[str, str]] = []
+        for i, sub in enumerate(pat.patterns):
+            out.extend(_match_bindings_py(f"({match_value_name})[{i}]", sub))
+        return out
     if isinstance(pat, FieldExpr) and isinstance(pat.obj, Name):
         return []
     if isinstance(pat, Call) and isinstance(pat.fn, FieldExpr) and isinstance(pat.fn.obj, Name):
@@ -1230,6 +1344,17 @@ def _match_bindings_py(match_value_name: str, pat: Any) -> list[tuple[str, str]]
             return []
         out: list[tuple[str, str]] = []
         for (fname, _), sub in zip(decl.fields, pat.args):
+            out.extend(_match_bindings_py(f"({match_value_name}).{fname}", sub))
+        return out
+    if isinstance(pat, StructPattern):
+        decl = _PY_STRUCTS.get(pat.struct_name)
+        if decl is None:
+            return []
+        declared = {fname for fname, _ in decl.fields}
+        out: list[tuple[str, str]] = []
+        for fname, sub in pat.field_patterns.items():
+            if fname not in declared:
+                return []
             out.extend(_match_bindings_py(f"({match_value_name}).{fname}", sub))
         return out
     return []
@@ -1263,6 +1388,10 @@ def _stmt_py(st: Any, ind: int) -> list[str]:
     if isinstance(st, ComptimeStmt):
         return []
     if isinstance(st, ExprStmt):
+        if isinstance(st.expr, Call):
+            call_name = st.expr.resolved_name or _call_name(st.expr.fn)
+            if call_name in {"static_assert", "__static_assert"}:
+                return []
         return [f"{p}{_expr(st.expr)}"]
     if isinstance(st, IfStmt):
         lines = [f"{p}if {_expr(st.cond)}:"]
@@ -1315,5 +1444,10 @@ def _stmt_py(st: Any, ind: int) -> list[str]:
             lines.append(f"{'    ' * (ind + 1)}pass")
         return lines
     if isinstance(st, ForStmt):
-        raise CodegenError(_diag(st, "internal: unlowered for-in loop"))
+        lines = [f"{p}for {st.var_name} in {_expr(st.iterable)}:"]
+        for s in st.body:
+            lines.extend(_stmt_py(s, ind + 1))
+        if not st.body:
+            lines.append(f"{'    ' * (ind + 1)}pass")
+        return lines
     raise CodegenError(_diag(st, f"unsupported statement {type(st).__name__}"))

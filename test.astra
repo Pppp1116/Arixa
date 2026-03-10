@@ -1,0 +1,423 @@
+// MiniOS - A small operating system kernel with scheduler and CLI
+// Written in ASTRA language
+
+// Constants
+const MAX_TASKS = 16;
+const STACK_SIZE = 4096;
+const QUANTUM = 10;
+const MEMORY_SIZE = 65536;
+
+// Task states
+enum TaskState {
+    READY,
+    RUNNING,
+    BLOCKED,
+    TERMINATED
+}
+
+// Task Control Block (TCB)
+struct Task {
+    id: Int;
+    name: String;
+    state: TaskState;
+    priority: Int;
+    quantum_counter: Int;
+    stack_ptr: Int;
+    entry_point: Int;
+    next_task: Int;
+}
+
+// Memory block descriptor
+struct MemoryBlock {
+    start: Int;
+    size: Int;
+    allocated: Bool;
+    next: Int;
+}
+
+// Global OS state
+struct OSState {
+    tasks: [Task; MAX_TASKS];
+    current_task: Int;
+    task_count: Int;
+    memory_blocks: [MemoryBlock; 32];
+    cli_buffer: [Char; 256];
+    cli_pos: Int;
+    timer_ticks: Int;
+}
+
+// Global OS instance
+let os: OSState;
+
+// Initialize the operating system
+fn init_os() -> Void {
+    // Initialize task table
+    for i in 0..MAX_TASKS {
+        os.tasks[i].id = -1;
+        os.tasks[i].state = TaskState.TERMINATED;
+        os.tasks[i].next_task = -1;
+    }
+    
+    // Initialize memory management
+    os.memory_blocks[0].start = 0;
+    os.memory_blocks[0].size = MEMORY_SIZE;
+    os.memory_blocks[0].allocated = false;
+    os.memory_blocks[0].next = -1;
+    
+    for i in 1..32 {
+        os.memory_blocks[i].start = 0;
+        os.memory_blocks[i].size = 0;
+        os.memory_blocks[i].allocated = false;
+        os.memory_blocks[i].next = -1;
+    }
+    
+    os.current_task = -1;
+    os.task_count = 0;
+    os.cli_pos = 0;
+    os.timer_ticks = 0;
+    
+    // Create idle task
+    create_task("idle", idle_task, 0);
+    
+    print("MiniOS v1.0 initialized\n");
+    print("Memory: ");
+    print_int(MEMORY_SIZE);
+    print(" bytes\n");
+    print("Ready tasks: ");
+    print_int(MAX_TASKS);
+    print("\n");
+}
+
+// Create a new task
+fn create_task(name: String, entry: Int, priority: Int) -> Int {
+    if os.task_count >= MAX_TASKS {
+        print("Error: Maximum tasks reached\n");
+        return -1;
+    }
+    
+    let task_id = os.task_count;
+    os.tasks[task_id].id = task_id;
+    os.tasks[task_id].name = name;
+    os.tasks[task_id].state = TaskState.READY;
+    os.tasks[task_id].priority = priority;
+    os.tasks[task_id].quantum_counter = QUANTUM;
+    os.tasks[task_id].entry_point = entry;
+    os.tasks[task_id].stack_ptr = allocate_memory(STACK_SIZE);
+    os.tasks[task_id].next_task = -1;
+    
+    os.task_count = os.task_count + 1;
+    
+    print("Task created: ");
+    print(name);
+    print(" (ID: ");
+    print_int(task_id);
+    print(")\n");
+    
+    return task_id;
+}
+
+// Simple round-robin scheduler
+fn schedule() -> Void {
+    if os.current_task == -1 {
+        // Find first ready task
+        for i in 0..MAX_TASKS {
+            if os.tasks[i].state == TaskState.READY {
+                os.current_task = i;
+                os.tasks[i].state = TaskState.RUNNING;
+                return;
+            }
+        }
+    }
+    
+    let current = os.current_task;
+    os.tasks[current].quantum_counter = os.tasks[current].quantum_counter - 1;
+    
+    // Quantum expired or task blocked
+    if os.tasks[current].quantum_counter <= 0 || os.tasks[current].state != TaskState.RUNNING {
+        os.tasks[current].state = TaskState.READY;
+        os.tasks[current].quantum_counter = QUANTUM;
+        
+        // Find next ready task
+        let next = (current + 1) % MAX_TASKS;
+        while next != current {
+            if os.tasks[next].state == TaskState.READY {
+                os.current_task = next;
+                os.tasks[next].state = TaskState.RUNNING;
+                return;
+            }
+            next = (next + 1) % MAX_TASKS;
+        }
+        
+        // No other ready tasks, continue with current
+        os.tasks[current].state = TaskState.RUNNING;
+    }
+}
+
+// Memory allocation (simple first-fit)
+fn allocate_memory(size: Int) -> Int {
+    for i in 0..32 {
+        if !os.memory_blocks[i].allocated && os.memory_blocks[i].size >= size {
+            os.memory_blocks[i].allocated = true;
+            
+            // Split block if necessary
+            if os.memory_blocks[i].size > size {
+                let remaining = os.memory_blocks[i].size - size;
+                os.memory_blocks[i].size = size;
+                
+                // Find free block descriptor
+                for j in 0..32 {
+                    if os.memory_blocks[j].size == 0 {
+                        os.memory_blocks[j].start = os.memory_blocks[i].start + size;
+                        os.memory_blocks[j].size = remaining;
+                        os.memory_blocks[j].allocated = false;
+                        os.memory_blocks[j].next = os.memory_blocks[i].next;
+                        os.memory_blocks[i].next = j;
+                        break;
+                    }
+                }
+            }
+            
+            return os.memory_blocks[i].start;
+        }
+    }
+    
+    print("Error: Out of memory\n");
+    return -1;
+}
+
+// Free memory
+fn free_memory(ptr: Int) -> Void {
+    for i in 0..32 {
+        if os.memory_blocks[i].start == ptr && os.memory_blocks[i].allocated {
+            os.memory_blocks[i].allocated = false;
+            
+            // Coalesce with next block if free
+            if os.memory_blocks[i].next != -1 {
+                let next = os.memory_blocks[i].next;
+                if !os.memory_blocks[next].allocated {
+                    os.memory_blocks[i].size = os.memory_blocks[i].size + os.memory_blocks[next].size;
+                    os.memory_blocks[i].next = os.memory_blocks[next].next;
+                    os.memory_blocks[next].size = 0;
+                }
+            }
+            
+            // Coalesce with previous block if free
+            for j in 0..32 {
+                if os.memory_blocks[j].next == i && !os.memory_blocks[j].allocated {
+                    os.memory_blocks[j].size = os.memory_blocks[j].size + os.memory_blocks[i].size;
+                    os.memory_blocks[j].next = os.memory_blocks[i].next;
+                    os.memory_blocks[i].size = 0;
+                    break;
+                }
+            }
+            
+            return;
+        }
+    }
+    
+    print("Error: Invalid pointer\n");
+}
+
+// Timer interrupt handler
+fn timer_interrupt() -> Void {
+    os.timer_ticks = os.timer_ticks + 1;
+    schedule();
+}
+
+// Idle task
+fn idle_task() -> Void {
+    while true {
+        // Busy wait - in real OS this would halt CPU
+        for i in 0..1000 {
+            // Waste cycles
+        }
+    }
+}
+
+// CLI Commands
+fn cmd_help() -> Void {
+    print("Available commands:\n");
+    print("  help     - Show this help\n");
+    print("  tasks    - List all tasks\n");
+    print("  mem      - Show memory usage\n");
+    print("  time     - Show system uptime\n");
+    print("  create   - Create a new task\n");
+    print("  kill     - Terminate a task\n");
+    print("  clear    - Clear screen\n");
+    print("  shutdown - Halt the system\n");
+}
+
+fn cmd_tasks() -> Void {
+    print("Task List:\n");
+    print("ID  Name        State    Priority  Quantum\n");
+    print("---  ----------  -------  --------  -------\n");
+    
+    for i in 0..MAX_TASKS {
+        if os.tasks[i].id != -1 {
+            print_int(os.tasks[i].id);
+            print("    ");
+            print(os.tasks[i].name);
+            
+            // Pad name to 10 chars
+            let name_len = 10;
+            for j in 0..(name_len - os.tasks[i].name.length) {
+                print(" ");
+            }
+            
+            match os.tasks[i].state {
+                TaskState.READY => print("READY   "),
+                TaskState.RUNNING => print("RUNNING "),
+                TaskState.BLOCKED => print("BLOCKED "),
+                TaskState.TERMINATED => print("TERM    ")
+            }
+            
+            print("    ");
+            print_int(os.tasks[i].priority);
+            print("        ");
+            print_int(os.tasks[i].quantum_counter);
+            print("\n");
+        }
+    }
+}
+
+fn cmd_memory() -> Void {
+    print("Memory Usage:\n");
+    let total_used = 0;
+    let total_free = 0;
+    
+    for i in 0..32 {
+        if os.memory_blocks[i].size > 0 {
+            if os.memory_blocks[i].allocated {
+                total_used = total_used + os.memory_blocks[i].size;
+            } else {
+                total_free = total_free + os.memory_blocks[i].size;
+            }
+        }
+    }
+    
+    print("Used:  ");
+    print_int(total_used);
+    print(" bytes\n");
+    print("Free:  ");
+    print_int(total_free);
+    print(" bytes\n");
+    print("Total: ");
+    print_int(MEMORY_SIZE);
+    print(" bytes\n");
+}
+
+fn cmd_time() -> Void {
+    print("System uptime: ");
+    print_int(os.timer_ticks);
+    print(" timer ticks\n");
+}
+
+fn cmd_create(args: [String]) -> Void {
+    if args.length < 2 {
+        print("Usage: create <task_name>\n");
+        return;
+    }
+    
+    create_task(args[1], demo_task, 1);
+}
+
+fn cmd_kill(args: [String]) -> Void {
+    if args.length < 2 {
+        print("Usage: kill <task_id>\n");
+        return;
+    }
+    
+    let task_id = string_to_int(args[1]);
+    if task_id >= 0 && task_id < MAX_TASKS && os.tasks[task_id].id != -1 {
+        os.tasks[task_id].state = TaskState.TERMINATED;
+        free_memory(os.tasks[task_id].stack_ptr);
+        print("Task ");
+        print_int(task_id);
+        print(" terminated\n");
+    } else {
+        print("Invalid task ID\n");
+    }
+}
+
+fn cmd_clear() -> Void {
+    // Clear screen (print 25 newlines)
+    for i in 0..25 {
+        print("\n");
+    }
+}
+
+fn cmd_shutdown() -> Void {
+    print("Shutting down MiniOS...\n");
+    // In real OS, this would power off or halt
+    return;
+}
+
+// Demo task
+fn demo_task() -> Void {
+    let counter = 0;
+    while true {
+        counter = counter + 1;
+        if counter % 1000 == 0 {
+            print("Demo task running: ");
+            print_int(counter);
+            print("\n");
+        }
+    }
+}
+
+// Parse and execute CLI command
+fn execute_command(command: String) -> Void {
+    let parts = split_string(command, ' ');
+    if parts.length == 0 {
+        return;
+    }
+    
+    match parts[0] {
+        "help" => cmd_help(),
+        "tasks" => cmd_tasks(),
+        "mem" => cmd_memory(),
+        "time" => cmd_time(),
+        "create" => cmd_create(parts),
+        "kill" => cmd_kill(parts),
+        "clear" => cmd_clear(),
+        "shutdown" => cmd_shutdown(),
+        _ => {
+            print("Unknown command: ");
+            print(parts[0]);
+            print("\n");
+        }
+    }
+}
+
+// CLI main loop
+fn cli_loop() -> Void {
+    print("MiniOS CLI\n");
+    print("> ");
+    
+    while true {
+        // In real OS, this would wait for keyboard input
+        // For demo, we'll simulate some commands
+        execute_command("help");
+        execute_command("tasks");
+        execute_command("mem");
+        execute_command("time");
+        
+        // Create a demo task
+        execute_command("create demo");
+        
+        // Run scheduler for a bit
+        for i in 0..100 {
+            timer_interrupt();
+        }
+        
+        execute_command("tasks");
+        execute_command("shutdown");
+        break;
+    }
+}
+
+// Main OS entry point
+fn main() -> Void {
+    init_os();
+    cli_loop();
+}

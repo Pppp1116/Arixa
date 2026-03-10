@@ -119,7 +119,7 @@ def cmd_test(a):
     Returns:
         None. May raise `SystemExit` for CLI exit handling.
     """
-    args = [sys.executable, "-m", "pytest", "-q"]
+    args = [sys.executable, "-m", "pytest", "tests", "--ignore=tests/temporary", "-q"]
     if a.kind == "unit":
         args += ["-k", "not integration and not e2e"]
     elif a.kind == "integration":

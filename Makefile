@@ -6,7 +6,7 @@ PYTEST := $(ARIXA_BIN)/pytest
 
 ARIXA_SOURCES := $(shell find . -name '*.arixa' -print)
 
-.PHONY: help venv bootstrap fmt fmt-check lint test e2e bundle-vscode bundle-toolchain sync-editor-tools verify-editor-sync all
+.PHONY: help venv bootstrap fmt fmt-check lint test e2e bundle-vscode bundle-toolchain sync-editor-tools verify-editor-sync update-deps publish-vscode all
 
 help:
 	@echo "Available targets:"
@@ -20,6 +20,8 @@ help:
 	@echo "  bundle-toolchain - build portable compiler bundle into dist/toolchain/"
 	@echo "  sync-editor-tools - automatically sync VS Code extension syntax with language changes (LSP imports directly from main project)"
 	@echo "  verify-editor-sync - verify that editor tools are properly synchronized"
+	@echo "  update-deps - update Python and VS Code extension dependencies"
+	@echo "  publish-vscode - one-command VS Code extension package/publish flow"
 	@echo "  all        - fmt-check, lint, and test"
 
 venv:
@@ -63,5 +65,11 @@ sync-editor-tools:
 
 verify-editor-sync:
 	python scripts/verify_editor_sync.py
+
+update-deps:
+	python scripts/update_dependencies.py
+
+publish-vscode:
+	python scripts/release_vscode_extension.py --publish --npm-update
 
 all: fmt-check lint test

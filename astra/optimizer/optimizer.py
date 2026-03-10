@@ -9,6 +9,19 @@ from astra.ast import *
 from astra.for_lowering import lower_for_loops
 from astra.int_types import parse_int_type_name
 
+_PURE_STDLIB_INT_HELPERS = {"abs_int", "min_int", "max_int", "clamp_int"}
+_ACTIVE_OVERFLOW_MODE = "trap"
+
+
+def _set_overflow_mode(mode: str) -> None:
+    global _ACTIVE_OVERFLOW_MODE
+    _ACTIVE_OVERFLOW_MODE = mode if mode in {"trap", "wrap"} else "trap"
+
+
+def _allow_mul_pow2_strength_reduction() -> bool:
+    # x * 2^k -> x << k is semantically safe only under wrapping overflow.
+    return _ACTIVE_OVERFLOW_MODE == "wrap"
+
 
 @dataclass(frozen=True)
 class AvailableExpr:
@@ -191,7 +204,7 @@ class OptStats:
                 f"CSE insertions: {self.cse_insertions}, CSE invalidations: {self.cse_invalidations}")
 
 
-def optimize_program(prog: Program, debug_opt: bool = False) -> Program:
+def optimize_program(prog: Program, debug_opt: bool = False, overflow_mode: str = "trap") -> Program:
     """Apply optimization passes to function bodies in a program AST.
 
     Strategy:
@@ -203,10 +216,12 @@ def optimize_program(prog: Program, debug_opt: bool = False) -> Program:
     Args:
         prog: The program to optimize
         debug_opt: If True, print debug information about optimization progress
+        overflow_mode: Integer overflow mode (`trap` or `wrap`)
         
     Returns:
         The optimized program
     """
+    _set_overflow_mode(overflow_mode)
     lower_for_loops(prog)
 
     MAX_OPT_ROUNDS = 8
@@ -675,29 +690,8 @@ def _fold_ast_expr(expr: Any, env: dict[str, Any], mutable_names: set[str]) -> t
                 # 0 * x -> 0 is only safe when x is truly discardable
                 result = _literal_node(0, expr)
                 return result, True
-            if _is_integer_expr(expr):
-                # CRITICAL LANGUAGE SEMANTICS ASSUMPTION:
-                # This strength reduction (x * 2^k -> x << k) is only valid under specific overflow semantics:
-                # 
-                # SAFE SEMANTICS (per ASTRA language spec):
-                # - --overflow wrap mode (release builds)
-                # - --overflow debug mode when wrap semantics are used
-                # - Two's-complement wrapping integers
-                # - Arbitrary precision integers
-                # 
-                # UNSAFE SEMANTICS (DO NOT APPLY OPTIMIZATION):
-                # - --overflow trap mode (default for debug builds)
-                # - Checked overflow that traps on overflow
-                # - C-like undefined behavior on signed overflow
-                # - Fixed-width integers with saturation semantics
-                # 
-                # NOTE: This optimization should be gated on overflow mode configuration.
-                # For now, we conservatively apply it only when we can determine the context
-                # allows wrapping semantics. In a full implementation, this should check
-                # the current overflow mode from build configuration.
-                # 
-                # The optimization assumes: x * (1 << k) == x << k for all valid x and k
-                # If this does not hold in the target overflow mode, disable this optimization.
+            if _is_integer_expr(expr) and _allow_mul_pow2_strength_reduction():
+                # This strength reduction is enabled only for wrapping overflow mode.
                 rshift = _pow2_shift(rval)
                 if rshift is not None and _is_pure_expr(expr.left):
                     out = Binary(op="<<", left=expr.left, right=_literal_node(rshift, expr.right), pos=expr.pos, line=expr.line, col=expr.col)
@@ -792,7 +786,7 @@ def _fold_ast_expr(expr: Any, env: dict[str, Any], mutable_names: set[str]) -> t
                 return result, True
         return expr, changed
     if isinstance(expr, Call):
-        # CALL FOLDING NOTE:
+        # Call folding caveat:
         # Arguments can be folded, but environment invalidation must happen at statement level.
         # Calls are treated as potentially invalidating env knowledge unless we know:
         # - Function is pure/non-mutating
@@ -811,7 +805,11 @@ def _fold_ast_expr(expr: Any, env: dict[str, Any], mutable_names: set[str]) -> t
             new_args.append(new_arg)
             args_changed |= arg_changed
         expr.args = new_args
-        
+
+        folded_call = _fold_pure_call_const(expr)
+        if folded_call is not None:
+            return folded_call, True
+
         # Conservative: assume function calls may have side effects
         # and invalidate the environment unless we can prove otherwise
         # This prevents incorrect constant propagation across calls
@@ -859,7 +857,7 @@ def _fold_ast_expr(expr: Any, env: dict[str, Any], mutable_names: set[str]) -> t
         expr.expr, expr_changed = _fold_ast_expr(expr.expr, env, mutable_names)
         return expr, expr_changed
     if isinstance(expr, OrPattern):
-        # PATTERN FOLDING NOTE:
+        # Pattern folding caveat:
         # Patterns and expressions obey different legality rules and environment meanings.
         # Long-term, patterns benefit from separate folders because:
         # - Pattern rewrites may be invalid for expressions
@@ -875,7 +873,7 @@ def _fold_ast_expr(expr: Any, env: dict[str, Any], mutable_names: set[str]) -> t
         expr.patterns = new_patterns
         return expr, patterns_changed
     if isinstance(expr, GuardedPattern):
-        # PATTERN FOLDING NOTE: Same concerns as OrPattern apply here
+        # Same pattern-folding constraints as OrPattern apply here.
         expr.pattern, pattern_changed = _fold_ast_expr(expr.pattern, env, mutable_names)
         expr.guard, guard_changed = _fold_ast_expr(expr.guard, env, mutable_names)
         return expr, pattern_changed or guard_changed
@@ -897,6 +895,12 @@ def _literal_value(expr: Any) -> Any:
         return None
     if isinstance(expr, Literal):
         return expr.value
+    if isinstance(expr, LiteralPattern):
+        return _literal_value(expr.value)
+    if isinstance(expr, Unary) and expr.op == "-":
+        inner = _literal_value(expr.expr)
+        if isinstance(inner, (int, float)) and not isinstance(inner, bool):
+            return -inner
     return _NO_LITERAL
 
 
@@ -921,10 +925,92 @@ def _match_pattern_const_decision(target: Any, pat: Any) -> bool | None:
         if not gd:
             return False
         return _match_pattern_const_decision(target, pat.pattern)
+    if isinstance(pat, (RangePattern, RangeExpr)):
+        lo = _literal_value(pat.start)
+        hi = _literal_value(pat.end)
+        if not (isinstance(lo, int) and not isinstance(lo, bool)):
+            return None
+        if not (isinstance(hi, int) and not isinstance(hi, bool)):
+            return None
+        if not (isinstance(target, int) and not isinstance(target, bool)):
+            return False
+        if pat.inclusive:
+            return lo <= target <= hi
+        return lo <= target < hi
     pv = _literal_value(pat)
     if pv is _NO_LITERAL:
         return None
     return pv == target
+
+
+def _call_name(call: Call) -> str | None:
+    if isinstance(call.fn, Name):
+        return call.fn.value
+    return None
+
+
+def _is_stdlib_pure_helper_call(call: Call, name: str) -> bool:
+    if name not in _PURE_STDLIB_INT_HELPERS:
+        return False
+    resolved = getattr(call, "resolved_name", None)
+    if not isinstance(resolved, str) or resolved != name:
+        return False
+    src = str(getattr(call, "resolved_source_filename", "") or "").replace("\\", "/")
+    return "/stdlib/" in src
+
+
+def _fold_pure_call_const(call: Call) -> Any | None:
+    name = _call_name(call)
+    if name is None:
+        return None
+
+    # Builtin `len` on literal containers.
+    if name in {"len", "__len"} and getattr(call, "resolved_name", None) is None and len(call.args) == 1:
+        arg = call.args[0]
+        if isinstance(arg, ArrayLit):
+            out = _literal_node(len(arg.elements), call)
+            _copy_inferred_type(out, call)
+            return out
+        if isinstance(arg, VectorLiteral):
+            out = _literal_node(len(arg.elements), call)
+            _copy_inferred_type(out, call)
+            return out
+        arg_lit = _literal_value(arg)
+        if isinstance(arg_lit, str):
+            out = _literal_node(len(arg_lit), call)
+            _copy_inferred_type(out, call)
+            return out
+        return None
+
+    if not _is_stdlib_pure_helper_call(call, name):
+        return None
+
+    vals = [_literal_value(arg) for arg in call.args]
+    if any(v is _NO_LITERAL for v in vals):
+        return None
+    if not all(isinstance(v, int) and not isinstance(v, bool) for v in vals):
+        return None
+
+    out_val: int | None = None
+    if name == "abs_int" and len(vals) == 1:
+        out_val = abs(int(vals[0]))
+    elif name == "min_int" and len(vals) == 2:
+        out_val = min(int(vals[0]), int(vals[1]))
+    elif name == "max_int" and len(vals) == 2:
+        out_val = max(int(vals[0]), int(vals[1]))
+    elif name == "clamp_int" and len(vals) == 3:
+        x, lo, hi = int(vals[0]), int(vals[1]), int(vals[2])
+        if x < lo:
+            out_val = lo
+        elif x > hi:
+            out_val = hi
+        else:
+            out_val = x
+    if out_val is None:
+        return None
+    out = _literal_node(out_val, call)
+    _copy_inferred_type(out, call)
+    return out
 
 
 def _literal_node(value: Any, src: Any) -> Any:

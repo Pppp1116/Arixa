@@ -34,6 +34,20 @@ def test_python_codegen_control_flow() -> None:
     assert "if (x == 3):" in py or "if x == 3:" in py
 
 
+def test_python_codegen_supports_builtin_aliases() -> None:
+    src = "fn main() Int{ __print(1); s = __format(22); return len(s); }"
+    py = to_python(_analyzed(src))
+    assert "print_(1)" in py
+    assert "format_(22)" in py
+    assert "len_(s)" in py
+
+
+def test_python_codegen_if_expression_emits_ternary() -> None:
+    src = "fn main() Int{ x = if true { 1 } else { 2 }; return x; }"
+    py = to_python(_analyzed(src))
+    assert "if True else" in py
+
+
 def test_python_codegen_for_range_loop() -> None:
     src = "fn main() Int{ mut s = 0; for i in 1..=3 { s += i; } return s; }"
     py = to_python(_analyzed(src))
@@ -58,6 +72,68 @@ def test_llvm_codegen_handles_struct_field_access() -> None:
     ir = to_llvm_ir(_analyzed(src))
     assert "getelementptr" in ir
     assert "define i64 @__astra_user_main()" in ir
+
+
+def test_llvm_codegen_match_int_literals_use_switch() -> None:
+    src = """
+fn main() Int{
+  x = 2;
+  match x {
+    1 => { return 10; }
+    2 => { return 20; }
+    3 => { return 30; }
+    _ => { return 0; }
+  }
+  return 0;
+}
+"""
+    ir = to_llvm_ir(_analyzed(src))
+    assert "switch i64" in ir
+
+
+def test_llvm_codegen_ephemeral_array_index_avoids_heap_alloc() -> None:
+    src = "fn main() Int{ return [10, 20, 30][1]; }"
+    ir = to_llvm_ir(_analyzed(src))
+    assert "call i64 @astra_alloc(" not in ir
+
+
+def test_llvm_codegen_non_escaping_struct_let_promotes_to_stack() -> None:
+    src = """
+struct Pair { a Int, b Int }
+fn main() Int{
+  p = Pair(4, 6);
+  return p.a + p.b;
+}
+"""
+    ir = to_llvm_ir(_analyzed(src))
+    assert "call i64 @astra_alloc(" not in ir
+
+
+def test_llvm_codegen_string_interpolation_uses_concat_not_format_runtime() -> None:
+    src = 'fn main() Int{ print("a={1} b={true}"); return 0; }'
+    ir = to_llvm_ir(_analyzed(src))
+    assert "@astra_format_string" not in ir
+
+
+def test_llvm_codegen_print_any_uses_display_runtime() -> None:
+    src = 'fn main() Int{ a = "hello" as Any; print(a); return 0; }'
+    ir = to_llvm_ir(_analyzed(src))
+    assert "@astra_any_to_display" in ir
+
+
+def test_llvm_codegen_returned_struct_keeps_heap_allocation() -> None:
+    src = """
+struct Pair { a Int, b Int }
+fn make() Pair{
+  return Pair(4, 6);
+}
+fn main() Int{
+  p = make();
+  return p.a + p.b;
+}
+"""
+    ir = to_llvm_ir(_analyzed(src))
+    assert "call i64 @astra_alloc(" in ir
 
 
 def test_gpu_python_codegen_registers_kernel_metadata() -> None:

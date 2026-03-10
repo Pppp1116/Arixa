@@ -462,10 +462,6 @@ def _code_for(phase: str, message: str) -> str:
             return "E0400"
         if "use-after-move" in m:
             return "E0401"
-        if "use-after-free" in m:
-            return "E0402"
-        if "owned allocation(s) not released" in m:
-            return "E0403"
         if "this cast requires unsafe context" in m or "requires unsafe context" in m:
             return "E0500"
         if "freestanding mode forbids builtin" in m:
@@ -544,9 +540,20 @@ def _enrich_diagnostic(
 
 
 def _friendly_message_for(message: str, code: str) -> str:
+    def _display_type_name(raw: str) -> str:
+        rendered = raw.strip()
+        aliases = {
+            "Int": "i64",
+            "isize": "i64",
+            "usize": "u64",
+        }
+        return aliases.get(rendered, rendered)
+
     mismatch = _TYPE_MISMATCH_RE.match(message)
     if mismatch is not None:
         context, expected, got = mismatch.groups()
+        expected = _display_type_name(expected)
+        got = _display_type_name(got)
         if context == "return":
             return f"expected `{expected}` but found `{got}` in return value"
         if context.startswith("assignment"):
@@ -563,6 +570,8 @@ def _friendly_message_for(message: str, code: str) -> str:
     expected_got = _EXPECTED_GOT_RE.match(message)
     if expected_got is not None:
         expected, got = expected_got.groups()
+        expected = _display_type_name(expected)
+        got = _display_type_name(got)
         if code in {"E0300", "E0301", "E0002", "E0001"}:
             return f"expected `{expected}`"
         return f"expected `{expected}` but found `{got}`"
@@ -618,8 +627,6 @@ def _friendly_message_for(message: str, code: str) -> str:
     if "use-after-" in message:
         if "move" in message:
             return "value was moved and cannot be used again"
-        if "free" in message:
-            return "value was freed and cannot be used again"
     
     if "integer overflow" in message:
         return "integer overflow detected; consider using a wider type or checking bounds"
@@ -764,8 +771,6 @@ def _suggestions_for(
     if "use-after-" in m:
         if "move" in m:
             out.append(DiagSuggestion(message="clone the value before moving if you need to use it later"))
-        if "free" in m:
-            out.append(DiagSuggestion(message="don't free the value if you need to use it again"))
 
     if "integer overflow" in m:
         out.append(DiagSuggestion(message="use a wider integer type, clamp the value, or build with `--overflow wrap` if wrapping is intended"))
@@ -863,7 +868,7 @@ def _borrow_related_name(message: str) -> str | None:
         r"cannot (?:immutably|mutably) borrow ([A-Za-z_][A-Za-z0-9_]*)\b",
         r"cannot use ([A-Za-z_][A-Za-z0-9_]*) while",
         r"cannot mutate ([A-Za-z_][A-Za-z0-9_]*) while",
-        r"use-after-(?:move|free) of ([A-Za-z_][A-Za-z0-9_]*)\b",
+        r"use-after-move of ([A-Za-z_][A-Za-z0-9_]*)\b",
     ]:
         m = re.search(pat, message)
         if m is not None:
@@ -1046,7 +1051,7 @@ def _name_span(span: DiagSpan, name: str, source_text: str | None) -> DiagSpan |
 def _known_names_from_source(source: str) -> set[str]:
     names = {m.group(0) for m in re.finditer(r"\b[A-Za-z_][A-Za-z0-9_]*\b", source)}
     names |= {k.removeprefix("__") for k in BUILTIN_SIGS.keys()}
-    names |= {"print", "len", "main", "alloc", "free", "spawn", "join", "read_file", "write_file"}
+    names |= {"print", "len", "main", "spawn", "join", "read_file", "write_file"}
     return names
 
 
@@ -1101,7 +1106,7 @@ def _collect_stmt_decl_names(body: list, out: set[str]) -> None:
         if isinstance(st, LetStmt):
             out.add(st.name)
         if isinstance(st, IteratorForStmt):
-            out.add(st.var)
+            out.add(st.var_name)
             _collect_stmt_decl_names(st.body, out)
         elif isinstance(st, IfStmt):
             _collect_stmt_decl_names(st.then_body, out)
@@ -1420,8 +1425,8 @@ def _performance_warnings(body: list, filename: str, source_text: str) -> list[D
                     # Check for nested for loops that might be accessing 2D arrays
                     # This is a simplified detection - a full implementation would need
                     # more sophisticated analysis of array access patterns
-                    outer_var = st.var
-                    inner_var = next_st.var
+                    outer_var = st.var_name
+                    inner_var = next_st.var_name
                     
                     # Look for array access patterns in the inner loop body
                     for inner_stmt in next_st.body:

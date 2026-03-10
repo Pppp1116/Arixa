@@ -30,7 +30,9 @@ from astra.check import _parse_diag_lines, run_check_source
 from astra.formatter import fmt, resolve_format_config
 from astra.module_resolver import ModuleResolutionError, resolve_import_path
 from astra.parser import ParseError, parse
-from astra.semantic import BUILTIN_SIGS, SemanticError, analyze
+from astra.semantic import BUILTIN_DOCS, BUILTIN_SIGS, GPU_API_DOCS, SemanticError, analyze
+
+_LOG = logging.getLogger("astlsp")
 KEYWORDS = [
     "fn",
     "mut",
@@ -260,6 +262,49 @@ def _first_paragraph(doc: str) -> str:
         return ""
     parts = doc.strip().split("\n\n", 1)
     return parts[0].strip()
+
+
+def _balanced_text_fallback(text: str) -> str:
+    """Best-effort tolerant source rewrite for completion/hover parsing."""
+    out = text
+    lines = out.splitlines()
+    rewritten: list[str] = []
+    for row in lines:
+        if row.rstrip().endswith('.'):
+            rewritten.append(row.rstrip() + "_placeholder")
+        else:
+            rewritten.append(row)
+    out = "\n".join(rewritten)
+
+    pairs = {'(': ')', '[': ']', '{': '}'}
+    closers = set(pairs.values())
+    stack: list[str] = []
+    for ch in out:
+        if ch in pairs:
+            stack.append(ch)
+        elif ch in closers:
+            if stack and pairs[stack[-1]] == ch:
+                stack.pop()
+
+    if stack:
+        suffix = ''.join(pairs[ch] for ch in reversed(stack))
+        out += suffix
+
+    return out
+
+
+def _try_parse_tolerant(text: str, filename: str):
+    try:
+        return parse(text, filename=filename)
+    except ParseError as err:
+        _LOG.debug("Initial parse failed for %s; retrying tolerant parse: %s", filename, err)
+    patched = _balanced_text_fallback(text)
+    try:
+        return parse(patched, filename=filename)
+    except ParseError as err:
+        _LOG.debug("Tolerant parse failed for %s; continuing without AST: %s", filename, err)
+        return None
+
 def _decl_symbols(prog: Any, uri: str) -> list[SymbolInfo]:
     out: list[SymbolInfo] = []
     for item in getattr(prog, "items", []):
@@ -440,8 +485,10 @@ class LSPServer:
         start_time = time.perf_counter()
         
         try:
-            prog = parse(doc.text, filename=filename)
-            
+            prog = _try_parse_tolerant(doc.text, filename)
+            if prog is None:
+                return None
+
             # Cache the result
             self._ast_cache[cache_key] = (prog, time.time())
             
@@ -539,9 +586,8 @@ class LSPServer:
         self.dependencies[uri] = new
     def _parse_and_analyze(self, doc: TextDocument):
         filename = _uri_to_filename(doc.uri)
-        try:
-            prog = parse(doc.text, filename=filename)
-        except ParseError:
+        prog = _try_parse_tolerant(doc.text, filename)
+        if prog is None:
             return None
         try:
             analyze(prog, filename=filename, freestanding=bool(self.settings.get("freestanding", False)))
@@ -610,7 +656,7 @@ class LSPServer:
                 if isinstance(st, LetStmt):
                     out[st.name] = (st.line, st.col)
                 if isinstance(st, IteratorForStmt):
-                    out[st.var] = (st.line, st.col)
+                    out[st.var_name] = (st.line, st.col)
                     walk(st.body)
                 if isinstance(st, IfStmt):
                     walk(st.then_body)
@@ -624,6 +670,57 @@ class LSPServer:
                     walk(st.body)
         walk(fn.body)
         return out
+    def _local_decl_types(self, prog: Any, line: int, col: int) -> dict[str, str]:
+        out: dict[str, str] = {}
+        fn = None
+        items = getattr(prog, "items", [])
+        for i, item in enumerate(items):
+            if not isinstance(item, FnDecl):
+                continue
+            next_line = None
+            for nxt in items[i + 1 :]:
+                ln = getattr(nxt, "line", 0)
+                if ln:
+                    next_line = ln
+                    break
+            if item.line <= line and (next_line is None or line < next_line):
+                fn = item
+                break
+        if fn is None:
+            return out
+        for pname, pty in fn.params:
+            out[pname] = str(pty)
+
+        def before(st):
+            sl = getattr(st, "line", 0)
+            sc = getattr(st, "col", 0)
+            return sl < line or (sl == line and sc <= col)
+
+        def walk(stmts):
+            for st in stmts:
+                if not before(st):
+                    break
+                if isinstance(st, LetStmt):
+                    inferred = st.type_name or getattr(st.expr, "inferred_type", None)
+                    if isinstance(inferred, str):
+                        out[st.name] = inferred
+                if isinstance(st, IteratorForStmt):
+                    out[st.var_name] = "Any"
+                    walk(st.body)
+                if isinstance(st, IfStmt):
+                    walk(st.then_body)
+                    walk(st.else_body)
+                if isinstance(st, WhileStmt):
+                    walk(st.body)
+                if isinstance(st, MatchStmt):
+                    for _, b in st.arms:
+                        walk(b)
+                if isinstance(st, ComptimeStmt):
+                    walk(st.body)
+
+        walk(fn.body)
+        return out
+
     def _definition_target(self, uri: str, line0: int, col0: int) -> list[dict[str, Any]]:
         """Enhanced go-to-definition with multiple results and better type inference."""
         doc = self.docs.get(uri)
@@ -695,51 +792,8 @@ class LSPServer:
         workspace_matches.sort(key=lambda x: x[0])
         results.extend([match for _, match in workspace_matches])
         
-        # Check built-in functions and types
-        if symbol in BUILTIN_SIGS:
-            sig = BUILTIN_SIGS[symbol]
-            # For built-ins, we could return a documentation link or special marker
-            results.append({
-                "uri": "builtin://" + symbol,
-                "range": {
-                    "start": {"line": 0, "character": 0},
-                    "end": {"line": 0, "character": len(symbol)},
-                },
-                "origin": "builtin",
-                "detail": f"builtin {symbol}({', '.join(sig.args or [])}) {sig.ret}"
-            })
-        
         return results
-    
-    def _get_symbol_priority(self, kind: int, symbol: str) -> int:
-        """Get priority for symbol ranking in go-to-definition results."""
-        # Higher priority = more likely to be the target
-        priority_map = {
-            12: 100,  # Function
-            23: 90,   # Struct
-            10: 80,   # Enum
-            5: 70,    # Type alias
-            8: 60,    # Field
-            6: 50,    # Variable
-            2: 40,    # Import
-        }
-        return priority_map.get(kind, 0)
-    
-    def _implementation_target(self, uri: str, line0: int, col0: int) -> list[dict[str, Any]]:
-        """Go to implementation - for trait implementations and function overrides."""
-        doc = self.docs.get(uri)
-        if doc is None:
-            return []
-        
-        symbol = _word_at(doc.text, line0, col0)
-        if not symbol:
-            return []
-        
-        results = []
-        
-        # For now, return definition targets
-        # In a full implementation, this would find trait implementations, overrides, etc.
-        return self._definition_target(uri, line0, col0)
+
     def _hover(self, uri: str, line0: int, col0: int) -> dict[str, Any] | None:
         doc = self.docs.get(uri)
         if doc is None:
@@ -768,8 +822,21 @@ class LSPServer:
         if symbol in BUILTIN_SIGS:
             sig = BUILTIN_SIGS[symbol]
             args = ", ".join(sig.args or ["..."])
-            return {"contents": {"kind": "markdown", "value": f"`builtin {symbol}({args}) {sig.ret}`"}}
+            text = f"`builtin {symbol}({args}) {sig.ret}`"
+            hint = BUILTIN_DOCS.get(symbol, "")
+            if hint:
+                text += f"\n\n{hint}"
+            return {"contents": {"kind": "markdown", "value": text}}
+        if symbol == "gpu":
+            api_list = "\n".join(f"- `gpu.{name}`: {doc_text}" for name, doc_text in sorted(GPU_API_DOCS.items()))
+            return {"contents": {"kind": "markdown", "value": f"### GPU namespace\n{api_list}"}}
+        line_text = doc.text.splitlines()[line0] if 0 <= line0 < len(doc.text.splitlines()) else ""
+        if "." in line_text:
+            for api, api_doc in GPU_API_DOCS.items():
+                if f"gpu.{api}" in line_text and symbol == api:
+                    return {"contents": {"kind": "markdown", "value": f"`gpu.{api}`\n\n{api_doc}"}}
         return {"contents": {"kind": "markdown", "value": f"Astra symbol `{symbol}`"}}
+
     def _completion(self, uri: str, line0: int, col0: int) -> list[dict[str, Any]]:
         """Enhanced completion with caching and performance monitoring."""
         doc = self.docs.get(uri)
@@ -817,12 +884,20 @@ class LSPServer:
         # Context-aware suggestions
         if context["in_function_call"]:
             self._add_argument_completions(doc, context, add)
+            # Keep full symbol visibility while typing call arguments.
+            self._add_standard_completions(doc, context, add)
         elif context["in_type_annotation"]:
             self._add_type_completions(doc, context, add)
         elif context["in_import"]:
             self._add_import_completions(doc, context, add)
         elif context["after_dot"]:
             self._add_member_completions(doc, context, add)
+        elif context["in_match"]:
+            self._add_standard_completions(doc, context, add)
+            add("_", 13, "wildcard match pattern", priority=95)
+            add("none", 13, "optional none pattern", priority=94)
+            add("true", 13, "bool pattern", priority=93)
+            add("false", 13, "bool pattern", priority=93)
         else:
             # Standard completions
             self._add_standard_completions(doc, context, add)
@@ -856,6 +931,7 @@ class LSPServer:
             "in_type_annotation": False, 
             "in_import": False,
             "after_dot": False,
+            "in_match": False,
             "current_token": "",
             "function_name": "",
             "type_base": "",
@@ -873,7 +949,7 @@ class LSPServer:
                 context["function_name"] = func_match.group(1)
         
         # Type annotation context  
-        if ':' in prefix and ('fn' in prefix or 'let' in prefix or 'mut' in prefix):
+        if ':' in prefix and ('fn' in prefix or 'mut' in prefix):
             context["in_type_annotation"] = True
             type_match = re.search(r':\s*(\w*)$', prefix)
             if type_match:
@@ -892,6 +968,9 @@ class LSPServer:
                 obj_name = obj_match.group(1)
                 context["current_token"] = obj_name
         
+        if re.search(r'\bmatch\b', prefix):
+            context["in_match"] = True
+
         # Current token being typed
         token_match = re.search(r'(\w+)$', prefix)
         if token_match:
@@ -909,6 +988,11 @@ class LSPServer:
             else:
                 add(k, 14, "keyword", priority=90)
         
+        # GPU namespace and APIs
+        add("gpu", 9, "GPU runtime namespace", priority=92)
+        for api, doc_text in sorted(GPU_API_DOCS.items()):
+            add(f"gpu.{api}", 3, doc_text, priority=88)
+
         # Built-in functions
         for b in BUILTIN_SIGS:
             if not b.startswith("__"):
@@ -1003,15 +1087,49 @@ class LSPServer:
     
     def _add_member_completions(self, doc: TextDocument, context: dict[str, Any], add) -> None:
         """Add member completions for dot access."""
-        # This would require type inference to determine the object's type
-        # For now, add common struct methods and fields
-        
-        # Common method names
+        obj_name = context.get("current_token", "")
+        if obj_name == "gpu":
+            for api, doc_text in sorted(GPU_API_DOCS.items()):
+                add(api, 3, doc_text, insert_text=f"{api}($1)", insert_format=2, priority=98)
+            return
+
+        prog = self._parse_and_analyze(doc)
+        if prog is not None and obj_name:
+            locals_types = self._local_decl_types(prog, context.get("line", 0) + 1, context.get("col", 0) + 1)
+            obj_ty = locals_types.get(obj_name)
+            if obj_ty:
+                for item in getattr(prog, "items", []):
+                    if isinstance(item, StructDecl) and item.name == obj_ty:
+                        for fname, fty in item.fields:
+                            add(fname, 8, f"field {fname}: {fty}", priority=97)
+                        return
+
+        # Heuristic fallback for incomplete code during typing: `name = StructName(`
+        if obj_name:
+            row_limit = context.get("line", 0)
+            lines = doc.text.splitlines()
+            local_text = "\n".join(lines[: row_limit + 1])
+            m = re.search(rf"\b{re.escape(obj_name)}\s*=\s*([A-Z][A-Za-z0-9_]*)\s*\(", local_text)
+            if m:
+                struct_name = m.group(1)
+                struct_match = re.search(rf"struct\s+{re.escape(struct_name)}\s*\{{([^}}]*)\}}", doc.text, re.DOTALL)
+                if struct_match:
+                    body = struct_match.group(1)
+                    for part in body.split(","):
+                        chunk = part.strip()
+                        if not chunk:
+                            continue
+                        bits = chunk.split()
+                        if len(bits) >= 2:
+                            fname = bits[0]
+                            fty = " ".join(bits[1:])
+                            add(fname, 8, f"field {fname}: {fty}", priority=96)
+                    return
+
         common_methods = ["len", "push", "pop", "get", "set", "clear", "is_empty", "clone"]
         for method in common_methods:
             add(method, 3, f"method {method}", insert_text=f"{method}($1)", insert_format=2, priority=85)
-        
-        # Common field names  
+
         common_fields = ["data", "size", "capacity", "length", "count"]
         for field in common_fields:
             add(field, 8, f"field {field}", priority=80)

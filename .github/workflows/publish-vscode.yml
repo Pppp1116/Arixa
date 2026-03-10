@@ -1,0 +1,40 @@
+name: publish-vscode
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to Marketplace (true) or only package VSIX (false)"
+        required: true
+        default: "false"
+      npm_update:
+        description: "Run npm update before packaging/publishing"
+        required: true
+        default: "true"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build package or publish
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          ARGS=""
+          if [ "${{ github.event.inputs.publish }}" = "true" ]; then
+            ARGS="$ARGS --publish"
+          fi
+          if [ "${{ github.event.inputs.npm_update }}" = "true" ]; then
+            ARGS="$ARGS --npm-update"
+          fi
+          python scripts/release_vscode_extension.py $ARGS

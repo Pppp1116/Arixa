@@ -733,6 +733,8 @@ double astra_any_to_f64(uintptr_t value) {
   return 0.0;
 }
 
+uintptr_t astra_to_json(uintptr_t v);
+
 uintptr_t astra_any_to_str(uintptr_t value) {
   AstraAnySlot *entry = astra_any_expect(value);
   if (entry->tag == ASTRA_ANY_STR) {
@@ -740,6 +742,42 @@ uintptr_t astra_any_to_str(uintptr_t value) {
   }
   astra_trap();
   return 0;
+}
+
+uintptr_t astra_any_to_display(uintptr_t value) {
+  AstraAnySlot *entry = astra_any_find_slot(value);
+  if (entry == NULL) {
+    return (uintptr_t)astra_strdup_s("none");
+  }
+  char num[64];
+  switch (entry->tag) {
+  case ASTRA_ANY_NONE:
+    return (uintptr_t)astra_strdup_s("none");
+  case ASTRA_ANY_INT:
+    (void)snprintf(num, sizeof(num), "%lld", (long long)entry->value.i64);
+    return (uintptr_t)astra_strdup_s(num);
+  case ASTRA_ANY_BOOL:
+    return (uintptr_t)astra_strdup_s(entry->value.b ? "true" : "false");
+  case ASTRA_ANY_FLOAT:
+    if (isnan(entry->value.f64)) {
+      return (uintptr_t)astra_strdup_s("nan");
+    }
+    if (isinf(entry->value.f64)) {
+      return (uintptr_t)astra_strdup_s(entry->value.f64 > 0.0 ? "inf" : "-inf");
+    }
+    (void)snprintf(num, sizeof(num), "%.15g", entry->value.f64);
+    return (uintptr_t)astra_strdup_s(num);
+  case ASTRA_ANY_STR:
+    return (uintptr_t)astra_strdup_s((const char *)entry->value.ptr);
+  case ASTRA_ANY_PTR:
+    (void)snprintf(num, sizeof(num), "%llu", (unsigned long long)entry->value.ptr);
+    return (uintptr_t)astra_strdup_s(num);
+  case ASTRA_ANY_LIST:
+  case ASTRA_ANY_MAP:
+    return astra_to_json(value);
+  default:
+    return (uintptr_t)astra_strdup_s("none");
+  }
 }
 
 uintptr_t astra_any_to_ptr(uintptr_t value) {
@@ -3665,4 +3703,493 @@ uintptr_t astra_bool_to_str(int8_t value) {
   }
   strcpy(result, str);
   return (uintptr_t)result;
+}
+
+typedef struct {
+  uint64_t len;
+  uint8_t *data;
+} AstraRuntimeVecHeader;
+
+static uintptr_t astra_make_vec_u8(const uint8_t *src, size_t len) {
+  AstraRuntimeVecHeader *hdr = (AstraRuntimeVecHeader *)astra_heap_alloc(sizeof(AstraRuntimeVecHeader));
+  if (hdr == NULL) {
+    return 0;
+  }
+  hdr->len = (uint64_t)len;
+  if (len == 0) {
+    hdr->data = NULL;
+    return (uintptr_t)hdr;
+  }
+  uint8_t *out = (uint8_t *)astra_heap_alloc(len);
+  if (out == NULL) {
+    hdr->len = 0;
+    hdr->data = NULL;
+    return (uintptr_t)hdr;
+  }
+  memcpy(out, src, len);
+  hdr->data = out;
+  return (uintptr_t)hdr;
+}
+
+static bool astra_read_vec_u8(uintptr_t vec_ptr, const uint8_t **data_out, size_t *len_out) {
+  if (data_out == NULL || len_out == NULL) {
+    return false;
+  }
+  if (vec_ptr == 0) {
+    *data_out = NULL;
+    *len_out = 0;
+    return false;
+  }
+  AstraRuntimeVecHeader *hdr = (AstraRuntimeVecHeader *)vec_ptr;
+  *len_out = (size_t)hdr->len;
+  *data_out = (const uint8_t *)hdr->data;
+  return true;
+}
+
+static uintptr_t astra_make_vec_str(char **items, size_t len) {
+  AstraRuntimeVecHeader *hdr = (AstraRuntimeVecHeader *)astra_heap_alloc(sizeof(AstraRuntimeVecHeader));
+  if (hdr == NULL) {
+    return 0;
+  }
+  hdr->len = (uint64_t)len;
+  if (len == 0) {
+    hdr->data = NULL;
+    return (uintptr_t)hdr;
+  }
+  char **arr = (char **)astra_heap_alloc(len * sizeof(char *));
+  if (arr == NULL) {
+    hdr->len = 0;
+    hdr->data = NULL;
+    return (uintptr_t)hdr;
+  }
+  memcpy(arr, items, len * sizeof(char *));
+  hdr->data = (uint8_t *)arr;
+  return (uintptr_t)hdr;
+}
+
+static char *astra_substr_copy(const char *s, size_t start, size_t len) {
+  char *out = (char *)astra_heap_alloc(len + 1);
+  if (out == NULL) {
+    return astra_strdup_s("");
+  }
+  memcpy(out, s + start, len);
+  out[len] = '\0';
+  return out;
+}
+
+static bool astra_is_space_ch(unsigned char ch) {
+  return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\f' || ch == '\v';
+}
+
+static int astra_hex_nibble(char ch) {
+  if (ch >= '0' && ch <= '9') return ch - '0';
+  if (ch >= 'a' && ch <= 'f') return 10 + (ch - 'a');
+  if (ch >= 'A' && ch <= 'F') return 10 + (ch - 'A');
+  return -1;
+}
+
+static bool astra_url_unreserved(unsigned char ch) {
+  if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')) return true;
+  return ch == '-' || ch == '_' || ch == '.' || ch == '~';
+}
+
+int64_t __str_char_at_impl(uintptr_t s_ptr, int64_t index) {
+  const char *s = (const char *)s_ptr;
+  if (s == NULL || index < 0) return 0;
+  size_t n = strlen(s);
+  size_t i = (size_t)index;
+  if (i >= n) return 0;
+  return (int64_t)(unsigned char)s[i];
+}
+
+uintptr_t __str_from_char_impl(int64_t c) {
+  char *out = (char *)astra_heap_alloc(2);
+  if (out == NULL) return (uintptr_t)astra_strdup_s("");
+  out[0] = (char)(c & 0xFF);
+  out[1] = '\0';
+  return (uintptr_t)out;
+}
+
+uintptr_t __str_substring_impl(uintptr_t s_ptr, int64_t start, int64_t length) {
+  const char *s = (const char *)s_ptr;
+  if (s == NULL) return (uintptr_t)astra_strdup_s("");
+  if (start < 0 || length < 0) return (uintptr_t)astra_strdup_s("");
+  size_t n = strlen(s);
+  size_t st = (size_t)start;
+  size_t ln = (size_t)length;
+  if (st >= n) return (uintptr_t)astra_strdup_s("");
+  if (st + ln > n) ln = n - st;
+  return (uintptr_t)astra_substr_copy(s, st, ln);
+}
+
+uintptr_t __str_to_upper_impl(uintptr_t s_ptr) {
+  const char *s = (const char *)s_ptr;
+  if (s == NULL) return (uintptr_t)astra_strdup_s("");
+  size_t n = strlen(s);
+  char *out = (char *)astra_heap_alloc(n + 1);
+  if (out == NULL) return (uintptr_t)astra_strdup_s("");
+  for (size_t i = 0; i < n; i++) {
+    char ch = s[i];
+    out[i] = (ch >= 'a' && ch <= 'z') ? (char)(ch - 32) : ch;
+  }
+  out[n] = '\0';
+  return (uintptr_t)out;
+}
+
+uintptr_t __str_to_lower_impl(uintptr_t s_ptr) {
+  const char *s = (const char *)s_ptr;
+  if (s == NULL) return (uintptr_t)astra_strdup_s("");
+  size_t n = strlen(s);
+  char *out = (char *)astra_heap_alloc(n + 1);
+  if (out == NULL) return (uintptr_t)astra_strdup_s("");
+  for (size_t i = 0; i < n; i++) {
+    char ch = s[i];
+    out[i] = (ch >= 'A' && ch <= 'Z') ? (char)(ch + 32) : ch;
+  }
+  out[n] = '\0';
+  return (uintptr_t)out;
+}
+
+uintptr_t __str_trim_start_impl(uintptr_t s_ptr) {
+  const char *s = (const char *)s_ptr;
+  if (s == NULL) return (uintptr_t)astra_strdup_s("");
+  size_t n = strlen(s);
+  size_t st = 0;
+  while (st < n && astra_is_space_ch((unsigned char)s[st])) st++;
+  return (uintptr_t)astra_substr_copy(s, st, n - st);
+}
+
+uintptr_t __str_trim_end_impl(uintptr_t s_ptr) {
+  const char *s = (const char *)s_ptr;
+  if (s == NULL) return (uintptr_t)astra_strdup_s("");
+  size_t n = strlen(s);
+  size_t end = n;
+  while (end > 0 && astra_is_space_ch((unsigned char)s[end - 1])) end--;
+  return (uintptr_t)astra_substr_copy(s, 0, end);
+}
+
+uintptr_t __str_trim_impl(uintptr_t s_ptr) {
+  uintptr_t left = __str_trim_start_impl(s_ptr);
+  return __str_trim_end_impl(left);
+}
+
+int64_t __str_find_impl(uintptr_t s_ptr, uintptr_t pattern_ptr) {
+  const char *s = (const char *)s_ptr;
+  const char *pattern = (const char *)pattern_ptr;
+  if (s == NULL || pattern == NULL) return -1;
+  if (pattern[0] == '\0') return 0;
+  const char *hit = strstr(s, pattern);
+  if (hit == NULL) return -1;
+  return (int64_t)(hit - s);
+}
+
+uintptr_t __str_replace_impl(uintptr_t s_ptr, uintptr_t pattern_ptr, uintptr_t replacement_ptr) {
+  const char *s = (const char *)s_ptr;
+  const char *pattern = (const char *)pattern_ptr;
+  const char *replacement = (const char *)replacement_ptr;
+  if (s == NULL) return (uintptr_t)astra_strdup_s("");
+  if (pattern == NULL || pattern[0] == '\0') return (uintptr_t)astra_strdup_s(s);
+  if (replacement == NULL) replacement = "";
+
+  size_t s_len = strlen(s);
+  size_t p_len = strlen(pattern);
+  size_t r_len = strlen(replacement);
+
+  size_t count = 0;
+  const char *cur = s;
+  while (true) {
+    const char *hit = strstr(cur, pattern);
+    if (hit == NULL) break;
+    count++;
+    cur = hit + p_len;
+  }
+
+  if (count == 0) return (uintptr_t)astra_strdup_s(s);
+
+  size_t out_len = s_len + count * (r_len - p_len);
+  char *out = (char *)astra_heap_alloc(out_len + 1);
+  if (out == NULL) return (uintptr_t)astra_strdup_s("");
+
+  size_t wi = 0;
+  cur = s;
+  while (true) {
+    const char *hit = strstr(cur, pattern);
+    if (hit == NULL) break;
+    size_t prefix = (size_t)(hit - cur);
+    memcpy(out + wi, cur, prefix);
+    wi += prefix;
+    memcpy(out + wi, replacement, r_len);
+    wi += r_len;
+    cur = hit + p_len;
+  }
+  size_t tail = strlen(cur);
+  memcpy(out + wi, cur, tail);
+  wi += tail;
+  out[wi] = '\0';
+  return (uintptr_t)out;
+}
+
+uintptr_t __str_split_impl(uintptr_t s_ptr, uintptr_t delimiter_ptr) {
+  const char *s = (const char *)s_ptr;
+  const char *delimiter = (const char *)delimiter_ptr;
+  if (s == NULL) s = "";
+  if (delimiter == NULL || delimiter[0] == '\0') {
+    char *only = astra_strdup_s(s);
+    char *items[1] = {only};
+    return astra_make_vec_str(items, 1);
+  }
+
+  size_t d_len = strlen(delimiter);
+  size_t cap = 8;
+  size_t len = 0;
+  char **items = (char **)malloc(cap * sizeof(char *));
+  if (items == NULL) return astra_make_vec_str(NULL, 0);
+
+  const char *cur = s;
+  while (true) {
+    const char *hit = strstr(cur, delimiter);
+    if (hit == NULL) break;
+    if (len == cap) {
+      cap *= 2;
+      char **grown = (char **)realloc(items, cap * sizeof(char *));
+      if (grown == NULL) {
+        free(items);
+        return astra_make_vec_str(NULL, 0);
+      }
+      items = grown;
+    }
+    items[len++] = astra_substr_copy(cur, 0, (size_t)(hit - cur));
+    cur = hit + d_len;
+  }
+  if (len == cap) {
+    cap += 1;
+    char **grown = (char **)realloc(items, cap * sizeof(char *));
+    if (grown == NULL) {
+      free(items);
+      return astra_make_vec_str(NULL, 0);
+    }
+    items = grown;
+  }
+  items[len++] = astra_strdup_s(cur);
+  uintptr_t out = astra_make_vec_str(items, len);
+  free(items);
+  return out;
+}
+
+uintptr_t __str_join_impl(uintptr_t parts_ptr, uintptr_t delimiter_ptr) {
+  const char *delimiter = (const char *)delimiter_ptr;
+  if (delimiter == NULL) delimiter = "";
+  if (parts_ptr == 0) return (uintptr_t)astra_strdup_s("");
+  AstraRuntimeVecHeader *hdr = (AstraRuntimeVecHeader *)parts_ptr;
+  size_t n = (size_t)hdr->len;
+  char **parts = (char **)hdr->data;
+  if (n == 0 || parts == NULL) return (uintptr_t)astra_strdup_s("");
+
+  size_t d_len = strlen(delimiter);
+  size_t total = 0;
+  for (size_t i = 0; i < n; i++) {
+    total += strlen(parts[i] ? parts[i] : "");
+    if (i + 1 < n) total += d_len;
+  }
+  char *out = (char *)astra_heap_alloc(total + 1);
+  if (out == NULL) return (uintptr_t)astra_strdup_s("");
+  size_t wi = 0;
+  for (size_t i = 0; i < n; i++) {
+    const char *p = parts[i] ? parts[i] : "";
+    size_t pl = strlen(p);
+    memcpy(out + wi, p, pl);
+    wi += pl;
+    if (i + 1 < n && d_len > 0) {
+      memcpy(out + wi, delimiter, d_len);
+      wi += d_len;
+    }
+  }
+  out[wi] = '\0';
+  return (uintptr_t)out;
+}
+
+uintptr_t __string_to_utf8_impl(uintptr_t s_ptr) {
+  const char *s = (const char *)s_ptr;
+  if (s == NULL) return astra_make_vec_u8(NULL, 0);
+  return astra_make_vec_u8((const uint8_t *)s, strlen(s));
+}
+
+uintptr_t __utf8_to_string_impl(uintptr_t bytes_ptr) {
+  const uint8_t *data = NULL;
+  size_t len = 0;
+  if (!astra_read_vec_u8(bytes_ptr, &data, &len) || data == NULL) return (uintptr_t)astra_strdup_s("");
+  char *out = (char *)astra_heap_alloc(len + 1);
+  if (out == NULL) return (uintptr_t)astra_strdup_s("");
+  memcpy(out, data, len);
+  out[len] = '\0';
+  return (uintptr_t)out;
+}
+
+uintptr_t __bytes_to_hex_impl(uintptr_t bytes_ptr) {
+  const uint8_t *data = NULL;
+  size_t len = 0;
+  if (!astra_read_vec_u8(bytes_ptr, &data, &len)) return (uintptr_t)astra_strdup_s("");
+  static const char *hex = "0123456789abcdef";
+  char *out = (char *)astra_heap_alloc(len * 2 + 1);
+  if (out == NULL) return (uintptr_t)astra_strdup_s("");
+  for (size_t i = 0; i < len; i++) {
+    uint8_t b = data ? data[i] : 0;
+    out[i * 2 + 0] = hex[(b >> 4) & 0xF];
+    out[i * 2 + 1] = hex[b & 0xF];
+  }
+  out[len * 2] = '\0';
+  return (uintptr_t)out;
+}
+
+uintptr_t __bytes_to_hex_upper_impl(uintptr_t bytes_ptr) {
+  const uint8_t *data = NULL;
+  size_t len = 0;
+  if (!astra_read_vec_u8(bytes_ptr, &data, &len)) return (uintptr_t)astra_strdup_s("");
+  static const char *hex = "0123456789ABCDEF";
+  char *out = (char *)astra_heap_alloc(len * 2 + 1);
+  if (out == NULL) return (uintptr_t)astra_strdup_s("");
+  for (size_t i = 0; i < len; i++) {
+    uint8_t b = data ? data[i] : 0;
+    out[i * 2 + 0] = hex[(b >> 4) & 0xF];
+    out[i * 2 + 1] = hex[b & 0xF];
+  }
+  out[len * 2] = '\0';
+  return (uintptr_t)out;
+}
+
+uintptr_t __hex_to_bytes_impl(uintptr_t hex_ptr) {
+  const char *s = (const char *)hex_ptr;
+  if (s == NULL) return astra_make_vec_u8(NULL, 0);
+  size_t n = strlen(s);
+  if ((n % 2) != 0) return 0;
+  uint8_t *tmp = (uint8_t *)malloc(n / 2);
+  if (tmp == NULL && n > 0) return 0;
+  for (size_t i = 0; i < n; i += 2) {
+    int hi = astra_hex_nibble(s[i]);
+    int lo = astra_hex_nibble(s[i + 1]);
+    if (hi < 0 || lo < 0) {
+      free(tmp);
+      return 0;
+    }
+    tmp[i / 2] = (uint8_t)((hi << 4) | lo);
+  }
+  uintptr_t out = astra_make_vec_u8(tmp, n / 2);
+  free(tmp);
+  return out;
+}
+
+static const char *ASTRA_B64_TABLE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+uintptr_t __bytes_to_base64_impl(uintptr_t bytes_ptr) {
+  const uint8_t *data = NULL;
+  size_t len = 0;
+  if (!astra_read_vec_u8(bytes_ptr, &data, &len)) return (uintptr_t)astra_strdup_s("");
+  if (len == 0) return (uintptr_t)astra_strdup_s("");
+  size_t out_len = 4 * ((len + 2) / 3);
+  char *out = (char *)astra_heap_alloc(out_len + 1);
+  if (out == NULL) return (uintptr_t)astra_strdup_s("");
+  size_t i = 0;
+  size_t j = 0;
+  while (i < len) {
+    size_t rem = len - i;
+    uint32_t oct0 = data[i++];
+    uint32_t oct1 = rem > 1 ? data[i++] : 0;
+    uint32_t oct2 = rem > 2 ? data[i++] : 0;
+    uint32_t triple = (oct0 << 16) | (oct1 << 8) | oct2;
+    out[j++] = ASTRA_B64_TABLE[(triple >> 18) & 0x3F];
+    out[j++] = ASTRA_B64_TABLE[(triple >> 12) & 0x3F];
+    out[j++] = rem > 1 ? ASTRA_B64_TABLE[(triple >> 6) & 0x3F] : '=';
+    out[j++] = rem > 2 ? ASTRA_B64_TABLE[triple & 0x3F] : '=';
+  }
+  out[out_len] = '\0';
+  return (uintptr_t)out;
+}
+
+static int astra_b64_inv(char ch) {
+  if (ch >= 'A' && ch <= 'Z') return ch - 'A';
+  if (ch >= 'a' && ch <= 'z') return 26 + (ch - 'a');
+  if (ch >= '0' && ch <= '9') return 52 + (ch - '0');
+  if (ch == '+') return 62;
+  if (ch == '/') return 63;
+  if (ch == '=') return -2;
+  return -1;
+}
+
+uintptr_t __base64_to_bytes_impl(uintptr_t base64_ptr) {
+  const char *s = (const char *)base64_ptr;
+  if (s == NULL) return astra_make_vec_u8(NULL, 0);
+  size_t n = strlen(s);
+  if (n % 4 != 0) return 0;
+  size_t max_out = (n / 4) * 3;
+  uint8_t *tmp = (uint8_t *)malloc(max_out > 0 ? max_out : 1);
+  if (tmp == NULL) return 0;
+  size_t wi = 0;
+  for (size_t i = 0; i < n; i += 4) {
+    int a = astra_b64_inv(s[i + 0]);
+    int b = astra_b64_inv(s[i + 1]);
+    int c = astra_b64_inv(s[i + 2]);
+    int d = astra_b64_inv(s[i + 3]);
+    if (a < 0 || b < 0 || c == -1 || d == -1) {
+      free(tmp);
+      return 0;
+    }
+    uint32_t triple = ((uint32_t)a << 18) | ((uint32_t)b << 12) | ((uint32_t)(c < 0 ? 0 : c) << 6) |
+                      (uint32_t)(d < 0 ? 0 : d);
+    tmp[wi++] = (uint8_t)((triple >> 16) & 0xFF);
+    if (c != -2) tmp[wi++] = (uint8_t)((triple >> 8) & 0xFF);
+    if (d != -2) tmp[wi++] = (uint8_t)(triple & 0xFF);
+    if ((c == -2 || d == -2) && i + 4 != n) {
+      free(tmp);
+      return 0;
+    }
+  }
+  uintptr_t out = astra_make_vec_u8(tmp, wi);
+  free(tmp);
+  return out;
+}
+
+uintptr_t __url_encode_impl(uintptr_t s_ptr) {
+  const char *s = (const char *)s_ptr;
+  if (s == NULL) return (uintptr_t)astra_strdup_s("");
+  size_t n = strlen(s);
+  size_t max = n * 3 + 1;
+  char *out = (char *)astra_heap_alloc(max);
+  if (out == NULL) return (uintptr_t)astra_strdup_s("");
+  size_t wi = 0;
+  static const char *hex = "0123456789ABCDEF";
+  for (size_t i = 0; i < n; i++) {
+    unsigned char ch = (unsigned char)s[i];
+    if (astra_url_unreserved(ch)) {
+      out[wi++] = (char)ch;
+    } else {
+      out[wi++] = '%';
+      out[wi++] = hex[(ch >> 4) & 0xF];
+      out[wi++] = hex[ch & 0xF];
+    }
+  }
+  out[wi] = '\0';
+  return (uintptr_t)out;
+}
+
+uintptr_t __url_decode_impl(uintptr_t encoded_ptr) {
+  const char *s = (const char *)encoded_ptr;
+  if (s == NULL) return (uintptr_t)astra_strdup_s("");
+  size_t n = strlen(s);
+  char *out = (char *)astra_heap_alloc(n + 1);
+  if (out == NULL) return 0;
+  size_t wi = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (s[i] == '%') {
+      if (i + 2 >= n) return 0;
+      int hi = astra_hex_nibble(s[i + 1]);
+      int lo = astra_hex_nibble(s[i + 2]);
+      if (hi < 0 || lo < 0) return 0;
+      out[wi++] = (char)((hi << 4) | lo);
+      i += 2;
+    } else {
+      out[wi++] = s[i];
+    }
+  }
+  out[wi] = '\0';
+  return (uintptr_t)out;
 }

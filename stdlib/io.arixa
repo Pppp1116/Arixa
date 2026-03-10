@@ -30,11 +30,12 @@ fn remove(path String) Int {
 /// Read a file only if it exists.
 /// Returns none when the path is missing.
 fn read_if_exists(path String) String? {
-    if !exists(path) {
+    path_ref = &path;
+    if !exists(*path_ref) {
         return none;
     }
     else {}
-    return read(path);
+    return read(*path_ref);
 }
 
 /// Read a file or return a fallback value if the file is missing.
@@ -45,32 +46,38 @@ fn read_or(path String, fallback String) String {
     return text ?? fallback;
 }
 
-/// Print an Int value.
-fn print_int(x Int) {
-    print(x);
+/// Read file as text, returning empty string when missing.
+fn read_or_empty(path String) String {
+    return read_or(path, "");
+}
+
+/// Read lines from a file.
+fn read_lines(path String) Vec<String> {
+    return __str_split_impl(read(path), "\n");
+}
+
+/// Write lines to a file with newline separators.
+fn write_lines(path String, lines Vec<String>) Int {
+    return write(path, __str_join_impl(lines, "\n"));
+}
+
+/// Append text to a file by read+write fallback.
+fn append(path String, data String) Int {
+    path_ref = &path;
+    existing = read_or(*path_ref, "");
+    return write(*path_ref, existing + data);
+}
+
+/// Append one line to a file.
+fn append_line(path String, line String) Int {
+    return append(path, line + "\n");
+}
+
+/// Print any value using display formatting rules.
+fn print(v Any) {
+    __print(v);
     return;
 }
 
-/// Print a Bool value.
-fn print_bool(x Bool) {
-    print(x);
-    return;
-}
-
-/// Print a Float value.
-fn print_float(x Float) {
-    print(x);
-    return;
-}
-
-/// Print a String value.
-fn print_str(x String) {
-    print(x);
-    return;
-}
-
-/// Print any value using its JSON representation.
-fn print_any(v Any) {
-    print(__to_json(v));
-    return;
-}
+extern fn __str_split_impl(s String, delimiter String) Vec<String>;
+extern fn __str_join_impl(parts Vec<String>, delimiter String) String;

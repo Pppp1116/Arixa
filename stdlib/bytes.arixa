@@ -186,3 +186,101 @@ fn repeat(b Bytes, n Int) Bytes {
 
     return result;
 }
+
+/// Compare two byte arrays lexicographically.
+///
+/// Returns:
+/// - negative when `a < b`
+/// - 0 when equal
+/// - positive when `a > b`
+fn compare(a Bytes, b Bytes) Int {
+    mut i = 0;
+    mut min_len = vec_len(a);
+    if vec_len(b) < min_len {
+        min_len = vec_len(b);
+    }
+    else {}
+
+    while i < min_len {
+        a_opt = vec_get(a, i);
+        b_opt = vec_get(b, i);
+        if a_opt == none || b_opt == none {
+            break;
+        }
+        else {}
+        av = a_opt as u8;
+        bv = b_opt as u8;
+        if av < bv {
+            return -1;
+        }
+        else {}
+        if av > bv {
+            return 1;
+        }
+        else {}
+        i += 1;
+    }
+
+    if vec_len(a) < vec_len(b) {
+        return -1;
+    }
+    else {}
+    if vec_len(a) > vec_len(b) {
+        return 1;
+    }
+    else {}
+    return 0;
+}
+
+/// Join byte arrays with a delimiter.
+fn join(parts Vec<Bytes>, delimiter Bytes) Bytes {
+    mut out = vec_new() as Bytes;
+    mut i = 0;
+    total = vec_len(parts);
+
+    while i < total {
+        part_opt = vec_get(parts, i);
+        if part_opt != none {
+            part = part_opt as Bytes;
+            for b in part {
+                vec_push(out, b);
+            }
+        }
+        else {}
+        if i + 1 < total {
+            for d in delimiter {
+                vec_push(out, d);
+            }
+        }
+        else {}
+        i += 1;
+    }
+
+    return out;
+}
+
+/// Count how many times `byte` appears.
+fn count_byte(b Bytes, byte u8) Int {
+    mut count = 0;
+    for x in b {
+        if x == byte {
+            count += 1;
+        }
+        else {}
+    }
+    return count;
+}
+
+/// Find first index of one byte.
+fn index_of_byte(b Bytes, byte u8) Int {
+    mut i = 0;
+    while i < vec_len(b) {
+        v = vec_get(b, i);
+        if v != none && (v as u8) == byte {
+            return i;
+        }
+        else {}
+        i += 1;
+    }
+    return -1;
+}

@@ -402,5 +402,127 @@ def run_all_advanced_tests():
         return failed == 0
 
 
+# Additional tests for advanced optimizations
+
+def test_gvn_compound_assignment_invalidation(tmp_path: Path):
+    """GVN should invalidate value numbers on compound assignment (e.g., +=)."""
+    src = tmp_path / "gvn_invalidate.arixa"
+    out = tmp_path / "gvn_invalidate.py"
+    src.write_text(
+        """
+fn main() Int {
+    x = 10;
+    mut a = x * 2;      // a = 20
+    a += 1;          // a = 21, should invalidate VN for 'a'
+    b = x * 2;      // b = 20, should not be considered equal to 'a' after a+=1
+    return b - a;   // 20 - 21 = -1
+}
+"""
+    )
+
+    build_enhanced(str(src), str(out), target="py", profile="release")
+    cp = subprocess.run([sys.executable, str(out)], capture_output=True, text=True, timeout=5)
+    # Linux process exit code is 8-bit unsigned; map -1 to 255
+    assert cp.returncode in (-1, 255)
+
+
+def test_strength_reduction_pow2_and_division_unsigned_behavior(tmp_path: Path):
+    """StrengthReduction: x*8 -> x<<3 and x/8 -> x>>3 for non-negative/unsigned; semantics preserved."""
+    src = tmp_path / "strength_shift_div.arixa"
+    out_release = tmp_path / "strength_shift_div_release.py"
+    out_debug = tmp_path / "strength_shift_div_debug.py"
+    src.write_text(
+        """
+fn main() Int {
+    x = 20;           // positive -> eligible for shift-based division
+    a = x * 8;        // 160
+    b = x / 8;        // 2 (eligible for >> optimization in release)
+    return a + b;     // 162
+}
+"""
+    )
+
+    # Build both debug and release; both must compute same result
+    build_enhanced(str(src), str(out_debug), target="py", profile="debug")
+    build_enhanced(str(src), str(out_release), target="py", profile="release")
+    cp_debug = subprocess.run([sys.executable, str(out_debug)], capture_output=True, text=True, timeout=5)
+    cp_release = subprocess.run([sys.executable, str(out_release)], capture_output=True, text=True, timeout=5)
+    assert cp_debug.returncode == 162
+    assert cp_release.returncode == 162
+
+
+def test_strength_reduction_small_constants_three_and_four(tmp_path: Path):
+    """StrengthReduction: multiplication by small consts (3,4) correctness with repeated addition strategy."""
+    src = tmp_path / "strength_small_consts.arixa"
+    out = tmp_path / "strength_small_consts.py"
+    src.write_text(
+        """
+fn main() Int {
+    x = 7;
+    y = 3;
+    a = x * 3;      // 21 -> (x + x) + x
+    b = y * 4;      // 12 -> (y + y) + (y + y)
+    return a + b;   // 33
+}
+"""
+    )
+
+    build_enhanced(str(src), str(out), target="py", profile="release")
+    cp = subprocess.run([sys.executable, str(out)], capture_output=True, text=True, timeout=5)
+    assert cp.returncode == 33
+
+
+def test_licm_invariant_placement_preserves_semantics(tmp_path: Path):
+    """LICM should move pure invariants to pre-header without changing results."""
+    src = tmp_path / "licm_invariant.arixa"
+    out = tmp_path / "licm_invariant.py"
+    src.write_text(
+        """
+fn main() Int {
+    mut sum = 0;
+    mut i = 0;
+    // Invariant expression inside the loop
+    while i < 10 {
+        inv = 2 * 3 + 4;   // 10, pure and invariant
+        sum = sum + inv + i;
+        i = i + 1;
+    }
+    return sum;  // sum of (10+i) for i=0..9 = 10*10 + 45 = 145
+}
+"""
+    )
+
+    build_enhanced(str(src), str(out), target="py", profile="release")
+    cp = subprocess.run([sys.executable, str(out)], capture_output=True, text=True, timeout=5)
+    assert cp.returncode == 145
+
+
+def test_gvn_reuse_across_branches(tmp_path: Path):
+    """GVN should recognize identical computations across branches where safe, preserving semantics."""
+    src = tmp_path / "gvn_branches.arixa"
+    out = tmp_path / "gvn_branches.py"
+    src.write_text(
+        """
+fn compute(x Int) Int {
+    if x > 0 {
+        a = x * 2 + 1;
+        return a;
+    } else {
+        b = x * 2 + 1;
+        return b;
+    }
+}
+
+fn main() Int {
+    return compute(10);  // 21
+}
+"""
+    )
+
+    build_enhanced(str(src), str(out), target="py", profile="release")
+    cp = subprocess.run([sys.executable, str(out)], capture_output=True, text=True, timeout=5)
+    assert cp.returncode == 21
+
+
 if __name__ == "__main__":
     run_all_advanced_tests()

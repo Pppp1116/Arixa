@@ -352,6 +352,107 @@ def test_match_duplicate_bool_pattern_is_rejected():
         assert "duplicate Bool match arm for true" in str(e)
 
 
+def test_match_integer_range_pattern_typechecks():
+    src = """
+fn main() Int{
+  x = 7;
+  match x {
+    0..=3 => { return 1; }
+    4..10 => { return 2; }
+    _ => { return 0; }
+  }
+  return 0;
+}
+"""
+    analyze(parse(src))
+
+
+def test_match_range_pattern_requires_integer_subject():
+    src = "fn main() Int{ b = true; match b { 0..=1 => { return 1; }, _ => { return 0; } } return 0; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "range pattern expects integer subject type" in str(e)
+
+
+def test_match_struct_brace_pattern_binds_fields():
+    src = """
+struct Point {
+  x Int,
+  y Int,
+}
+fn main() Int{
+  p = Point(5, 9);
+  match p {
+    Point { x, y: 9 } => { return x; }
+    _ => { return 0; }
+  }
+  return 0;
+}
+"""
+    analyze(parse(src))
+
+
+def test_match_struct_brace_pattern_rejects_unknown_field():
+    src = """
+struct Point {
+  x Int,
+  y Int,
+}
+fn main() Int{
+  p = Point(5, 9);
+  match p {
+    Point { z } => { return 1; }
+    _ => { return 0; }
+  }
+  return 0;
+}
+"""
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "unknown field z for struct pattern Point" in str(e)
+
+
+def test_match_slice_pattern_binds_prefix_elements():
+    src = """
+fn main() Int{
+  xs = [4, 7, 9];
+  match xs {
+    [a, b, ..] => { return a + b; }
+    _ => { return 0; }
+  }
+  return 0;
+}
+"""
+    analyze(parse(src))
+
+
+def test_match_tuple_pattern_exact_len_over_sequence():
+    src = """
+fn main() Int{
+  xs = [2, 5];
+  match xs {
+    (a, b) => { return a + b; }
+    _ => { return 0; }
+  }
+  return 0;
+}
+"""
+    analyze(parse(src))
+
+
+def test_match_tuple_pattern_rejects_non_sequence_subject():
+    src = "fn main() Int{ x = 1; match x { (a, b) => { return a; }, _ => { return 0; } } return 0; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "tuple pattern expects sequence subject type" in str(e)
+
+
 def test_match_non_exhaustive_enum_is_rejected():
     src = """
 enum Color {
@@ -880,6 +981,50 @@ fn main() Int{
     except SemanticError as e:
         assert "no matching overload for same(Int, String)" in str(e)
         assert "inconsistent binding for T: Int vs String" in str(e)
+
+
+def test_monomorph_cache_reuses_symbol_for_identical_type_bindings():
+    src = """
+fn id(x T) T{ return x; }
+fn main() Int{
+  a = id(1);
+  b = id(2);
+  return a + b;
+}
+"""
+    prog = parse(src)
+    analyze(prog)
+    body = prog.items[1].body
+    calls = [st.expr for st in body if type(st).__name__ == "LetStmt" and type(st.expr).__name__ == "Call"]
+    symbols = {getattr(call, "monomorph_symbol", None) for call in calls}
+    symbols.discard(None)
+    assert len(symbols) == 1
+    instances = getattr(prog, "monomorph_instances", {})
+    assert isinstance(instances, dict)
+    assert len(instances) == 1
+    mono_symbol = next(iter(symbols))
+    assert getattr(prog, "monomorph_symbol_to_base", {}).get(mono_symbol) == "id"
+
+
+def test_monomorph_cache_distinguishes_different_type_bindings():
+    src = """
+fn id(x T) T{ return x; }
+fn main() Int{
+  i = id(1);
+  f = id(2.5);
+  return i;
+}
+"""
+    prog = parse(src)
+    analyze(prog)
+    body = prog.items[1].body
+    calls = [st.expr for st in body if type(st).__name__ == "LetStmt" and type(st.expr).__name__ == "Call"]
+    symbols = [getattr(call, "monomorph_symbol", None) for call in calls]
+    symbols = [s for s in symbols if isinstance(s, str)]
+    assert len(set(symbols)) == 2
+    instances = getattr(prog, "monomorph_instances", {})
+    assert isinstance(instances, dict)
+    assert len(instances) == 2
 
 
 def test_function_references_infer_function_pointer_type():

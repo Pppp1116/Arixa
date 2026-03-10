@@ -1116,7 +1116,7 @@ def build(
             optimize_pgo_program(prog, overflow_mode=overflow_mode, profile=profile)
         except ImportError:
             # Fallback to original optimizer if enhanced not available
-            optimize_program(prog)
+            optimize_program(prog, overflow_mode=overflow_mode)
     elif profile in {"experimental", "beta"}:
         # Experimental/beta mode with cutting-edge optimizations
         try:
@@ -1147,9 +1147,9 @@ def build(
                 optimize_target_specific_program(prog, overflow_mode=overflow_mode, profile=profile, triple=triple)
                 optimize_pgo_program(prog, overflow_mode=overflow_mode, profile=profile)
             except ImportError:
-                optimize_program(prog)
+                optimize_program(prog, overflow_mode=overflow_mode)
     else:
-        optimize_program(prog)
+        optimize_program(prog, overflow_mode=overflow_mode)
     if strict:
         _strict_validate_program(prog, src_file)
     llvm_ir: str | None = None

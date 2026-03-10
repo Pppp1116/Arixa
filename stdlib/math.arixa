@@ -307,6 +307,58 @@ fn lerp(a Float, b Float, t Float) Float {
     return a + t * (b - a);
 }
 
+/// Return smaller of two i64 values.
+fn min_i64(a i64, b i64) i64 {
+    if a < b {
+        return a;
+    }
+    else {}
+    return b;
+}
+
+/// Return larger of two i64 values.
+fn max_i64(a i64, b i64) i64 {
+    if a > b {
+        return a;
+    }
+    else {}
+    return b;
+}
+
+/// Clamp i64 to inclusive range.
+fn clamp_i64(x i64, lo i64, hi i64) i64 {
+    if x < lo {
+        return lo;
+    }
+    else {}
+    if x > hi {
+        return hi;
+    }
+    else {}
+    return x;
+}
+
+/// Greatest common divisor using Euclid's algorithm.
+fn gcd_int(a Int, b Int) Int {
+    mut x = abs_int(a);
+    mut y = abs_int(b);
+    while y != 0 {
+        t = x % y;
+        x = y;
+        y = t;
+    }
+    return x;
+}
+
+/// Least common multiple; returns 0 if either argument is 0.
+fn lcm_int(a Int, b Int) Int {
+    if a == 0 || b == 0 {
+        return 0;
+    }
+    else {}
+    return abs_int((a / gcd_int(a, b)) * b);
+}
+
 extern fn __sqrt_impl(x Float) Float;
 
 extern fn __pow_impl(x Float, y Float) Float;

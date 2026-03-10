@@ -17,6 +17,7 @@ from astra.ast import (
     ForStmt,
     IteratorForStmt,
     GuardedPattern,
+    IfStmt,
     ImportDecl,
     IndexExpr,
     LetStmt,
@@ -26,11 +27,15 @@ from astra.ast import (
     MinValTypeExpr,
     Name,
     OrPattern,
+    RangePattern,
     RangeExpr,
     SizeOfTypeExpr,
     SizeOfValueExpr,
     StructDecl,
+    StructPattern,
+    SlicePattern,
     TraitDecl,
+    TuplePattern,
     TypeAliasDecl,
     TryExpr,
     Unary,
@@ -123,6 +128,23 @@ def test_parse_for_rejects_c_style_loop():
         assert "for expects `for <ident> in <expr> { ... }`" in str(e)
 
 
+def test_if_statement_else_is_optional():
+    src = "fn main() Int{ if true { x = 1; } return 0; }"
+    prog = parse(src)
+    fn = prog.items[0]
+    assert isinstance(fn.body[0], IfStmt)
+    assert fn.body[0].else_body == []
+
+
+def test_if_expression_requires_else_clause():
+    bad = "fn main() Int{ x = if true { 1 }; return x; }"
+    try:
+        parse(bad)
+        assert False, "expected ParseError"
+    except ParseError as e:
+        assert "expected else" in str(e)
+
+
 def test_parse_match_accepts_wildcard_pattern():
     src = "fn main() Int{ x = 1; match x { _ => { return 2; } } return 0; }"
     prog = parse(src)
@@ -151,6 +173,85 @@ fn main() Int{
     assert isinstance(pat, GuardedPattern)
     assert isinstance(pat.pattern, OrPattern)
     assert len(pat.pattern.patterns) == 2
+
+
+def test_parse_match_range_pattern():
+    src = "fn main() Int{ x = 3; match x { 1..=5 => { return 1; }, _ => { return 0; } } return 0; }"
+    prog = parse(src)
+    fn = prog.items[0]
+    m = fn.body[1]
+    assert isinstance(m, MatchStmt)
+    pat = m.arms[0][0]
+    assert isinstance(pat, RangePattern)
+    assert isinstance(pat.start, Literal)
+    assert isinstance(pat.end, Literal)
+    assert pat.start.value == 1
+    assert pat.end.value == 5
+    assert pat.inclusive
+
+
+def test_parse_match_struct_brace_pattern():
+    src = """
+struct Point { x Int, y Int }
+fn main() Int{
+  p = Point(1, 2);
+  match p {
+    Point { x, y: 2 } => { return x; }
+    _ => { return 0; }
+  }
+  return 0;
+}
+"""
+    prog = parse(src)
+    fn = prog.items[1]
+    m = fn.body[1]
+    assert isinstance(m, MatchStmt)
+    pat = m.arms[0][0]
+    assert isinstance(pat, StructPattern)
+    assert pat.struct_name == "Point"
+    assert set(pat.field_patterns.keys()) == {"x", "y"}
+
+
+def test_parse_match_struct_brace_pattern_rejects_duplicate_field():
+    src = """
+struct Point { x Int, y Int }
+fn main() Int{
+  p = Point(1, 2);
+  match p {
+    Point { x, x: 2 } => { return 1; }
+    _ => { return 0; }
+  }
+  return 0;
+}
+"""
+    try:
+        parse(src)
+        assert False
+    except ParseError as e:
+        assert "duplicate field x in struct pattern" in str(e)
+
+
+def test_parse_match_slice_pattern():
+    src = "fn main() Int{ xs = [1,2,3]; match xs { [a, b, ..] => { return a + b; }, _ => { return 0; } } return 0; }"
+    prog = parse(src)
+    fn = prog.items[0]
+    m = fn.body[1]
+    assert isinstance(m, MatchStmt)
+    pat = m.arms[0][0]
+    assert isinstance(pat, SlicePattern)
+    assert len(pat.patterns) == 2
+    assert pat.rest_pattern is not None
+
+
+def test_parse_match_tuple_pattern():
+    src = "fn main() Int{ xs = [1,2]; match xs { (a, b) => { return a + b; }, _ => { return 0; } } return 0; }"
+    prog = parse(src)
+    fn = prog.items[0]
+    m = fn.body[1]
+    assert isinstance(m, MatchStmt)
+    pat = m.arms[0][0]
+    assert isinstance(pat, TuplePattern)
+    assert len(pat.patterns) == 2
 
 
 def test_parse_trait_where_and_implicit_satisfaction():

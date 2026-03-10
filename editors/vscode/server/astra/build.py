@@ -666,6 +666,14 @@ _STRICT_BINARY_OPS = {
 }
 _STRICT_ASSIGN_OPS = {"=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="}
 
+_STRICT_EXPRS = {
+    Literal, BoolLit, NilLit, Name, Binary, Unary, Call, IndexExpr, FieldExpr, 
+    CastExpr, ArrayLit, StringInterpolation, WildcardPattern, OrPattern, 
+    GuardedPattern, EnhancedPattern, RangeExpr, TryExpr, AwaitExpr
+}
+
+_STRICT_STMTS = {LetStmt, AssignStmt, ReturnStmt, ExprStmt, IfStmt, WhileStmt, IteratorForStmt, MatchStmt}
+
 _STRICT_TOP_LEVEL = {FnDecl, StructDecl, EnumDecl, TraitDecl, TypeAliasDecl, ImportDecl, ExternFnDecl, LetStmt}
 
 
@@ -807,6 +815,7 @@ def _build_native_llvm(
     ir_text: str,
     out_path: str,
     src_file: Path,
+    prog: Any,
     *,
     profile: str,
     sanitize: str | None,
@@ -822,13 +831,21 @@ def _build_native_llvm(
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     opt_flag = "-O3" if profile == "release" else "-O0"
+    debug_flags = ["-g"] if profile == "debug" else []
+    define_flags = ["-DNDEBUG"] if profile == "release" else []
+    
+    # Check if Any runtime is needed
+    any_usage = getattr(prog, "any_usage", None)
+    if any_usage and any_usage.needs_any_runtime():
+        define_flags.append("-DASTRA_ENABLE_ANY_RUNTIME")
+    
     sanitize_flag = f"-fsanitize={sanitize}" if sanitize else None
     with tempfile.TemporaryDirectory(prefix="astra-native-") as td:
         ll_path = Path(td) / "module.ll"
         ll_path.write_text(ir_text)
         is_windows = sys.platform.startswith("win")
         if kind == "lib":
-            cmd = [clang, opt_flag, "-shared", "-fPIC", str(ll_path), "-o", str(out)]
+            cmd = [clang, opt_flag] + debug_flags + define_flags + ["-shared", "-fPIC", str(ll_path), "-o", str(out)]
             if not freestanding:
                 runtime_c = runtime_source_path()
                 if runtime_c is None:
@@ -842,13 +859,51 @@ def _build_native_llvm(
                 else:
                     cmd.insert(-2, "-lm")
         elif freestanding:
+            entry_c = Path(td) / "freestanding_entry.c"
+            entry_c.write_text(
+                """
+extern long _start(void);
+
+__attribute__((noreturn)) static void __astra_exit(long code) {
+#if defined(__x86_64__)
+    __asm__ __volatile__(
+        "movq $60, %%rax\\n\\t"
+        "movq %0, %%rdi\\n\\t"
+        "syscall\\n\\t"
+        :
+        : "r"(code)
+        : "rax", "rdi", "rcx", "r11", "memory"
+    );
+#elif defined(__aarch64__)
+    __asm__ __volatile__(
+        "mov x8, #93\\n\\t"
+        "mov x0, %0\\n\\t"
+        "svc #0\\n\\t"
+        :
+        : "r"(code)
+        : "x0", "x8", "memory"
+    );
+#else
+    for (;;) {}
+#endif
+    __builtin_unreachable();
+}
+
+__attribute__((noreturn)) void __astra_entry(void) {
+    __astra_exit(_start());
+}
+""".strip()
+                + "\n"
+            )
             cmd = [
                 clang,
                 opt_flag,
+            ] + debug_flags + define_flags + [
                 str(ll_path),
+                str(entry_c),
                 "-nostdlib",
                 "-nostartfiles",
-                "-Wl,-e,_start",
+                "-Wl,-e,__astra_entry",
                 "-o",
                 str(out),
             ]
@@ -858,7 +913,7 @@ def _build_native_llvm(
                 raise RuntimeError(
                     f"CODEGEN {src_file}:1:1: missing runtime source; set ASTRA_RUNTIME_C_PATH or install bundled runtime"
                 )
-            cmd = [clang, opt_flag, str(ll_path), str(runtime_c), "-o", str(out)]
+            cmd = [clang, opt_flag] + debug_flags + define_flags + [str(ll_path), str(runtime_c), "-o", str(out)]
             if is_windows:
                 cmd.extend(["-lbcrypt", "-lws2_32"])
             else:
@@ -1061,7 +1116,7 @@ def build(
             optimize_pgo_program(prog, overflow_mode=overflow_mode, profile=profile)
         except ImportError:
             # Fallback to original optimizer if enhanced not available
-            optimize_program(prog)
+            optimize_program(prog, overflow_mode=overflow_mode)
     elif profile in {"experimental", "beta"}:
         # Experimental/beta mode with cutting-edge optimizations
         try:
@@ -1092,9 +1147,9 @@ def build(
                 optimize_target_specific_program(prog, overflow_mode=overflow_mode, profile=profile, triple=triple)
                 optimize_pgo_program(prog, overflow_mode=overflow_mode, profile=profile)
             except ImportError:
-                optimize_program(prog)
+                optimize_program(prog, overflow_mode=overflow_mode)
     else:
-        optimize_program(prog)
+        optimize_program(prog, overflow_mode=overflow_mode)
     if strict:
         _strict_validate_program(prog, src_file)
     llvm_ir: str | None = None
@@ -1153,6 +1208,7 @@ def build(
             llvm_ir,
             out_path,
             src_file,
+            prog,
             profile=profile,
             sanitize=sanitize,
             triple=triple,

@@ -4,51 +4,56 @@
 /// Simple stack implemented on top of Vec.
 struct Stack {
     data Vec<Any>,
+    size Int,
 }
 
 /// Create a new empty stack.
 fn stack_new() Stack {
-    return Stack(vec_new() as Vec<Any>);
+    return Stack(vec_new() as Vec<Any>, 0);
 }
 
 /// Push `value` onto `stack`.
 fn stack_push(stack Stack, value Any) {
-    vec_push(stack.data, value);
+    if stack.size < vec_len(stack.data) {
+        vec_set(stack.data, stack.size, value);
+    }
+    else {
+        vec_push(stack.data, value);
+    }
+    stack.size += 1;
 }
 
 /// Pop and return top value from `stack`.
 /// 
 /// Returns `none` if stack is empty.
 fn stack_pop(stack Stack) Any | none {
-    n = vec_len(stack.data);
-    if n == 0 {
+    if stack.size == 0 {
         return none;
     }
     else {}
-    result = vec_get(stack.data, n - 1);
-    return result;
+    stack.size -= 1;
+    return vec_get(stack.data, stack.size);
 }
 
 /// Peek at top value without removing it.
 /// 
 /// Returns `none` if stack is empty.
 fn stack_peek(stack Stack) Any | none {
-    n = vec_len(stack.data);
-    if n == 0 {
+    if stack.size == 0 {
         return none;
     }
     else {}
-    return stack.data[n - 1];
+    return vec_get(stack.data, stack.size - 1);
 }
 
 /// Check if `stack` is empty.
 fn stack_is_empty(stack Stack) Bool {
-    return vec_len(stack.data) == 0;
+    return stack.size == 0;
 }
 
 /// Get size of `stack`.
 fn stack_size(stack Stack) Int {
-    return vec_len(stack.data);
+    return stack.size;
 }
 
 /// Simple queue implemented on top of Vec.
@@ -103,14 +108,29 @@ fn queue_size(queue Queue) Int {
 
 /// Compact queue to reclaim unused memory.
 fn queue_compact(queue Queue) {
-    // TODO: Fix implementation
+    if queue.head <= 0 {
+        return;
+    }
+    else {}
+    mut compacted = vec_new() as Vec<Any>;
+    mut i = queue.head;
+    while i < vec_len(queue.data) {
+        v = vec_get(queue.data, i);
+        if v != none {
+            vec_push(compacted, v as Any);
+        }
+        else {}
+        i += 1;
+    }
+    queue.data = compacted;
+    queue.head = 0;
 }
 
 /// Simple fixed-size ring buffer.
 struct RingBuffer {
     data Vec<Any>,
     head Int,
-    tail Int,
+    size Int,
     capacity Int,
 }
 
@@ -122,7 +142,11 @@ fn ring_buffer_new(capacity Int) RingBuffer {
     }
     else {}
     data = vec_new() as Vec<Any>;
-    // TODO: Fix loop issue
+    mut i = 0;
+    while i < actual_capacity {
+        vec_push(data, 0 as Any);
+        i += 1;
+    }
     return RingBuffer(data, 0, 0, actual_capacity);
 }
 
@@ -130,13 +154,13 @@ fn ring_buffer_new(capacity Int) RingBuffer {
 /// 
 /// Returns `none` if buffer is full.
 fn ring_buffer_push(buffer RingBuffer, value Any) Bool | none {
-    next_tail = (buffer.tail + 1) % buffer.capacity;
-    if next_tail == buffer.head {
+    if buffer.size >= buffer.capacity {
         return none;
     }
     else {}
-    buffer.data[buffer.tail] = value;
-    buffer.tail = next_tail;
+    index = (buffer.head + buffer.size) % buffer.capacity;
+    vec_set(buffer.data, index, value);
+    buffer.size += 1;
     return true;
 }
 
@@ -144,11 +168,27 @@ fn ring_buffer_push(buffer RingBuffer, value Any) Bool | none {
 /// 
 /// Returns `none` if buffer is empty.
 fn ring_buffer_pop(buffer RingBuffer) Any | none {
-    if buffer.head == buffer.tail {
+    if buffer.size == 0 {
         return none;
     }
     else {}
-    result = buffer.data[buffer.head];
+    result = vec_get(buffer.data, buffer.head);
     buffer.head = (buffer.head + 1) % buffer.capacity;
+    buffer.size -= 1;
     return result;
+}
+
+/// Number of entries currently stored.
+fn ring_buffer_len(buffer RingBuffer) Int {
+    return buffer.size;
+}
+
+/// Return true when buffer has no entries.
+fn ring_buffer_is_empty(buffer RingBuffer) Bool {
+    return buffer.size == 0;
+}
+
+/// Return true when buffer cannot accept more entries.
+fn ring_buffer_is_full(buffer RingBuffer) Bool {
+    return buffer.size >= buffer.capacity;
 }

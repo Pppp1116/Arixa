@@ -1,6 +1,0 @@
-import std.vec;
-
-fn main() Int {
-    v = vec_new() as Vec<Any>;
-    return vec_len_typed(v);
-}

@@ -10,7 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: '3.11' }
+        with: { python-version: '3.x' }
       - run: pip install -e .[dev]
       - if: runner.os == 'Linux'
         run: clang --version
@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: '3.11' }
+        with: { python-version: '3.x' }
       - run: pip install -e .[dev]
       - run: clang --version
       - run: pytest -q --cov=astra --cov-report=term-missing --junitxml=pytest-results.xml
@@ -40,7 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: '3.11' }
+        with: { python-version: '3.x' }
       - run: pip install -e .[dev]
       - run: choco install llvm --no-progress -y
       - run: pytest -q tests/test_std_concurrency_runtime.py tests/test_std_net_runtime.py tests/test_std_process_runtime.py tests/test_std_crypto_serde_runtime.py

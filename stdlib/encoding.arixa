@@ -4,8 +4,6 @@
 /// encoding/decoding, and other codec transforms. Basic operations are freestanding-safe.
 
 import std.vec;
-import std.str;
-import std.bytes;
 
 // Error types for encoding operations
 
@@ -102,8 +100,12 @@ pub fn utf8_decode(data Bytes) String | Utf8Error {
     if !is_valid_utf8(&data) {
         return Utf8Error("Invalid UTF-8 sequence");
     }
-    
-    return __utf8_to_string_impl(data);
+    out = __utf8_to_string_impl(data);
+    if out == none {
+        return Utf8Error("Invalid UTF-8 sequence");
+    }
+    else {}
+    return out as String;
 }
 
 /// Convert string to UTF-8 bytes.
@@ -150,36 +152,19 @@ pub fn hex_encode(data Bytes) String {
 
 /// Encode bytes as uppercase hex string.
 pub fn hex_encode_upper(data Bytes) String {
-    // Get lowercase hex first
-    mut hex_str = hex_encode(data);
-    
-    // Convert to uppercase using byte-level arithmetic
-    mut result = string_new();
-    mut i = 0;
-    mut len = string_len(hex_str);
-    
-    while i < len {
-        char_opt = string_get_char(hex_str, i);
-        if char_opt != none {
-            mut c = char_opt as u8;
-            // Convert 'a'..'f' to 'A'..'F' by subtracting 32
-            if c >= 97 && c <= 122 {  // 'a'..'z'
-                c = c - 32;
-            }
-            string_push_char(result, c as char);
-        }
-        i = i + 1;
-    }
-    
-    return result;
+    return __bytes_to_hex_upper_impl(data);
 }
 
 /// Decode hex string to bytes.
 /// 
 /// Returns bytes if valid hex, error otherwise.
 pub fn hex_decode(s String) Bytes | DecodeError {
-    // TODO: Implement freestanding-safe hex validation
-    return __hex_to_bytes_impl(s);
+    out = __hex_to_bytes_impl(s);
+    if out == none {
+        return DecodeError("Invalid hex string");
+    }
+    else {}
+    return out as Bytes;
 }
 
 /// Check if character is valid hex digit
@@ -198,8 +183,12 @@ pub fn base64_encode(data Bytes) String {
 /// 
 /// Returns bytes if valid Base64, error otherwise.
 pub fn base64_decode(s String) Bytes | DecodeError {
-    // TODO: Implement freestanding-safe Base64 validation
-    return __base64_to_bytes_impl(s);
+    out = __base64_to_bytes_impl(s);
+    if out == none {
+        return DecodeError("Invalid base64 string");
+    }
+    else {}
+    return out as Bytes;
 }
 
 /// Check if character is valid Base64 digit
@@ -221,15 +210,21 @@ pub fn url_encode(s String) String {
 /// 
 /// Returns string if valid encoding, error otherwise.
 pub fn url_decode(encoded String) String | DecodeError {
-    return __url_decode_impl(encoded);
+    out = __url_decode_impl(encoded);
+    if out == none {
+        return DecodeError("Invalid URL escape");
+    }
+    else {}
+    return out as String;
 }
 
 // Runtime function declarations for encoding operations
-extern fn __utf8_to_string_impl(bytes Bytes) String;
+extern fn __utf8_to_string_impl(bytes Bytes) String | none;
 extern fn __string_to_utf8_impl(s String) Bytes;
 extern fn __bytes_to_hex_impl(data Bytes) String;
-extern fn __hex_to_bytes_impl(hex String) Bytes;
+extern fn __bytes_to_hex_upper_impl(data Bytes) String;
+extern fn __hex_to_bytes_impl(hex String) Bytes | none;
 extern fn __bytes_to_base64_impl(data Bytes) String;
-extern fn __base64_to_bytes_impl(base64 String) Bytes;
+extern fn __base64_to_bytes_impl(base64 String) Bytes | none;
 extern fn __url_encode_impl(s String) String;
-extern fn __url_decode_impl(encoded String) String | DecodeError;
+extern fn __url_decode_impl(encoded String) String | none;

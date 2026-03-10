@@ -21,6 +21,16 @@ fn env_or(name String, fallback String) String {
     return value;
 }
 
+/// Read env variable as optional value.
+fn env_opt(name String) String | none {
+    value = env(name);
+    if len(value) == 0 {
+        return none;
+    }
+    else {}
+    return value;
+}
+
 /// Return current working directory path.
 fn cwd() String {
     return __cwd();
@@ -38,9 +48,29 @@ fn run_ok(cmd String) Bool {
     return run(cmd) == 0;
 }
 
+/// Run command and return optional exit code (-1 maps to none).
+fn run_code(cmd String) Int | none {
+    rc = run(cmd);
+    if rc < 0 {
+        return none;
+    }
+    else {}
+    return rc;
+}
+
 /// Print a message to stderr using the host shell.
 /// 
 /// This is a best-effort helper intended for diagnostics in hosted mode.
 fn eprintln(msg String) Int {
     return run("printf \\\"%s\\\\n\\\" \\\"" + msg + "\\\" 1>&2");
+}
+
+/// Exit with status 0.
+fn exit_success() Never {
+    return exit(0);
+}
+
+/// Exit with status 1.
+fn exit_failure() Never {
+    return exit(1);
 }

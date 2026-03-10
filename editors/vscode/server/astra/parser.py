@@ -109,6 +109,8 @@ def _parse_int_literal(text: str) -> int:
         return int(t[2:], 16)
     if t.startswith(("0b", "0B")):
         return int(t[2:], 2)
+    if t.startswith(("0o", "0O")):
+        return int(t[2:], 8)
     return int(t, 10)
 
 
@@ -625,7 +627,7 @@ class Parser:
         return name, typ, is_mut
 
     def _starts_type(self) -> bool:
-        return self.cur().kind in {"IDENT", "INT_TYPE", "none", "*", "&", "[", "fn", "f16", "f80", "f128"}
+        return self.cur().kind in {"IDENT", "INT_TYPE", "ARBITRARY_INT_TYPE", "none", "*", "&", "[", "fn", "f16", "f80", "f128"}
 
     def parse_extern_fn(
         self,
@@ -846,8 +848,14 @@ class Parser:
             none
         
         Returns:
-            Value produced by the routine, if any.
+            Value described by the function return annotation.
         """
+        def parse_type_atom_with_suffix() -> str:
+            typ = type_text(parse_atom_type())
+            while self.opt("?"):
+                typ = _normalize_union([typ, "none"])
+            return typ
+
         def parse_atom_type():
             typ: str
             if self.opt("*"):
@@ -890,22 +898,27 @@ class Parser:
                         int_info = parse_int_type_name(name)
                         if int_info is not None:
                             bits, signed = int_info
-                            typ = str(ArbitraryIntType(signed=signed, width=bits))
+                            # Don't convert Int, isize, usize to ArbitraryIntType
+                            if name in {"Int", "isize", "usize"}:
+                                typ = name
+                            else:
+                                typ = str(ArbitraryIntType(signed=signed, width=bits))
                         else:
                             typ = name
-                if self.opt("<"):
-                    args = [type_text(self.parse_type())]
-                    while self.opt(","):
-                        args.append(type_text(self.parse_type()))
-                    self.eat(">")
-                    typ = f"{name}<{', '.join(args)}>"
-            while self.opt("?"):
-                typ = _normalize_union([typ, "none"])
+                    if self.opt("<"):
+                        args = [type_text(self.parse_type())]
+                        while self.opt(","):
+                            args.append(type_text(self.parse_type()))
+                        self.eat(">")
+                        typ = f"{typ}<{', '.join(args)}>"
+                else:
+                    self._err(f"expected type, got {self.cur().kind}")
+                    raise ParseError(self.errors[-1])
             return typ
-
-        parts = [type_text(parse_atom_type())]
+        
+        parts = [parse_type_atom_with_suffix()]
         while self.opt("|"):
-            parts.append(type_text(parse_atom_type()))
+            parts.append(parse_type_atom_with_suffix())
         return _normalize_union(parts)
 
     def parse_block(self) -> list[Any]:
@@ -1194,29 +1207,25 @@ class Parser:
         if self.cur().kind == "IDENT" and self.cur().text == "_":
             wtok = self.eat("IDENT")
             return WildcardPattern(wtok.pos, wtok.line, wtok.col)
-        
-        # Parse literal patterns
-        if self.cur().kind in ("INT_LIT", "FLOAT_LIT", "STR_LIT", "TRUE", "FALSE"):
-            return self.parse_literal_pattern()
-        
-        # Parse range patterns
-        if self.cur().kind == "IDENT" and self.peek().kind == "..":
-            return self.parse_range_pattern()
-        
+
         # Parse slice patterns
         if self.cur().kind == "[":
             return self.parse_slice_pattern()
-        
+
         # Parse tuple patterns
         if self.cur().kind == "(":
             return self.parse_tuple_pattern()
-        
+
         # Parse struct patterns
         if self.cur().kind == "IDENT" and self.peek().kind == "{":
             return self.parse_struct_pattern()
-        
-        # Keep `|` available for match-pattern alternatives.
-        return self.parse_expr(5)
+
+        # Keep `|` available for match-pattern alternatives and normalize
+        # `a..b` / `a..=b` forms into pattern nodes.
+        expr = self.parse_expr(5)
+        if isinstance(expr, RangeExpr):
+            return RangePattern(expr.start, expr.end, expr.inclusive, expr.pos, expr.line, expr.col)
+        return expr
 
     def parse_literal_pattern(self):
         """Parse literal patterns like 42, "hello", true."""
@@ -1295,6 +1304,9 @@ class Parser:
         if self.cur().kind != "}":
             while True:
                 field_name = self.eat("IDENT").text
+                if field_name in field_patterns:
+                    self._err(f"duplicate field {field_name} in struct pattern")
+                    raise ParseError(self.errors[-1])
                 if self.opt(":"):
                     pattern = self.parse_match_pattern_atom()
                     field_patterns[field_name] = pattern
@@ -1388,6 +1400,7 @@ class Parser:
         """
         expr = self.parse_atom()
         while True:
+            pending_type_args: list[str] | None = None
             if self.opt("."):
                 field_tok = self.eat("IDENT")
                 expr = FieldExpr(expr, field_tok.text, field_tok.pos, field_tok.line, field_tok.col)
@@ -1397,6 +1410,8 @@ class Parser:
                 rb = self.eat("]")
                 expr = IndexExpr(expr, idx, rb.pos, rb.line, rb.col)
                 continue
+            if self.cur().kind == "<" and self._looks_like_call_type_args():
+                pending_type_args = self._parse_call_type_args()
             if self.opt("("):
                 args: list[Any] = []
                 if self.cur().kind != ")":
@@ -1404,7 +1419,10 @@ class Parser:
                     while self.opt(","):
                         args.append(self.parse_expr())
                 end = self.eat(")")
-                expr = Call(expr, args, end.pos, end.line, end.col)
+                call = Call(expr, args, end.pos, end.line, end.col)
+                if pending_type_args is not None:
+                    setattr(call, "type_args", pending_type_args)
+                expr = call
                 continue
             if self.opt("!"):
                 q = self.toks[self.i - 1]
@@ -1412,6 +1430,34 @@ class Parser:
                 continue
             break
         return expr
+
+    def _looks_like_call_type_args(self) -> bool:
+        if self.cur().kind != "<":
+            return False
+        depth = 0
+        j = self.i
+        while j < len(self.toks):
+            kind = self.toks[j].kind
+            if kind == "<":
+                depth += 1
+            elif kind == ">":
+                depth -= 1
+                if depth == 0:
+                    return j + 1 < len(self.toks) and self.toks[j + 1].kind == "("
+            elif kind in {";", "}", "{", "EOF"}:
+                return False
+            j += 1
+        return False
+
+    def _parse_call_type_args(self) -> list[str]:
+        args: list[str] = []
+        self.eat("<")
+        if self.cur().kind != ">":
+            args.append(type_text(self.parse_type()))
+            while self.opt(","):
+                args.append(type_text(self.parse_type()))
+        self.eat(">")
+        return args
 
     def parse_atom(self):
         """Parse the `atom` grammar production from the token stream.

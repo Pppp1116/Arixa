@@ -3,7 +3,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from astra.ast import Call, Literal, Name
 from astra.build import build
+from astra.optimizer.optimizer import _fold_pure_call_const
 
 
 def test_dead_pure_lets_are_removed(tmp_path: Path):
@@ -152,9 +154,10 @@ fn main() Int {
     assert cp.returncode == 0
 
 
-def test_strength_reduction_mul_pow2_to_shift(tmp_path: Path):
+def test_strength_reduction_mul_pow2_respects_overflow_mode(tmp_path: Path):
     src = tmp_path / "strength.astra"
-    out = tmp_path / "strength.py"
+    out_trap = tmp_path / "strength_trap.py"
+    out_wrap = tmp_path / "strength_wrap.py"
     src.write_text(
         """
 fn main() Int {
@@ -164,8 +167,72 @@ fn main() Int {
 }
 """
     )
+    build(str(src), str(out_trap), "py")
+    trap_code = out_trap.read_text()
+    trap_main = trap_code.split("def main(", 1)[1].split("if __name__", 1)[0]
+    assert "<<" not in trap_main
+    assert "y = (x * 8)" in trap_main
+    cp = subprocess.run([sys.executable, str(out_trap)], timeout=2)
+    assert cp.returncode == 24
+
+    build(str(src), str(out_wrap), "py", overflow="wrap")
+    wrap_code = out_wrap.read_text()
+    wrap_main = wrap_code.split("def main(", 1)[1].split("if __name__", 1)[0]
+    assert "<<" in wrap_main
+    cp = subprocess.run([sys.executable, str(out_wrap)], timeout=2)
+    assert cp.returncode == 24
+
+
+def test_match_range_with_constant_subject_folds_to_single_arm(tmp_path: Path):
+    src = tmp_path / "match_range_fold.arixa"
+    out = tmp_path / "match_range_fold.py"
+    src.write_text(
+        """
+fn main() Int {
+  x = 5;
+  match x {
+    1..=10 => { return 7; }
+    _ => { return 0; }
+  }
+  return 9;
+}
+"""
+    )
     build(str(src), str(out), "py")
     code = out.read_text()
-    assert "<<" in code
+    assert "__match_value" not in code
+    assert "return 7" in code
     cp = subprocess.run([sys.executable, str(out)], timeout=2)
-    assert cp.returncode == 24
+    assert cp.returncode == 7
+
+
+def test_builtin_len_of_array_literal_folds_to_constant(tmp_path: Path):
+    src = tmp_path / "len_fold.arixa"
+    out = tmp_path / "len_fold.py"
+    src.write_text(
+        """
+fn main() Int {
+  return len([3, 4, 5, 6]);
+}
+"""
+    )
+    build(str(src), str(out), "py")
+    code = out.read_text()
+    assert "return 4" in code
+    cp = subprocess.run([sys.executable, str(out)], timeout=2)
+    assert cp.returncode == 4
+
+
+def test_stdlib_helper_fold_is_guarded_by_stdlib_source_marker():
+    call = Call(
+        fn=Name("abs_int", 0, 0, 0),
+        args=[Literal(-7, 0, 0, 0)],
+        pos=0,
+        line=0,
+        col=0,
+        resolved_name="abs_int",
+    )
+    setattr(call, "resolved_source_filename", "/tmp/stdlib/math.arixa")
+    out = _fold_pure_call_const(call)
+    assert isinstance(out, Literal)
+    assert out.value == 7

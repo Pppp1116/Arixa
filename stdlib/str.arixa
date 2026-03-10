@@ -30,6 +30,16 @@ fn to_string_float(x Float) String {
     return to_json(x);
 }
 
+/// Format any value to a display string using language formatting rules.
+fn format(v Any) String {
+    return __format(v);
+}
+
+/// Alias for format.
+fn to_string(v Any) String {
+    return __format(v);
+}
+
 // ============================================================================
 // STRING BUILDER
 // ============================================================================
@@ -52,26 +62,22 @@ fn string_builder_append_str(builder StringBuilder, s String) StringBuilder {
 
 /// Append a character to the builder.
 fn string_builder_append_char(builder StringBuilder, c Char) StringBuilder {
-    // TODO: Implement freestanding-safe char append
-    return builder;
+    return StringBuilder(builder.data + from_char(c));
 }
 
 /// Append an integer to the builder.
 fn string_builder_append_int(builder StringBuilder, x Int) StringBuilder {
-    // TODO: Implement freestanding-safe int append
-    return builder;
+    return StringBuilder(builder.data + to_json(x));
 }
 
 /// Append a float to the builder.
 fn string_builder_append_float(builder StringBuilder, x Float) StringBuilder {
-    // TODO: Implement freestanding-safe float append
-    return builder;
+    return StringBuilder(builder.data + to_json(x));
 }
 
 /// Get current length of the builder.
 fn string_builder_len(builder StringBuilder) Int {
-    // TODO: Implement freestanding-safe builder length
-    return 0;
+    return len(builder.data);
 }
 
 /// Build final string from builder.
@@ -80,21 +86,25 @@ fn string_builder_build(builder StringBuilder) String {
 }
 
 /// Clear the builder for reuse.
-fn string_builder_clear(builder StringBuilder) {
-    // TODO: Implement freestanding-safe builder clear
+fn string_builder_clear(builder StringBuilder) StringBuilder {
+    return StringBuilder("");
 }
 
 /// Destroy the builder and free resources.
 fn string_builder_destroy(builder StringBuilder) {
-    // TODO: Implement freestanding-safe builder destroy
+    return;
 }
 
 /// Parse a decimal integer from a String.
 /// 
 /// This will panic at runtime if the input is not a valid integer literal.
 fn parse_int(s String) Int {
-    // TODO: Implement freestanding-safe int parsing
-    return 0;
+    raw = from_json(s);
+    if raw == none {
+        panic("parse_int: invalid integer literal");
+    }
+    else {}
+    return raw as Int;
 }
 
 /// Create string from a single character.
@@ -107,20 +117,32 @@ fn from_char(c Char) String {
 /// Returns substring starting at start index with specified length.
 /// Returns empty string if indices are invalid.
 fn substring(s String, start Int, length Int) String {
-    // TODO: Implement freestanding-safe substring
-    return "";
+    return __str_substring_impl(s, start, length);
 }
 
 /// Check if string starts with prefix.
 fn starts_with(s String, prefix String) Bool {
-    // TODO: Implement freestanding-safe starts_with
-    return false;
+    s_ref = &s;
+    prefix_ref = &prefix;
+    p_len = length(*prefix_ref);
+    if p_len > length(*s_ref) {
+        return false;
+    }
+    else {}
+    return substring(*s_ref, 0, p_len) == *prefix_ref;
 }
 
 /// Check if string ends with suffix.
 fn ends_with(s String, suffix String) Bool {
-    // TODO: Implement freestanding-safe ends_with
-    return false;
+    s_ref = &s;
+    suffix_ref = &suffix;
+    s_len = length(*s_ref);
+    suffix_len = length(*suffix_ref);
+    if suffix_len > s_len {
+        return false;
+    }
+    else {}
+    return substring(*s_ref, s_len - suffix_len, suffix_len) == *suffix_ref;
 }
 
 /// Convert string to uppercase.
@@ -179,16 +201,59 @@ fn join(parts Vec<String>, delimiter String) String {
 /// 
 /// This will panic at runtime if input is not a valid float literal.
 fn parse_float(s String) Float {
-    // TODO: Implement freestanding-safe float parsing
-    return 0.0;
+    raw = from_json(s);
+    if raw == none {
+        panic("parse_float: invalid float literal");
+    }
+    else {}
+    return raw as Float;
 }
 
 /// Parse a Bool from a String.
 /// Accepts "true", "false" (case insensitive) or JSON boolean literals.
 /// This will panic at runtime if input is not a valid boolean.
 fn parse_bool(s String) Bool {
-    // TODO: Implement freestanding-safe bool parsing
-    return false;
+    raw = from_json(s);
+    if raw == none {
+        panic("parse_bool: invalid bool literal");
+    }
+    else {}
+    return raw as Bool;
+}
+
+/// Parse a decimal integer from String; returns none on failure.
+fn parse_int_checked(s String) Int | none {
+    raw = from_json(s);
+    if raw == none {
+        return none;
+    }
+    else {}
+    return raw as Int;
+}
+
+/// Parse a decimal float from String; returns none on failure.
+fn parse_float_checked(s String) Float | none {
+    raw = from_json(s);
+    if raw == none {
+        return none;
+    }
+    else {}
+    return raw as Float;
+}
+
+/// Parse a bool from String; returns none on failure.
+fn parse_bool_checked(s String) Bool | none {
+    raw = from_json(s);
+    if raw == none {
+        return none;
+    }
+    else {}
+    return raw as Bool;
+}
+
+/// Split string into lines by LF.
+fn lines(s String) Vec<String> {
+    return split(s, "\n");
 }
 
 extern fn __str_char_at_impl(s String, index Int) Char;

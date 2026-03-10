@@ -2,9 +2,10 @@ Metadata-Version: 2.4
 Name: arixa-lang
 Version: 0.2.0
 Summary: Self-hosted-inspired toy programming language ecosystem
-Requires-Python: >=3.11
+Requires-Python: >=3.10
 License-File: LICENSE
 Requires-Dist: llvmlite>=0.44
+Requires-Dist: tomli>=2.0; python_version < "3.11"
 Provides-Extra: dev
 Requires-Dist: pytest>=8.0; extra == "dev"
 Requires-Dist: pytest-cov>=5.0; extra == "dev"

@@ -260,6 +260,8 @@ _TRAIT_IMPLS_STACK: list[dict[str, set[str]]] = [{}]
 _KNOWN_TRAITS_STACK: list[set[str]] = [set()]
 _TRAITS_STACK: list[dict[str, TraitDecl]] = [{}]
 _FN_GROUPS_STACK: list[dict[str, list[FnDecl | ExternFnDecl]]] = [{}]
+_OVERLOAD_CACHE_STACK: list[dict[tuple[Any, ...], FnDecl | ExternFnDecl]] = [{}]
+_MONOMORPH_INSTANCE_STACK: list[dict[tuple[Any, ...], str]] = [{}]
 
 
 
@@ -738,7 +740,7 @@ BUILTIN_SIGS: dict[str, BuiltinSig] = {
 for _name, _sig in list(BUILTIN_SIGS.items()):
     if _name.startswith("__"):
         continue
-    if _name in {"print", "len", "read_file", "write_file", "args", "arg", "spawn", "join", "await_result"}:
+    if _name in {"len", "read_file", "write_file", "args", "arg", "spawn", "join", "await_result"}:
         continue
     BUILTIN_SIGS[f"__{_name}"] = _sig
 
@@ -2112,6 +2114,14 @@ def _current_fn_groups() -> dict[str, list[FnDecl | ExternFnDecl]]:
     return _FN_GROUPS_STACK[-1] if _FN_GROUPS_STACK else {}
 
 
+def _current_overload_cache() -> dict[tuple[Any, ...], FnDecl | ExternFnDecl]:
+    return _OVERLOAD_CACHE_STACK[-1] if _OVERLOAD_CACHE_STACK else {}
+
+
+def _current_monomorph_instances() -> dict[tuple[Any, ...], str]:
+    return _MONOMORPH_INSTANCE_STACK[-1] if _MONOMORPH_INSTANCE_STACK else {}
+
+
 def _replace_self_type(typ: str, concrete: str) -> str:
     t = _canonical_type(typ)
     if t == "Self":
@@ -2493,6 +2503,16 @@ def _choose_impl(
     line: int,
     col: int,
 ) -> FnDecl | ExternFnDecl:
+    cache_key = (
+        name,
+        tuple(_canonical_type(t) for t in arg_types),
+        tuple(id(d) for d in decls),
+    )
+    overload_cache = _current_overload_cache()
+    cached = overload_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     ranked: list[tuple[tuple[int, int, int, int], FnDecl | ExternFnDecl]] = []
     for d in decls:
         sc = _specialization_score(d, arg_types, known_types)
@@ -2551,6 +2571,7 @@ def _choose_impl(
                 f"ambiguous overload for {name}({', '.join(arg_types)}): candidates {candidates}",
             )
         )
+    overload_cache[cache_key] = best[0]
     return best[0]
 
 
@@ -2578,6 +2599,51 @@ def _const_expr_type(expr: Any, known: dict[str, str]) -> str | None:
         if inner in {"Int", "Float"} or _is_int_type(inner or "") or _is_float_type(inner or ""):
             return inner
     return None
+
+
+def _monomorph_typevars_for_decl(
+    decl: FnDecl,
+    bindings: dict[str, str],
+    known_types: set[str],
+) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for tv in list(getattr(decl, "generics", [])):
+        if tv not in seen:
+            out.append(tv)
+            seen.add(tv)
+    for _, pty in decl.params:
+        if _is_typevar(pty, known_types) and pty not in seen:
+            out.append(pty)
+            seen.add(pty)
+    for tv in sorted(bindings.keys()):
+        if tv not in seen:
+            out.append(tv)
+            seen.add(tv)
+    return out
+
+
+def _register_monomorph_instance(
+    decl: FnDecl,
+    bindings: dict[str, str],
+    known_types: set[str],
+) -> tuple[str, tuple[Any, ...]] | None:
+    typevars = _monomorph_typevars_for_decl(decl, bindings, known_types)
+    if not typevars:
+        return None
+    base_symbol = decl.symbol or decl.name
+    concrete = tuple(_canonical_type(bindings.get(tv, "Any")) for tv in typevars)
+    if any(c == "Any" for c in concrete):
+        # Keep this call polymorphic; unresolved bindings are not a real monomorph instance.
+        return None
+    key = (base_symbol, tuple(typevars), concrete)
+    cache = _current_monomorph_instances()
+    symbol = cache.get(key)
+    if symbol is None:
+        base_count = sum(1 for k in cache.keys() if isinstance(k, tuple) and k and k[0] == base_symbol)
+        symbol = f"{base_symbol}__mono{base_count}"
+        cache[key] = symbol
+    return symbol, key
 
 
 def _get_const_values() -> dict[str, object]:
@@ -2643,6 +2709,8 @@ def _eval_const_expr(expr: Any, const_values: dict[str, object]) -> object | Non
                 return left * right
             return None
         if op == "/":
+            if isinstance(left, int) and isinstance(right, int) and right != 0:
+                return int(left / right)
             if isinstance(left, (int, float)) and isinstance(right, (int, float)) and right != 0:
                 return left / right
             return None
@@ -2721,8 +2789,6 @@ def _load_imported_program_items(
     # Store module function information for codegen inlining
     for item in imported_prog.items:
         if isinstance(item, ImportDecl):
-            alias = item.alias or ".".join(item.path)
-            # Store module functions for codegen to use
             if not hasattr(import_decl, 'module_functions'):
                 import_decl.module_functions = {}
             for sub_item in imported_prog.items:
@@ -2759,6 +2825,10 @@ def analyze(
     const_values: dict[str, object] = {}
     _get_const_values.current = const_values
     _get_global_const_values.current = const_values
+    overload_cache: dict[tuple[Any, ...], FnDecl | ExternFnDecl] = {}
+    monomorph_instances: dict[tuple[Any, ...], str] = {}
+    _OVERLOAD_CACHE_STACK.append(overload_cache)
+    _MONOMORPH_INSTANCE_STACK.append(monomorph_instances)
 
     try:
         errors: list[str] = []
@@ -3053,6 +3123,17 @@ def analyze(
                     except SemanticError as err:
                         _record(err)
                         continue
+            setattr(prog, "monomorph_instances", dict(monomorph_instances))
+            setattr(
+                prog,
+                "monomorph_symbol_to_base",
+                {
+                    symbol: key[0]
+                    for key, symbol in monomorph_instances.items()
+                    if isinstance(key, tuple) and key and isinstance(key[0], str) and isinstance(symbol, str)
+                },
+            )
+            setattr(prog, "overload_resolution_cache_entries", len(overload_cache))
         finally:
             _FN_GROUPS_STACK.pop()
             _TRAITS_STACK.pop()
@@ -3077,6 +3158,8 @@ def analyze(
         if errors:
             raise SemanticError("\n".join(errors))
     finally:
+        _MONOMORPH_INSTANCE_STACK.pop()
+        _OVERLOAD_CACHE_STACK.pop()
         _FREESTANDING_MODE_STACK.pop()
         _get_const_values.current = {}
         _get_global_const_values.current = {}
@@ -3414,6 +3497,20 @@ def _coverage_axes_for_pattern(
                 return None
             axes.extend(inner_axes)
         return axes
+    if exp_c in structs and isinstance(pat, StructPattern) and pat.struct_name == exp_c:
+        decl = structs[exp_c]
+        axes: list[tuple[set[str], set[str]]] = []
+        for fname, fty in decl.fields:
+            pnode = pat.field_patterns.get(fname, WildcardPattern())
+            inner_axes = _coverage_axes_for_pattern(pnode, fty, structs, enums)
+            if inner_axes is None:
+                return None
+            axes.extend(inner_axes)
+        return axes
+
+    if isinstance(pat, (SlicePattern, TuplePattern)):
+        # Dynamic-length sequence patterns are not modeled in finite coverage axes.
+        return None
 
     # Non-finite domains (e.g., Int/String) are only analyzable when total, which
     # is handled by wildcard/name above.
@@ -3445,6 +3542,7 @@ def _pattern_is_total_for_type(pat: Any, expected_ty: str, structs: dict[str, St
     if isinstance(pat, Name):
         return True
     exp_c = _canonical_type(expected_ty)
+    exp_base = _canonical_type(_strip_ref(expected_ty))
     enum_decl = _enum_decl_for_type(exp_c, enums)
     if enum_decl is not None:
         variant_name = _enum_variant_name_for_pattern(pat, enum_decl.name)
@@ -3458,6 +3556,29 @@ def _pattern_is_total_for_type(pat: Any, expected_ty: str, structs: dict[str, St
         if len(pat.args) != len(decl.fields):
             return False
         return all(_pattern_is_total_for_type(pp, pty, structs, enums) for pp, (_, pty) in zip(pat.args, decl.fields))
+    if exp_c in structs and isinstance(pat, StructPattern):
+        if pat.struct_name != exp_c:
+            return False
+        decl = structs[exp_c]
+        field_types = {fname: fty for fname, fty in decl.fields}
+        for fname, pnode in pat.field_patterns.items():
+            fty = field_types.get(fname)
+            if fty is None:
+                return False
+            if not _pattern_is_total_for_type(pnode, fty, structs, enums):
+                return False
+        return True
+    if isinstance(pat, SlicePattern):
+        if not (_is_vec_type(exp_base) or _is_slice_type(exp_base)):
+            return False
+        # `[..]` is a catch-all for sequence subjects in current syntax.
+        if pat.rest_pattern is None or pat.patterns:
+            return False
+        return isinstance(pat.rest_pattern, WildcardPattern)
+    if isinstance(pat, TuplePattern):
+        # Tuple patterns currently lower over sequence subjects with exact length,
+        # so they are never total over dynamic-length sequences.
+        return False
     return False
 
 
@@ -3495,6 +3616,132 @@ def _analyze_pattern_against_type(
                 )
             )
         bindings_for_arm[pat.value] = exp_c
+        return
+
+    if isinstance(pat, (RangePattern, RangeExpr)):
+        exp_c = _canonical_type(expected_ty)
+        if not _is_int_type(exp_c):
+            raise SemanticError(
+                _diag(
+                    filename,
+                    pat.line,
+                    pat.col,
+                    f"range pattern expects integer subject type, got {expected_ty}",
+                )
+            )
+        start_ty = _infer(
+            pat.start,
+            scopes,
+            mut_scopes,
+            fn_groups,
+            structs,
+            enums,
+            owned,
+            borrow,
+            move,
+            filename,
+            fn_name,
+            unsafe_ok,
+            gpu_kernel,
+        )
+        end_ty = _infer(
+            pat.end,
+            scopes,
+            mut_scopes,
+            fn_groups,
+            structs,
+            enums,
+            owned,
+            borrow,
+            move,
+            filename,
+            fn_name,
+            unsafe_ok,
+            gpu_kernel,
+        )
+        if not _is_int_type(start_ty) or not _is_int_type(end_ty):
+            raise SemanticError(
+                _diag(
+                    filename,
+                    pat.line,
+                    pat.col,
+                    f"range pattern bounds must be integers, got {start_ty}..{end_ty}",
+                )
+            )
+        _require_type(filename, pat.line, pat.col, exp_c, start_ty, "range pattern start")
+        _require_type(filename, pat.line, pat.col, exp_c, end_ty, "range pattern end")
+        return
+
+    if isinstance(pat, SlicePattern):
+        exp_c = _canonical_type(_strip_ref(expected_ty))
+        if _is_vec_type(exp_c):
+            elem_ty = _vec_inner(exp_c)
+        elif _is_slice_type(exp_c):
+            elem_ty = _slice_inner(exp_c)
+        else:
+            raise SemanticError(
+                _diag(
+                    filename,
+                    pat.line,
+                    pat.col,
+                    f"slice pattern expects sequence subject type, got {expected_ty}",
+                )
+            )
+        for sub_pat in pat.patterns:
+            _analyze_pattern_against_type(
+                sub_pat,
+                elem_ty,
+                scopes,
+                mut_scopes,
+                fn_groups,
+                structs,
+                enums,
+                owned,
+                borrow,
+                move,
+                filename,
+                fn_name,
+                unsafe_ok,
+                gpu_kernel,
+                bindings_for_arm,
+            )
+        if pat.rest_pattern is not None and not isinstance(pat.rest_pattern, WildcardPattern):
+            raise SemanticError(_diag(filename, pat.line, pat.col, "slice rest pattern must be `..`"))
+        return
+
+    if isinstance(pat, TuplePattern):
+        exp_c = _canonical_type(_strip_ref(expected_ty))
+        if _is_vec_type(exp_c):
+            elem_ty = _vec_inner(exp_c)
+        elif _is_slice_type(exp_c):
+            elem_ty = _slice_inner(exp_c)
+        else:
+            raise SemanticError(
+                _diag(
+                    filename,
+                    pat.line,
+                    pat.col,
+                    f"tuple pattern expects sequence subject type, got {expected_ty}",
+                )
+            )
+        for sub_pat in pat.patterns:
+            _analyze_pattern_against_type(
+                sub_pat,
+                elem_ty,
+                scopes,
+                mut_scopes,
+                fn_groups,
+                structs,
+                enums,
+                owned,
+                borrow,
+                move,
+                filename,
+                fn_name,
+                unsafe_ok,
+                gpu_kernel,
+                bindings_for_arm,
+            )
         return
 
     exp_c = _canonical_type(expected_ty)
@@ -3550,6 +3797,34 @@ def _analyze_pattern_against_type(
                 )
             )
         for pnode, (_, fty) in zip(pat.args, decl.fields):
+            _analyze_pattern_against_type(
+                pnode,
+                fty,
+                scopes,
+                mut_scopes,
+                fn_groups,
+                structs,
+                enums,
+                owned,
+                borrow,
+                move,
+                filename,
+                fn_name,
+                unsafe_ok,
+                gpu_kernel,
+                bindings_for_arm,
+            )
+        return
+
+    if exp_c in structs and isinstance(pat, StructPattern):
+        if pat.struct_name != exp_c:
+            raise SemanticError(_diag(filename, pat.line, pat.col, f"match pattern expects {exp_c}, got {pat.struct_name}"))
+        decl = structs[exp_c]
+        field_types = {fname: fty for fname, fty in decl.fields}
+        for fname, pnode in pat.field_patterns.items():
+            fty = field_types.get(fname)
+            if fty is None:
+                raise SemanticError(_diag(filename, pat.line, pat.col, f"unknown field {fname} for struct pattern {exp_c}"))
             _analyze_pattern_against_type(
                 pnode,
                 fty,
@@ -4374,6 +4649,14 @@ def _infer(
         raise SemanticError(_diag(filename, e.line, e.col, "or-patterns are only valid in match arms"))
     if isinstance(e, GuardedPattern):
         raise SemanticError(_diag(filename, e.line, e.col, "match guards are only valid in match arms"))
+    if isinstance(e, RangePattern):
+        raise SemanticError(_diag(filename, e.line, e.col, "range patterns are only valid in match arms"))
+    if isinstance(e, SlicePattern):
+        raise SemanticError(_diag(filename, e.line, e.col, "slice patterns are only valid in match arms"))
+    if isinstance(e, TuplePattern):
+        raise SemanticError(_diag(filename, e.line, e.col, "tuple patterns are only valid in match arms"))
+    if isinstance(e, StructPattern):
+        raise SemanticError(_diag(filename, e.line, e.col, "struct patterns are only valid in match arms"))
     if isinstance(e, BoolLit):
         return _typed(e, "Bool")
     if isinstance(e, NilLit):
@@ -5244,6 +5527,15 @@ def _infer_call(
             if len(e.args) == 2:
                 _require_type(filename, e.args[1].line, e.args[1].col, "String", arg_types[1], "arg 1 for static_assert")
             const_bool = _eval_const_expr(e.args[0], _get_const_values())
+            if const_bool is None:
+                raise SemanticError(
+                    _diag(
+                        filename,
+                        e.args[0].line,
+                        e.args[0].col,
+                        "static_assert condition must be a compile-time constant",
+                    )
+                )
             if const_bool is False:
                 detail = ""
                 if len(e.args) == 2 and isinstance(e.args[1], Literal) and isinstance(e.args[1].value, str):
@@ -5381,8 +5673,17 @@ def _infer_call(
                     _require_type(filename, arg.line, arg.col, pty, aty, f"arg {i} for {name}")
                 if not _is_ref_type(pty) and pty != "Any" and not _is_typevar(pty, known_types):
                     _consume_if_move_name(arg, aty, borrow, move, filename, arg.line, arg.col)
+            decl_match = _match_decl_bindings(decl, arg_types, known_types)
+            if decl_match is not None:
+                type_bindings.update(decl_match[3])
             if isinstance(decl, FnDecl):
                 e.resolved_name = decl.symbol or decl.name
+                setattr(e, "resolved_source_filename", getattr(decl, "_source_filename", filename))
+                mono = _register_monomorph_instance(decl, type_bindings, known_types)
+                if mono is not None:
+                    mono_symbol, mono_key = mono
+                    setattr(e, "monomorph_symbol", mono_symbol)
+                    setattr(e, "monomorph_key", mono_key)
             return _substitute_typevars(decl.ret, type_bindings)
         local = _lookup(name, scopes)
         if local is not None:
@@ -5527,8 +5828,17 @@ def _infer_call(
                 _require_type(filename, arg.line, arg.col, pty, aty, f"arg {i} for {ufcs_name}")
                 if not _is_ref_type(pty) and pty != "Any" and not _is_typevar(pty, known_types):
                     _consume_if_move_name(arg, aty, borrow, move, filename, arg.line, arg.col)
+            decl_match = _match_decl_bindings(decl, all_arg_types, known_types)
+            if decl_match is not None:
+                type_bindings.update(decl_match[3])
             if isinstance(decl, FnDecl):
                 e.resolved_name = decl.symbol or decl.name
+                setattr(e, "resolved_source_filename", getattr(decl, "_source_filename", filename))
+                mono = _register_monomorph_instance(decl, type_bindings, known_types)
+                if mono is not None:
+                    mono_symbol, mono_key = mono
+                    setattr(e, "monomorph_symbol", mono_symbol)
+                    setattr(e, "monomorph_key", mono_key)
             setattr(e, "ufcs_receiver", e.fn.obj)
             setattr(e, "ufcs_receiver_ty", obj_ty)
             return _substitute_typevars(decl.ret, type_bindings)

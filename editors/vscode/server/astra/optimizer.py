@@ -9,6 +9,9 @@ from astra.for_lowering import lower_for_loops
 from astra.int_types import parse_int_type_name
 
 
+_PURE_STDLIB_INT_HELPERS = {"abs_int", "min_int", "max_int", "clamp_int"}
+
+
 def optimize_program(prog: Program) -> Program:
     """Apply optimization passes to function bodies in a program AST.
     
@@ -317,6 +320,9 @@ def _fold_ast_expr(expr: Any, env: dict[str, Any], mutable_names: set[str]) -> A
     if isinstance(expr, Call):
         expr.fn = _fold_ast_expr(expr.fn, env, mutable_names)
         expr.args = [_fold_ast_expr(arg, env, mutable_names) for arg in expr.args]
+        folded_call = _fold_pure_call_const(expr)
+        if folded_call is not None:
+            return folded_call
         return expr
     if isinstance(expr, AwaitExpr):
         expr.expr = _fold_ast_expr(expr.expr, env, mutable_names)
@@ -368,6 +374,16 @@ def _literal_value(expr: Any) -> Any:
         return None
     if isinstance(expr, Literal):
         return expr.value
+    if isinstance(expr, LiteralPattern):
+        return _literal_value(expr.value)
+    if isinstance(expr, Unary) and expr.op == "-":
+        inner = _literal_value(expr.expr)
+        if isinstance(inner, (int, float)) and not isinstance(inner, bool):
+            return -inner
+    if isinstance(expr, TypeAnnotated):
+        return _literal_value(expr.expr)
+    if isinstance(expr, CastExpr):
+        return _literal_value(expr.expr)
     return _NO_LITERAL
 
 
@@ -392,10 +408,94 @@ def _match_pattern_const_decision(target: Any, pat: Any) -> bool | None:
         if not gd:
             return False
         return _match_pattern_const_decision(target, pat.pattern)
+    if isinstance(pat, (RangePattern, RangeExpr)):
+        lo = _literal_value(pat.start)
+        hi = _literal_value(pat.end)
+        if not (isinstance(lo, int) and not isinstance(lo, bool)):
+            return None
+        if not (isinstance(hi, int) and not isinstance(hi, bool)):
+            return None
+        if not (isinstance(target, int) and not isinstance(target, bool)):
+            return False
+        if pat.inclusive:
+            return lo <= target <= hi
+        return lo <= target < hi
     pv = _literal_value(pat)
     if pv is _NO_LITERAL:
         return None
     return pv == target
+
+
+def _call_name(call: Call) -> str | None:
+    if isinstance(call.fn, Name):
+        return call.fn.value
+    if isinstance(call.fn, FieldExpr):
+        return call.fn.field
+    return None
+
+
+def _is_stdlib_pure_helper_call(call: Call, name: str) -> bool:
+    if name not in _PURE_STDLIB_INT_HELPERS:
+        return False
+    resolved = getattr(call, "resolved_name", None)
+    if not isinstance(resolved, str):
+        return False
+    if resolved != name:
+        return False
+    src = str(getattr(call, "resolved_source_filename", "") or "").replace("\\", "/")
+    if "/stdlib/" not in src:
+        return False
+    return True
+
+
+def _fold_pure_call_const(call: Call) -> Any | None:
+    name = _call_name(call)
+    if name is None:
+        return None
+
+    # Builtin `len` with literal containers.
+    if name in {"len", "__len"} and getattr(call, "resolved_name", None) is None and len(call.args) == 1:
+        arg = call.args[0]
+        if isinstance(arg, ArrayLit):
+            out = _literal_node(len(arg.elements), call)
+            _copy_inferred_type(out, call)
+            return out
+        arg_lit = _literal_value(arg)
+        if isinstance(arg_lit, str):
+            out = _literal_node(len(arg_lit), call)
+            _copy_inferred_type(out, call)
+            return out
+        return None
+
+    if not _is_stdlib_pure_helper_call(call, name):
+        return None
+
+    vals = [_literal_value(arg) for arg in call.args]
+    if any(v is _NO_LITERAL for v in vals):
+        return None
+    if not all(isinstance(v, int) and not isinstance(v, bool) for v in vals):
+        return None
+
+    out_val: int | None = None
+    if name == "abs_int" and len(vals) == 1:
+        out_val = abs(int(vals[0]))
+    elif name == "min_int" and len(vals) == 2:
+        out_val = min(int(vals[0]), int(vals[1]))
+    elif name == "max_int" and len(vals) == 2:
+        out_val = max(int(vals[0]), int(vals[1]))
+    elif name == "clamp_int" and len(vals) == 3:
+        x, lo, hi = int(vals[0]), int(vals[1]), int(vals[2])
+        if x < lo:
+            out_val = lo
+        elif x > hi:
+            out_val = hi
+        else:
+            out_val = x
+    if out_val is None:
+        return None
+    out = _literal_node(out_val, call)
+    _copy_inferred_type(out, call)
+    return out
 
 
 def _literal_node(value: Any, src: Any) -> Any:

@@ -62,6 +62,8 @@ class _FnState:
     vars: dict[str, ir.Value] = field(default_factory=dict)
     var_types: dict[str, str] = field(default_factory=dict)
     loop_stack: list[tuple[ir.Block, ir.Block]] = field(default_factory=list)
+    stack_promotion_bindings: set[str] = field(default_factory=set)
+    stack_alloc_depth: int = 0
 
 
 @dataclass
@@ -76,6 +78,8 @@ class _ModuleCtx:
     fn_map: dict[str, ir.Function]
     string_globals: dict[str, ir.GlobalVariable]
     ffi_libs: set[str]
+    layout_cache: dict[str, Any]
+    monomorph_aliases: dict[str, str]
 
 
 _FREESTANDING_HEAP_BYTES = 8 * 1024 * 1024
@@ -286,7 +290,7 @@ def _strip_ref_type(typ: str) -> str:
 def _query_layout(ctx: _ModuleCtx, typ: str, node: Any):
     c = _canonical_type(typ)
     try:
-        return layout_of_type(c, ctx.struct_decls, mode="query")
+        return layout_of_type(c, ctx.struct_decls, mode="query", _cache=ctx.layout_cache)
     except LayoutError as err:
         raise CodegenError(_diag(node, str(err))) from err
 
@@ -294,7 +298,7 @@ def _query_layout(ctx: _ModuleCtx, typ: str, node: Any):
 def _storage_size_align(ctx: _ModuleCtx, typ: str, node: Any) -> tuple[int, int]:
     c = _canonical_type(typ)
     try:
-        lay = layout_of_type(c, ctx.struct_decls, mode="query")
+        lay = layout_of_type(c, ctx.struct_decls, mode="query", _cache=ctx.layout_cache)
         return lay.size, lay.align
     except LayoutError:
         llty = _llvm_type(ctx, c)
@@ -318,6 +322,276 @@ def _storage_size_align(ctx: _ModuleCtx, typ: str, node: Any) -> tuple[int, int]
         if isinstance(llty, ir.PointerType):
             return 8, 8
         raise CodegenError(_diag(node, f"cannot determine storage layout for {c}"))
+
+
+def _iter_expr_children(expr: Any) -> list[Any]:
+    if expr is None:
+        return []
+    if isinstance(expr, (Literal, BoolLit, NilLit, Name)):
+        return []
+    if isinstance(expr, Unary):
+        return [expr.expr]
+    if isinstance(expr, Binary):
+        return [expr.left, expr.right]
+    if isinstance(expr, Call):
+        return [expr.fn, *list(expr.args)]
+    if isinstance(expr, FieldExpr):
+        return [expr.obj]
+    if isinstance(expr, IndexExpr):
+        return [expr.obj, expr.index]
+    if isinstance(expr, ArrayLit):
+        return list(expr.elements)
+    if isinstance(expr, StructLit):
+        return [v for _, v in expr.fields]
+    if isinstance(expr, StructLiteral):
+        return list(expr.args)
+    if isinstance(expr, TypeAnnotated):
+        return [expr.expr]
+    if isinstance(expr, CastExpr):
+        return [expr.expr]
+    if isinstance(expr, TryExpr):
+        return [expr.expr]
+    if isinstance(expr, AwaitExpr):
+        return [expr.expr]
+    if isinstance(expr, StringInterpolation):
+        return list(expr.exprs)
+    if isinstance(expr, RangeExpr):
+        return [expr.start, expr.end]
+    if isinstance(expr, MethodCall):
+        return [expr.obj, *list(expr.args)]
+    if isinstance(expr, VectorLiteral):
+        return list(expr.elements)
+    if isinstance(expr, SetLiteral):
+        return list(expr.elements)
+    if isinstance(expr, MapLiteral):
+        out: list[Any] = []
+        for k, v in expr.pairs:
+            out.append(k)
+            out.append(v)
+        return out
+    if isinstance(expr, IfExpression):
+        return [expr.cond, expr.then_expr, expr.else_expr]
+    return []
+
+
+def _expr_contains_name(expr: Any, name: str) -> bool:
+    if isinstance(expr, Name):
+        return expr.value == name
+    for child in _iter_expr_children(expr):
+        if _expr_contains_name(child, name):
+            return True
+    return False
+
+
+def _expr_contains_borrow_of_name(expr: Any, name: str) -> bool:
+    if isinstance(expr, Unary) and expr.op in {"&", "&mut"}:
+        return _expr_contains_name(expr.expr, name)
+    for child in _iter_expr_children(expr):
+        if _expr_contains_borrow_of_name(child, name):
+            return True
+    return False
+
+
+def _expr_contains_call_use_of_name(expr: Any, name: str) -> bool:
+    if isinstance(expr, Call):
+        if _expr_contains_name(expr.fn, name):
+            return True
+        for arg in expr.args:
+            if _expr_contains_name(arg, name):
+                return True
+    if isinstance(expr, MethodCall):
+        if _expr_contains_name(expr.obj, name):
+            return True
+        for arg in expr.args:
+            if _expr_contains_name(arg, name):
+                return True
+    for child in _iter_expr_children(expr):
+        if _expr_contains_call_use_of_name(child, name):
+            return True
+    return False
+
+
+def _expr_returns_binding_value(expr: Any, name: str) -> bool:
+    if isinstance(expr, Name):
+        return expr.value == name
+    if isinstance(expr, FieldExpr):
+        if isinstance(expr.obj, Name) and expr.obj.value == name:
+            return False
+        return _expr_returns_binding_value(expr.obj, name)
+    if isinstance(expr, IndexExpr):
+        if isinstance(expr.obj, Name) and expr.obj.value == name:
+            return False
+        return _expr_returns_binding_value(expr.obj, name) or _expr_returns_binding_value(expr.index, name)
+    for child in _iter_expr_children(expr):
+        if _expr_returns_binding_value(child, name):
+            return True
+    return False
+
+
+def _expr_may_stack_promotable_alloc(expr: Any, ctx: _ModuleCtx) -> bool:
+    if isinstance(expr, (ArrayLit, StructLit)):
+        return True
+    if isinstance(expr, Call):
+        if isinstance(expr.fn, Name):
+            callee = expr.fn.value
+            base = callee[2:] if callee.startswith("__") else callee
+            if callee in ctx.structs:
+                return True
+            if base in {"vec_new"}:
+                return True
+        if isinstance(expr.fn, FieldExpr) and isinstance(expr.fn.obj, Name):
+            if expr.fn.obj.value == "Result" and expr.fn.field in {"Ok", "Err"}:
+                return True
+    for child in _iter_expr_children(expr):
+        if _expr_may_stack_promotable_alloc(child, ctx):
+            return True
+    return False
+
+
+def _collect_stmt_names(stmts: list[Any], let_counts: dict[str, int], assigned_names: set[str]) -> None:
+    for st in stmts:
+        if isinstance(st, LetStmt):
+            let_counts[st.name] = let_counts.get(st.name, 0) + 1
+        elif isinstance(st, AssignStmt) and isinstance(st.target, Name):
+            assigned_names.add(st.target.value)
+
+        if isinstance(st, IfStmt):
+            _collect_stmt_names(st.then_body, let_counts, assigned_names)
+            _collect_stmt_names(st.else_body, let_counts, assigned_names)
+        elif isinstance(st, WhileStmt):
+            _collect_stmt_names(st.body, let_counts, assigned_names)
+        elif isinstance(st, IteratorForStmt):
+            _collect_stmt_names(st.body, let_counts, assigned_names)
+        elif isinstance(st, MatchStmt):
+            for _, arm_body in st.arms:
+                _collect_stmt_names(arm_body, let_counts, assigned_names)
+        elif isinstance(st, UnsafeStmt):
+            _collect_stmt_names(st.body, let_counts, assigned_names)
+        elif isinstance(st, ComptimeStmt):
+            _collect_stmt_names(st.body, let_counts, assigned_names)
+
+
+def _binding_escapes_in_stmts(stmts: list[Any], name: str, decl_stmt: LetStmt) -> bool:
+    for st in stmts:
+        if isinstance(st, LetStmt):
+            if st is not decl_stmt:
+                if _expr_contains_borrow_of_name(st.expr, name) or _expr_contains_call_use_of_name(st.expr, name):
+                    return True
+                if st.name != name and _expr_contains_name(st.expr, name):
+                    return True
+            continue
+
+        if isinstance(st, AssignStmt):
+            if _expr_contains_borrow_of_name(st.expr, name) or _expr_contains_call_use_of_name(st.expr, name):
+                return True
+            if isinstance(st.target, Name):
+                if st.target.value != name and _expr_contains_name(st.expr, name):
+                    return True
+            else:
+                # Storing the binding into another object may outlive the current scope.
+                if _expr_contains_name(st.expr, name):
+                    return True
+                if _expr_contains_borrow_of_name(st.target, name) or _expr_contains_call_use_of_name(st.target, name):
+                    return True
+            continue
+
+        if isinstance(st, ReturnStmt):
+            if st.expr is not None and (
+                _expr_contains_borrow_of_name(st.expr, name)
+                or _expr_contains_call_use_of_name(st.expr, name)
+                or _expr_returns_binding_value(st.expr, name)
+            ):
+                return True
+            continue
+
+        if isinstance(st, ExprStmt):
+            if _expr_contains_borrow_of_name(st.expr, name) or _expr_contains_call_use_of_name(st.expr, name):
+                return True
+            continue
+
+        if isinstance(st, IfStmt):
+            if _expr_contains_borrow_of_name(st.cond, name) or _expr_contains_call_use_of_name(st.cond, name):
+                return True
+            if _binding_escapes_in_stmts(st.then_body, name, decl_stmt):
+                return True
+            if _binding_escapes_in_stmts(st.else_body, name, decl_stmt):
+                return True
+            continue
+
+        if isinstance(st, WhileStmt):
+            if _expr_contains_borrow_of_name(st.cond, name) or _expr_contains_call_use_of_name(st.cond, name):
+                return True
+            if _binding_escapes_in_stmts(st.body, name, decl_stmt):
+                return True
+            continue
+
+        if isinstance(st, IteratorForStmt):
+            if _expr_contains_borrow_of_name(st.iterable, name) or _expr_contains_call_use_of_name(st.iterable, name):
+                return True
+            if _binding_escapes_in_stmts(st.body, name, decl_stmt):
+                return True
+            continue
+
+        if isinstance(st, MatchStmt):
+            if _expr_contains_borrow_of_name(st.expr, name) or _expr_contains_call_use_of_name(st.expr, name):
+                return True
+            for _, arm_body in st.arms:
+                if _binding_escapes_in_stmts(arm_body, name, decl_stmt):
+                    return True
+            continue
+
+        if isinstance(st, UnsafeStmt):
+            if _binding_escapes_in_stmts(st.body, name, decl_stmt):
+                return True
+            continue
+
+        if isinstance(st, ComptimeStmt):
+            if _binding_escapes_in_stmts(st.body, name, decl_stmt):
+                return True
+            continue
+    return False
+
+
+def _compute_stack_promotion_bindings(ctx: _ModuleCtx, body_stmts: list[Any]) -> set[str]:
+    let_counts: dict[str, int] = {}
+    assigned_names: set[str] = set()
+    _collect_stmt_names(body_stmts, let_counts, assigned_names)
+
+    candidate_lets: dict[str, LetStmt] = {}
+
+    def _collect_candidates(stmts: list[Any]) -> None:
+        for st in stmts:
+            if isinstance(st, LetStmt):
+                if let_counts.get(st.name, 0) != 1:
+                    continue
+                if st.name in assigned_names:
+                    continue
+                if not _expr_may_stack_promotable_alloc(st.expr, ctx):
+                    continue
+                candidate_lets[st.name] = st
+                continue
+            if isinstance(st, IfStmt):
+                _collect_candidates(st.then_body)
+                _collect_candidates(st.else_body)
+            elif isinstance(st, WhileStmt):
+                _collect_candidates(st.body)
+            elif isinstance(st, IteratorForStmt):
+                _collect_candidates(st.body)
+            elif isinstance(st, MatchStmt):
+                for _, arm_body in st.arms:
+                    _collect_candidates(arm_body)
+            elif isinstance(st, UnsafeStmt):
+                _collect_candidates(st.body)
+            elif isinstance(st, ComptimeStmt):
+                _collect_candidates(st.body)
+
+    _collect_candidates(body_stmts)
+
+    promotable: set[str] = set()
+    for name, decl in candidate_lets.items():
+        if not _binding_escapes_in_stmts(body_stmts, name, decl):
+            promotable.add(name)
+    return promotable
 
 
 def _struct_ptr(ctx: _ModuleCtx, state: _FnState, obj_val: ir.Value, obj_ty: str, sinfo: _StructInfo, node: Any) -> ir.Value:
@@ -546,7 +820,7 @@ def _emit_result_value(
         payload_any = state.builder.bitcast(payload_any, ir.IntType(64))
 
     i64 = ir.IntType(64)
-    mem = _alloc_bytes(ctx, state, ir.Constant(i64, 16), ir.Constant(i64, 8), node)
+    mem = _alloc_bytes(ctx, state, ir.Constant(i64, 16), ir.Constant(i64, 8), node, stack_ok=True)
     s_ptr = state.builder.bitcast(mem, _result_storage_ty().as_pointer())
     tag_ptr = state.builder.gep(s_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
     payload_ptr = state.builder.gep(s_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
@@ -649,7 +923,7 @@ def _explicit_cast_value(ctx: _ModuleCtx, state: _FnState, v: ir.Value, from_ty:
         inner = _option_inner_type(to_c)
         inner_v = _explicit_cast_value(ctx, state, v, from_c, inner, node)
         sz, al = _storage_size_align(ctx, inner, node)
-        mem = _alloc_bytes(ctx, state, ir.Constant(i64, sz), ir.Constant(i64, al), node)
+        mem = _alloc_bytes(ctx, state, ir.Constant(i64, sz), ir.Constant(i64, al), node, stack_ok=True)
         inner_ptr = b.bitcast(mem, _llvm_type(ctx, inner).as_pointer())
         b.store(inner_v, inner_ptr)
         if mem.type != lt_opt:
@@ -795,7 +1069,7 @@ def _coerce_value(ctx: _ModuleCtx, state: _FnState, v: ir.Value, from_ty: str, t
         inner = _option_inner_type(to_c)
         inner_v = _coerce_value(ctx, state, v, from_c, inner, node)
         sz, al = _storage_size_align(ctx, inner, node)
-        mem = _alloc_bytes(ctx, state, ir.Constant(i64, sz), ir.Constant(i64, al), node)
+        mem = _alloc_bytes(ctx, state, ir.Constant(i64, sz), ir.Constant(i64, al), node, stack_ok=True)
         inner_ptr = b.bitcast(mem, _llvm_type(ctx, inner).as_pointer())
         b.store(inner_v, inner_ptr)
         if mem.type != lt_opt:
@@ -1207,12 +1481,14 @@ def _declare_runtime(ctx: _ModuleCtx, name: str) -> ir.Function:
         fnty = ir.FunctionType(ir.VoidType(), [ir.DoubleType()])
     elif name == "astra_int_to_str":
         fnty = ir.FunctionType(i8p, [i64])
+    elif name == "astra_uint_to_str":
+        fnty = ir.FunctionType(i8p, [i64])
     elif name == "astra_float_to_str":
         fnty = ir.FunctionType(i8p, [ir.DoubleType()])
     elif name == "astra_bool_to_str":
         fnty = ir.FunctionType(i8p, [i1])
-    elif name == "astra_format_string":
-        fnty = ir.FunctionType(i8p, [i8p, i8p, i64])
+    elif name == "astra_any_to_display":
+        fnty = ir.FunctionType(i8p, [i64])
     elif name.startswith("astra_i128_"):
         fnty = ir.FunctionType(i128, [i128, i128])
     elif name.startswith("astra_u128_"):
@@ -1224,59 +1500,98 @@ def _declare_runtime(ctx: _ModuleCtx, name: str) -> ir.Function:
     return fn
 
 
-def _compile_string_interpolation(ctx: _ModuleCtx, state: _CompileState, interp: StringInterpolation) -> _Value:
-    """Compile string interpolation to a string value."""
-    # For now, implement simple concatenation using runtime string formatting
-    # This could be optimized in the future
-    
-    # Create a format string that will be used by a runtime function
-    format_parts = []
-    for i, part in enumerate(interp.parts):
-        if part:
-            format_parts.append(part.replace("{", "{{").replace("}", "}}"))
-        if i < len(interp.exprs):
-            format_parts.append("{}")
-    
-    format_str = "".join(format_parts)
-    
-    # Get the format string global
-    g = _get_string_global(ctx, format_str)
+def _type_is_float_like(ty: str) -> bool:
+    return _canonical_type(ty) in {"Float", "f16", "f32", "f64", "f80", "f128"}
+
+
+def _value_to_string_ptr(ctx: _ModuleCtx, state: _FnState, value: _Value, node: Any) -> ir.Value:
+    aty = _canonical_type(value.ty)
     b = state.builder
-    ptr = b.gep(g, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
-    
-    # Compile all expressions
-    args = []
-    for expr in interp.exprs:
-        arg = _compile_expr(ctx, state, expr)
-        aty = _canonical_type(arg.ty)
-        
-        # Convert each argument to string if needed
-        if aty in {"String", "str"}:
-            args.append(arg.value)
-        elif aty in {"Int", "isize", "usize"}:
+    if _is_option_type(aty):
+        opt_val = _coerce_value(ctx, state, value.value, value.ty, aty, node)
+        some_block = state.fn_ir.append_basic_block("fmt_opt_some")
+        none_block = state.fn_ir.append_basic_block("fmt_opt_none")
+        end_block = state.fn_ir.append_basic_block("fmt_opt_end")
+        is_some = b.icmp_unsigned("!=", opt_val, ir.Constant(opt_val.type, None))
+        b.cbranch(is_some, some_block, none_block)
+
+        b.position_at_end(some_block)
+        inner_ty = _option_inner_type(aty)
+        inner_ptr = b.bitcast(opt_val, _llvm_type(ctx, inner_ty).as_pointer())
+        inner_raw = b.load(inner_ptr)
+        inner_text = _value_to_string_ptr(ctx, state, _Value(inner_raw, inner_ty), node)
+        b.branch(end_block)
+        some_block = b.block
+
+        b.position_at_end(none_block)
+        none_str = _get_string_global(ctx, "none")
+        none_text = b.gep(none_str, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+        b.branch(end_block)
+        none_block = b.block
+
+        b.position_at_end(end_block)
+        out = b.phi(ir.IntType(8).as_pointer())
+        out.add_incoming(inner_text, some_block)
+        out.add_incoming(none_text, none_block)
+        return out
+    if aty in {"String", "str"}:
+        return _coerce_value(ctx, state, value.value, value.ty, "String", node)
+    if aty == "Any":
+        any_val = _coerce_value(ctx, state, value.value, value.ty, "Any", node)
+        to_display_fn = _declare_runtime(ctx, "astra_any_to_display")
+        return b.call(to_display_fn, [any_val])
+    if aty == "Bool":
+        to_str_fn = _declare_runtime(ctx, "astra_bool_to_str")
+        as_bool = _coerce_value(ctx, state, value.value, value.ty, "Bool", node)
+        return b.call(to_str_fn, [as_bool])
+    int_info = parse_int_type_name(aty)
+    if int_info is not None and int_info[0] <= 64:
+        if int_info[1]:
             to_str_fn = _declare_runtime(ctx, "astra_int_to_str")
-            str_val = b.call(to_str_fn, [arg.value])
-            args.append(str_val)
-        elif aty in {"Float", "f64"}:
-            to_str_fn = _declare_runtime(ctx, "astra_float_to_str")
-            str_val = b.call(to_str_fn, [arg.value])
-            args.append(str_val)
-        elif aty == "Bool":
-            to_str_fn = _declare_runtime(ctx, "astra_bool_to_str")
-            str_val = b.call(to_str_fn, [arg.value])
-            args.append(str_val)
-        else:
-            # Convert to JSON then to string
-            json_fn = _declare_runtime(ctx, "astra_to_json")
-            boxed_arg = _coerce_value(ctx, state, arg.value, arg.ty, "Any", expr)
-            json_val = b.call(json_fn, [boxed_arg])
-            args.append(json_val)
-    
-    # Call runtime format function
-    format_fn = _declare_runtime(ctx, "astra_format_string")
-    result = b.call(format_fn, [ptr] + args)
-    
-    return _Value(result, "String")
+            as_int = _coerce_value(ctx, state, value.value, value.ty, "Int", node)
+            return b.call(to_str_fn, [as_int])
+        to_str_fn = _declare_runtime(ctx, "astra_uint_to_str")
+        as_uint = _coerce_value(ctx, state, value.value, value.ty, "usize", node)
+        return b.call(to_str_fn, [as_uint])
+    if aty == "Char":
+        to_str_fn = _declare_runtime(ctx, "astra_int_to_str")
+        as_int = _coerce_value(ctx, state, value.value, value.ty, "Int", node)
+        return b.call(to_str_fn, [as_int])
+    if _type_is_float_like(aty):
+        to_str_fn = _declare_runtime(ctx, "astra_float_to_str")
+        as_float = _coerce_value(ctx, state, value.value, value.ty, "Float", node)
+        return b.call(to_str_fn, [as_float])
+    boxed_arg = _coerce_value(ctx, state, value.value, value.ty, "Any", node)
+    to_display_fn = _declare_runtime(ctx, "astra_any_to_display")
+    return b.call(to_display_fn, [boxed_arg])
+
+
+def _concat_string_ptrs(ctx: _ModuleCtx, state: _FnState, parts: list[ir.Value]) -> ir.Value:
+    b = state.builder
+    if not parts:
+        empty = _get_string_global(ctx, "")
+        return b.gep(empty, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+    out = parts[0]
+    for part in parts[1:]:
+        concat_fn = _declare_runtime(ctx, "astra_str_concat")
+        out = b.call(concat_fn, [out, part])
+    return out
+
+
+def _compile_string_interpolation(ctx: _ModuleCtx, state: _FnState, interp: StringInterpolation) -> _Value:
+    """Compile string interpolation to a string value."""
+    b = state.builder
+    parts: list[ir.Value] = []
+    for i, chunk in enumerate(interp.parts):
+        if chunk:
+            g = _get_string_global(ctx, chunk)
+            chunk_ptr = b.gep(g, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+            parts.append(chunk_ptr)
+        if i < len(interp.exprs):
+            expr = interp.exprs[i]
+            arg = _compile_expr(ctx, state, expr)
+            parts.append(_value_to_string_ptr(ctx, state, arg, expr))
+    return _Value(_concat_string_ptrs(ctx, state, parts), "String")
 
 
 def _declare_intrinsic(ctx: _ModuleCtx, base: str, bits: int) -> ir.Function:
@@ -1355,10 +1670,40 @@ def _ensure_freestanding_heap(ctx: _ModuleCtx) -> tuple[ir.GlobalVariable, ir.Gl
     return heap, off
 
 
-def _alloc_bytes(ctx: _ModuleCtx, state: _FnState, size_i64: ir.Value, align_i64: ir.Value, node: Any) -> ir.Value:
+def _alloc_bytes(
+    ctx: _ModuleCtx,
+    state: _FnState,
+    size_i64: ir.Value,
+    align_i64: ir.Value,
+    node: Any,
+    *,
+    stack_ok: bool = False,
+) -> ir.Value:
     b = state.builder
     i64 = ir.IntType(64)
     i8p = ir.IntType(8).as_pointer()
+    if stack_ok and state.stack_alloc_depth > 0 and not state.loop_stack and not ctx.freestanding:
+        size_v = size_i64
+        if not isinstance(size_v.type, ir.IntType):
+            raise CodegenError(_diag(node, f"internal: allocator size must be integer, got {size_v.type}"))
+        if isinstance(size_v, ir.Constant):
+            size_const = int(size_v.constant)
+            if size_const <= 0:
+                size_v = ir.Constant(size_v.type, 1)
+        else:
+            zero_sz = ir.Constant(size_v.type, 0)
+            one_sz = ir.Constant(size_v.type, 1)
+            is_zero = b.icmp_unsigned("==", size_v, zero_sz)
+            size_v = b.select(is_zero, one_sz, size_v)
+        stack_mem = b.alloca(ir.IntType(8), size=size_v, name="stack_mem")
+        if isinstance(align_i64, ir.Constant):
+            align_const = int(align_i64.constant)
+            if align_const > 0:
+                stack_mem.align = align_const
+        if stack_mem.type != i8p:
+            return b.bitcast(stack_mem, i8p)
+        return stack_mem
+
     if not ctx.freestanding:
         alloc_fn = _declare_runtime(ctx, "astra_alloc")
         raw = b.call(alloc_fn, [size_i64, align_i64])
@@ -1406,7 +1751,6 @@ def _as_i8_ptr(state: _FnState, v: ir.Value, node: Any) -> ir.Value:
 
 
 def _sequence_parts(ctx: _ModuleCtx, state: _FnState, obj_expr: Any, overflow_mode: str, node: Any) -> tuple[str, ir.Value, ir.Value]:
-    obj = _compile_expr(ctx, state, obj_expr, overflow_mode=overflow_mode)
     obj_ty = _expr_type(state, obj_expr)
     base_ty = _strip_ref_type(obj_ty)
     if _is_vec_type(base_ty):
@@ -1416,10 +1760,61 @@ def _sequence_parts(ctx: _ModuleCtx, state: _FnState, obj_expr: Any, overflow_mo
     else:
         raise CodegenError(_diag(node, f"index/get expects Vec<T> or [T], got {obj_ty}"))
 
+    # Lightweight escape-aware optimization: sequence literals used directly in
+    # indexing/get/len contexts do not escape, so keep them on the stack.
+    if isinstance(obj_expr, ArrayLit):
+        b = state.builder
+        elem_ll = _llvm_type(ctx, elem_ty)
+        vals: list[ir.Value] = []
+        for el in obj_expr.elements:
+            v = _compile_expr(ctx, state, el, overflow_mode=overflow_mode)
+            vals.append(_coerce_value(ctx, state, v.value, v.ty, elem_ty, el))
+        ln = ir.Constant(ir.IntType(64), len(vals))
+        if vals:
+            arr_ty = ir.ArrayType(elem_ll, len(vals))
+            arr_ptr = b.alloca(arr_ty)
+            for i, vv in enumerate(vals):
+                ep = b.gep(arr_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), i)])
+                b.store(vv, ep)
+            data = b.bitcast(arr_ptr, ir.IntType(8).as_pointer())
+        else:
+            data = ir.Constant(ir.IntType(8).as_pointer(), None)
+        return elem_ty, ln, data
+
+    obj = _compile_expr(ctx, state, obj_expr, overflow_mode=overflow_mode)
     handle = obj.value
     if _canonical_type(obj_ty).startswith("&"):
         if not isinstance(handle.type, ir.PointerType):
             raise CodegenError(_diag(node, f"cannot index through non-pointer reference type {obj_ty}"))
+        handle = state.builder.load(handle)
+    handle_i8 = _as_i8_ptr(state, handle, node)
+    hdr_ptr = state.builder.bitcast(handle_i8, ctx.slice_header_ty.as_pointer())
+    len_ptr = state.builder.gep(hdr_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+    data_ptr = state.builder.gep(hdr_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
+    ln = state.builder.load(len_ptr)
+    data = state.builder.load(data_ptr)
+    return elem_ty, ln, data
+
+
+def _sequence_parts_from_value(
+    ctx: _ModuleCtx,
+    state: _FnState,
+    seq: _Value,
+    node: Any,
+) -> tuple[str, ir.Value, ir.Value] | None:
+    seq_ty = _canonical_type(seq.ty)
+    base_ty = _strip_ref_type(seq_ty)
+    if _is_vec_type(base_ty):
+        elem_ty = _vec_inner_type(base_ty)
+    elif _is_slice_type(base_ty):
+        elem_ty = _slice_inner_type(base_ty)
+    else:
+        return None
+
+    handle = seq.value
+    if seq_ty.startswith("&"):
+        if not isinstance(handle.type, ir.PointerType):
+            return None
         handle = state.builder.load(handle)
     handle_i8 = _as_i8_ptr(state, handle, node)
     hdr_ptr = state.builder.bitcast(handle_i8, ctx.slice_header_ty.as_pointer())
@@ -1661,7 +2056,7 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
     if base == "vec_new":
         if len(call.args) != 0:
             raise CodegenError(_diag(call, "vec_new expects 0 arguments"))
-        header_i8 = _alloc_bytes(ctx, state, ir.Constant(i64, 16), ir.Constant(i64, 8), call)
+        header_i8 = _alloc_bytes(ctx, state, ir.Constant(i64, 16), ir.Constant(i64, 8), call, stack_ok=True)
         header_ptr = b.bitcast(header_i8, ctx.slice_header_ty.as_pointer())
         len_ptr = b.gep(header_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
         data_ptr = b.gep(header_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
@@ -1782,7 +2177,6 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
             return _Value(ir.Constant(i64, 0), "Int")
 
     if base == "print":
-        # Gather all string representations first
         parts = []
         for i, arg_node in enumerate(call.args):
             if isinstance(arg_node, StringInterpolation):
@@ -1794,53 +2188,19 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
                 parts.append(ptr)
             else:
                 arg = _compile_expr(ctx, state, arg_node)
-                aty = _canonical_type(arg.ty)
-                if aty in {"String", "str"}:
-                    sp = _as_string_ptr(arg, arg_node)
-                    parts.append(sp)
-                elif aty in {"Int", "isize", "usize"}:
-                    to_str_fn = _declare_runtime(ctx, "astra_int_to_str")
-                    str_val = b.call(to_str_fn, [arg.value])
-                    parts.append(str_val)
-                elif aty in {"Float", "f64"}:
-                    to_str_fn = _declare_runtime(ctx, "astra_float_to_str")
-                    str_val = b.call(to_str_fn, [arg.value])
-                    parts.append(str_val)
-                elif aty == "Bool":
-                    to_str_fn = _declare_runtime(ctx, "astra_bool_to_str")
-                    str_val = b.call(to_str_fn, [arg.value])
-                    parts.append(str_val)
-                else:
-                    json_fn = _declare_runtime(ctx, "astra_to_json")
-                    boxed_arg = _coerce_value(ctx, state, arg.value, arg.ty, "Any", arg_node)
-                    json_val = b.call(json_fn, [boxed_arg])
-                    sp = _as_string_ptr(_Value(json_val, "String"), arg_node)
-                    parts.append(sp)
+                parts.append(_value_to_string_ptr(ctx, state, arg, arg_node))
             
             # Add space between arguments (except last)
             if i < len(call.args) - 1:
                 space_str = _get_string_global(ctx, " ")
                 space_ptr = b.gep(space_str, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
                 parts.append(space_ptr)
-        
-        # Concatenate all parts into one string
-        if not parts:
-            empty_str = _get_string_global(ctx, "")
-            final_ptr = b.gep(empty_str, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
-        else:
-            # Start with the first part
-            result = parts[0]
-            for part in parts[1:]:
-                concat_fn = _declare_runtime(ctx, "astra_str_concat")
-                result = b.call(concat_fn, [result, part])
-            final_ptr = result
-        
-        # Single print call
+
+        final_ptr = _concat_string_ptrs(ctx, state, parts)
         len_fn = _declare_runtime(ctx, "astra_len_str")
         final_len = b.call(len_fn, [final_ptr])
         fn = _declare_runtime(ctx, "astra_print_str")
         b.call(fn, [final_ptr, final_len])
-        
         return _Value(ir.Constant(i64, 0), "Int")
 
     if base == "format":
@@ -1852,29 +2212,9 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
             # Single argument - convert to string if needed
             arg_node = call.args[0]
             arg = _compile_expr(ctx, state, arg_node)
-            aty = _canonical_type(arg.ty)
-            if aty in {"String", "str"}:
-                return arg
-            elif aty in {"Int", "isize", "usize"}:
-                to_str_fn = _declare_runtime(ctx, "astra_int_to_str")
-                str_val = b.call(to_str_fn, [arg.value])
-                return _Value(str_val, "String")
-            elif aty in {"Float", "f64"}:
-                to_str_fn = _declare_runtime(ctx, "astra_float_to_str")
-                str_val = b.call(to_str_fn, [arg.value])
-                return _Value(str_val, "String")
-            elif aty == "Bool":
-                to_str_fn = _declare_runtime(ctx, "astra_bool_to_str")
-                str_val = b.call(to_str_fn, [arg.value])
-                return _Value(str_val, "String")
-            else:
-                # Convert to JSON then to string
-                json_fn = _declare_runtime(ctx, "astra_to_json")
-                boxed_arg = _coerce_value(ctx, state, arg.value, arg.ty, "Any", arg_node)
-                json_val = b.call(json_fn, [boxed_arg])
-                return _Value(json_val, "String")
+            str_val = _value_to_string_ptr(ctx, state, arg, arg_node)
+            return _Value(str_val, "String")
         else:
-            # Multiple arguments - concatenate with spaces
             parts = []
             for i, arg_node in enumerate(call.args):
                 if isinstance(arg_node, StringInterpolation):
@@ -1882,47 +2222,15 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
                     parts.append(compiled_str.value)
                 else:
                     arg = _compile_expr(ctx, state, arg_node)
-                    aty = _canonical_type(arg.ty)
-                    if aty in {"String", "str"}:
-                        parts.append(arg.value)
-                    elif aty in {"Int", "isize", "usize"}:
-                        to_str_fn = _declare_runtime(ctx, "astra_int_to_str")
-                        str_val = b.call(to_str_fn, [arg.value])
-                        parts.append(str_val)
-                    elif aty in {"Float", "f64"}:
-                        to_str_fn = _declare_runtime(ctx, "astra_float_to_str")
-                        str_val = b.call(to_str_fn, [arg.value])
-                        parts.append(str_val)
-                    elif aty == "Bool":
-                        to_str_fn = _declare_runtime(ctx, "astra_bool_to_str")
-                        str_val = b.call(to_str_fn, [arg.value])
-                        parts.append(str_val)
-                    else:
-                        # Convert to JSON then to string
-                        json_fn = _declare_runtime(ctx, "astra_to_json")
-                        boxed_arg = _coerce_value(ctx, state, arg.value, arg.ty, "Any", arg_node)
-                        json_val = b.call(json_fn, [boxed_arg])
-                        parts.append(json_val)
+                    parts.append(_value_to_string_ptr(ctx, state, arg, arg_node))
                 
                 # Add space between arguments (except last)
                 if i < len(call.args) - 1:
                     space_str = _get_string_global(ctx, " ")
                     space_ptr = b.gep(space_str, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
                     parts.append(space_ptr)
-            
-            # Concatenate all parts
-            if not parts:
-                empty_str = _get_string_global(ctx, "")
-                ptr = b.gep(empty_str, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
-                return _Value(ptr, "String")
-            
-            # Start with the first part
-            result = parts[0]
-            for part in parts[1:]:
-                concat_fn = _declare_runtime(ctx, "astra_str_concat")
-                result = b.call(concat_fn, [result, part])
-            
-            return _Value(result, "String")
+
+            return _Value(_concat_string_ptrs(ctx, state, parts), "String")
 
     if base == "len":
         if len(call.args) != 1:
@@ -2462,6 +2770,7 @@ def _compile_struct_init(
         ir.Constant(ir.IntType(64), size),
         ir.Constant(ir.IntType(64), align),
         node,
+        stack_ok=True,
     )
     ptr = state.builder.bitcast(ptr_i8, sinfo.ty.as_pointer())
     for i, ((fname, _), fty) in enumerate(zip(sinfo.decl.fields, sinfo.field_types)):
@@ -2497,6 +2806,9 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
             resolved_name=call.resolved_name,
         )
         setattr(synthetic, "inferred_type", getattr(call, "inferred_type", None))
+        mono_symbol = getattr(call, "monomorph_symbol", None)
+        if isinstance(mono_symbol, str) and mono_symbol:
+            setattr(synthetic, "monomorph_symbol", mono_symbol)
         return _compile_call(ctx, state, synthetic, overflow_mode)
 
     if (
@@ -2577,7 +2889,7 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
 
     if isinstance(call.fn, Name):
         name = call.fn.value
-        resolved = call.resolved_name or name
+        resolved = getattr(call, "monomorph_symbol", None) or call.resolved_name or name
         if name in ctx.structs:
             sinfo = ctx.structs[name]
             if len(call.args) != len(sinfo.field_types):
@@ -2716,6 +3028,16 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
 
         sig = ctx.fn_sigs.get(resolved)
         callee = ctx.fn_map.get(resolved)
+        call_target = resolved
+        if (sig is None or not isinstance(callee, ir.Function)) and resolved in ctx.monomorph_aliases:
+            alias = ctx.monomorph_aliases[resolved]
+            alias_sig = ctx.fn_sigs.get(alias)
+            alias_fn = ctx.fn_map.get(alias)
+            if alias_sig is not None and isinstance(alias_fn, ir.Function):
+                sig = alias_sig
+                callee = alias_fn
+                call_target = alias
+
         if isinstance(callee, ir.Function) and sig is not None:
             args: list[ir.Value] = []
             for arg_node, pty in zip(call.args, sig.params):
@@ -2733,19 +3055,11 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
                         continue
                 a = _compile_expr(ctx, state, arg_node)
                 coerced_arg = _implicit_coerce_value(ctx, state, a.value, a.ty, pty, arg_node)
-                
-                # Add explicit ABI extension for small integer parameters only at extern boundaries
-                # TODO: Fix ABI extension logic - it's causing type mismatches
-                # if sig.extern and isinstance(coerced_arg.type, ir.IntType) and coerced_arg.type.width < 64:
-                #     if _is_signed_int(pty):
-                #         extended_arg = b.sext(coerced_arg, ir.IntType(64))
-                #     else:
-                #         extended_arg = b.zext(coerced_arg, ir.IntType(64))
-                #     args.append(extended_arg)
-                # else:
+                # Keep argument values in the declared parameter type.
+                # ABI extension for small integers is expressed via signext/zeroext attributes.
                 args.append(coerced_arg)
             if len(call.args) != len(sig.params):
-                raise CodegenError(_diag(call, f"{resolved} expects {len(sig.params)} args, got {len(call.args)}"))
+                raise CodegenError(_diag(call, f"{call_target} expects {len(sig.params)} args, got {len(call.args)}"))
             out = state.builder.call(callee, args)
             
             # Apply ABI attributes to call site for extern functions
@@ -2815,6 +3129,14 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
         raise CodegenError(_diag(e, "or-patterns are only valid in match arms"))
     if isinstance(e, GuardedPattern):
         raise CodegenError(_diag(e, "match guards are only valid in match arms"))
+    if isinstance(e, RangePattern):
+        raise CodegenError(_diag(e, "range patterns are only valid in match arms"))
+    if isinstance(e, SlicePattern):
+        raise CodegenError(_diag(e, "slice patterns are only valid in match arms"))
+    if isinstance(e, TuplePattern):
+        raise CodegenError(_diag(e, "tuple patterns are only valid in match arms"))
+    if isinstance(e, StructPattern):
+        raise CodegenError(_diag(e, "struct patterns are only valid in match arms"))
     if isinstance(e, BoolLit):
         return _Value(ir.Constant(ir.IntType(1), 1 if e.value else 0), "Bool")
     if isinstance(e, NilLit):
@@ -3497,7 +3819,7 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
 
         i64 = ir.IntType(64)
         i8p = ir.IntType(8).as_pointer()
-        header_i8 = _alloc_bytes(ctx, state, ir.Constant(i64, 16), ir.Constant(i64, 8), e)
+        header_i8 = _alloc_bytes(ctx, state, ir.Constant(i64, 16), ir.Constant(i64, 8), e, stack_ok=True)
         header_ptr = b.bitcast(header_i8, ctx.slice_header_ty.as_pointer())
         len_ptr = b.gep(header_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
         data_ptr = b.gep(header_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
@@ -3505,7 +3827,14 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
         if vals:
             elem_sz, elem_align = _storage_size_align(ctx, elem_ty, e)
             total = elem_sz * len(vals)
-            data_i8 = _alloc_bytes(ctx, state, ir.Constant(i64, total), ir.Constant(i64, elem_align), e)
+            data_i8 = _alloc_bytes(
+                ctx,
+                state,
+                ir.Constant(i64, total),
+                ir.Constant(i64, elem_align),
+                e,
+                stack_ok=True,
+            )
             b.store(data_i8, data_ptr)
             elem_ll = _llvm_type(ctx, elem_ty)
             typed = b.bitcast(data_i8, elem_ll.as_pointer())
@@ -3665,6 +3994,36 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
     raise CodegenError(_diag(e, f"internal: unexpected expression node {type(e).__name__}"))
 
 
+def _load_struct_field_value(
+    ctx: _ModuleCtx,
+    state: _FnState,
+    ptr: ir.Value,
+    sinfo: _StructInfo,
+    field_index: int,
+    field_ty: str,
+    node: Any,
+) -> _Value:
+    b = state.builder
+    field_name = sinfo.decl.fields[field_index][0]
+    if sinfo.packed:
+        raw, bits, _ = _packed_load_bits(ctx, state, ptr, sinfo, field_name, node)
+        ll = _llvm_type(ctx, field_ty)
+        if isinstance(ll, ir.IntType) and bits != ll.width:
+            if ll.width > bits:
+                info = _int_info(field_ty)
+                if info is not None and info[1]:
+                    fv = b.sext(raw, ll)
+                else:
+                    fv = b.zext(raw, ll)
+            else:
+                fv = b.trunc(raw, ll)
+        else:
+            fv = raw
+        return _Value(fv, field_ty)
+    fld = b.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), field_index)])
+    return _Value(b.load(fld), field_ty)
+
+
 def _compile_match_condition(
     ctx: _ModuleCtx,
     state: _FnState,
@@ -3674,6 +4033,8 @@ def _compile_match_condition(
 ) -> ir.Value:
     b = state.builder
     if isinstance(pat, WildcardPattern):
+        return ir.Constant(ir.IntType(1), 1)
+    if isinstance(pat, Name):
         return ir.Constant(ir.IntType(1), 1)
     if isinstance(pat, LiteralPattern):
         # Compile literal pattern matching
@@ -3685,150 +4046,92 @@ def _compile_match_condition(
             return b.icmp_signed("==", subj.value, pat_val.value)
         # Add more literal types as needed
         return ir.Constant(ir.IntType(1), 0)
-    if isinstance(pat, RangePattern):
+    if isinstance(pat, (RangePattern, RangeExpr)):
         # Compile range pattern matching
         start_val = _compile_expr(ctx, state, pat.start, overflow_mode)
         end_val = _compile_expr(ctx, state, pat.end, overflow_mode)
+        info = _int_info(subj.ty)
+        signed = True if info is None else info[1]
+        cmp = b.icmp_signed if signed else b.icmp_unsigned
         if pat.inclusive:
-            ge_start = b.icmp_signed(">=", subj.value, start_val.value)
-            le_end = b.icmp_signed("<=", subj.value, end_val.value)
+            ge_start = cmp(">=", subj.value, start_val.value)
+            le_end = cmp("<=", subj.value, end_val.value)
             return b.and_(ge_start, le_end)
         else:
-            ge_start = b.icmp_signed(">=", subj.value, start_val.value)
-            lt_end = b.icmp_signed("<", subj.value, end_val.value)
+            ge_start = cmp(">=", subj.value, start_val.value)
+            lt_end = cmp("<", subj.value, end_val.value)
             return b.and_(ge_start, lt_end)
     if isinstance(pat, SlicePattern):
-        # Compile slice pattern matching
-        # This is simplified - real implementation would check length and elements
-        return ir.Constant(ir.IntType(1), 1)  # Always match for now
+        seq = _sequence_parts_from_value(ctx, state, subj, pat)
+        if seq is None:
+            return ir.Constant(ir.IntType(1), 0)
+        elem_ty, ln, data_i8 = seq
+        elem_ptr = b.bitcast(data_i8, _llvm_type(ctx, elem_ty).as_pointer())
+        need = ir.Constant(ir.IntType(64), len(pat.patterns))
+        if pat.rest_pattern is None:
+            len_ok = b.icmp_unsigned("==", ln, need)
+        else:
+            len_ok = b.icmp_unsigned(">=", ln, need)
+        cond = len_ok
+        for i, sub in enumerate(pat.patterns):
+            ep = b.gep(elem_ptr, [ir.Constant(ir.IntType(64), i)])
+            ev = _Value(b.load(ep), elem_ty)
+            sub_cond = _compile_match_condition(ctx, state, ev, sub, overflow_mode)
+            cond = b.and_(cond, sub_cond)
+        return cond
     if isinstance(pat, TuplePattern):
-        # Compile tuple pattern matching
-        # This would need to extract tuple elements and match them
-        return ir.Constant(ir.IntType(1), 1)  # Simplified
+        seq = _sequence_parts_from_value(ctx, state, subj, pat)
+        if seq is None:
+            return ir.Constant(ir.IntType(1), 0)
+        elem_ty, ln, data_i8 = seq
+        elem_ptr = b.bitcast(data_i8, _llvm_type(ctx, elem_ty).as_pointer())
+        need = ir.Constant(ir.IntType(64), len(pat.patterns))
+        cond = b.icmp_unsigned("==", ln, need)
+        for i, sub in enumerate(pat.patterns):
+            ep = b.gep(elem_ptr, [ir.Constant(ir.IntType(64), i)])
+            ev = _Value(b.load(ep), elem_ty)
+            sub_cond = _compile_match_condition(ctx, state, ev, sub, overflow_mode)
+            cond = b.and_(cond, sub_cond)
+        return cond
     if isinstance(pat, StructPattern):
-        # Compile struct pattern matching
-        # This would need to extract struct fields and match them
-        return ir.Constant(ir.IntType(1), 1)  # Simplified
+        struct_name = pat.struct_name
+        subj_ty = _strip_ref_type(_canonical_type(subj.ty))
+        if struct_name not in ctx.structs or subj_ty != struct_name:
+            return ir.Constant(ir.IntType(1), 0)
+        sinfo = ctx.structs[struct_name]
+        ptr = _struct_ptr(ctx, state, subj.value, subj.ty, sinfo, pat)
+        cond = ir.Constant(ir.IntType(1), 1)
+        for fname, sub in pat.field_patterns.items():
+            idx = sinfo.field_index.get(fname)
+            if idx is None:
+                return ir.Constant(ir.IntType(1), 0)
+            fty = sinfo.field_types[idx]
+            fv = _load_struct_field_value(ctx, state, ptr, sinfo, idx, fty, pat)
+            sub_cond = _compile_match_condition(ctx, state, fv, sub, overflow_mode)
+            cond = b.and_(cond, sub_cond)
+        return cond
     if isinstance(pat, GuardedPattern):
         cond = _compile_match_condition(ctx, state, subj, pat.pattern, overflow_mode)
-        fn = state.fn_ir
-        no_guard_block = b.block
-        guard_block = fn.append_basic_block("match_guard")
-        merge_block = fn.append_basic_block("match_guard_merge")
-        
-        b.cbranch(cond, guard_block, merge_block)
-        
-        # Guard block
-        b.position_at_end(guard_block)
         guard_val = _compile_expr(ctx, state, pat.guard, overflow_mode)
-        b.branch(merge_block)
-        
-        # Merge block
-        b.position_at_end(merge_block)
-        phi = b.phi(ir.IntType(1))
-        phi.add_incoming(ir.Constant(ir.IntType(1), 1), guard_block)
-        phi.add_incoming(ir.Constant(ir.IntType(1), 0), no_guard_block)
-        return phi
+        guard_bool = _coerce_value(ctx, state, guard_val.value, guard_val.ty, "Bool", pat.guard)
+        return b.and_(cond, guard_bool)
     if isinstance(pat, OrPattern):
         out = ir.Constant(ir.IntType(1), 0)
         for alt in pat.patterns:
             out = b.or_(out, _compile_match_condition(ctx, state, subj, alt, overflow_mode))
         return out
     if isinstance(pat, Call) and isinstance(pat.fn, Name):
-        # Handle enum patterns
-        enum_name = pat.fn.value
-        # This is simplified - real implementation would check enum variant
-        return ir.Constant(ir.IntType(1), 1)
-    # Default case
-    return ir.Constant(ir.IntType(1), 1)
-
-
-def _compile_match_bindings(ctx: _ModuleCtx, state: _FnState, subj: _Value, pat: Any):
-    b = state.builder
-    if isinstance(pat, WildcardPattern):
-        return
-    if isinstance(pat, LiteralPattern):
-        return
-    if isinstance(pat, Name):
-        # Bind the subject to the name
-        var_ptr = b.alloca(subj.ty, name=pat.value)
-        b.store(subj.value, var_ptr)
-        state.vars[pat.value] = var_ptr
-        state.var_types[pat.value] = subj.ty
-        return
-    if isinstance(pat, GuardedPattern):
-        _compile_match_bindings(ctx, state, subj, pat.pattern)
-        return
-    if isinstance(pat, RangePattern):
-        return  # Range patterns don't bind variables
-    if isinstance(pat, SlicePattern):
-        # Bind slice elements
-        for i, sub_pat in enumerate(pat.patterns):
-            if isinstance(sub_pat, Name):
-                # Extract element i from slice
-                elem_ptr = b.gep(subj.value, [ir.Constant(ir.IntType(64), i)])
-                elem_val = b.load(elem_ptr)
-                var_ptr = b.alloca(elem_val.ty, name=sub_pat.value)
-                b.store(elem_val, var_ptr)
-                state.vars[sub_pat.value] = var_ptr
-                state.var_types[sub_pat.value] = elem_val.ty
-        return
-    if isinstance(pat, TuplePattern):
-        # Bind tuple elements
-        for i, sub_pat in enumerate(pat.patterns):
-            if isinstance(sub_pat, Name):
-                # Extract element i from tuple
-                elem_ptr = b.gep(subj.value, [ir.Constant(ir.IntType(64), 0), ir.Constant(ir.IntType(64), i)])
-                elem_val = b.load(elem_ptr)
-                var_ptr = b.alloca(elem_val.ty, name=sub_pat.value)
-                b.store(elem_val, var_ptr)
-                state.vars[sub_pat.value] = var_ptr
-                state.var_types[sub_pat.value] = elem_val.ty
-        return
-    if isinstance(pat, StructPattern):
-        # Bind struct fields
-        for field_name, sub_pat in pat.field_patterns.items():
-            if isinstance(sub_pat, Name):
-                # Extract field from struct
-                field_ptr = b.gep(subj.value, [ir.Constant(ir.IntType(64), 0), ir.Constant(ir.IntType(64), 0), ir.Constant(ir.IntType(64), 0)])  # Simplified
-                field_val = b.load(field_ptr)
-                var_ptr = b.alloca(field_val.ty, name=sub_pat.value)
-                b.store(field_val, var_ptr)
-                state.vars[sub_pat.value] = var_ptr
-                state.var_types[sub_pat.value] = field_val.ty
-        return
-    if isinstance(pat, OrPattern):
-        # Binding extraction for `|` alternatives is complex
-        # For now, we don't handle bindings in or-patterns
-        return
         struct_name = pat.fn.value
         subj_ty = _strip_ref_type(_canonical_type(subj.ty))
         if struct_name in ctx.structs and subj_ty == struct_name:
             sinfo = ctx.structs[struct_name]
             if len(pat.args) != len(sinfo.decl.fields):
-                return
                 return ir.Constant(ir.IntType(1), 0)
             ptr = _struct_ptr(ctx, state, subj.value, subj.ty, sinfo, pat)
             cond = ir.Constant(ir.IntType(1), 1)
             for i, (sub, fty) in enumerate(zip(pat.args, sinfo.field_types)):
-                if sinfo.packed:
-                    raw, bits, _ = _packed_load_bits(ctx, state, ptr, sinfo, sinfo.decl.fields[i][0], pat)
-                    ll = _llvm_type(ctx, fty)
-                    if isinstance(ll, ir.IntType) and bits != ll.width:
-                        if ll.width > bits:
-                            info = _int_info(fty)
-                            if info is not None and info[1]:
-                                fv = state.builder.sext(raw, ll)
-                            else:
-                                fv = state.builder.zext(raw, ll)
-                        else:
-                            fv = state.builder.trunc(raw, ll)
-                    else:
-                        fv = raw
-                else:
-                    fld = state.builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), i)])
-                    fv = state.builder.load(fld)
-                sub_cond = _compile_match_condition(ctx, state, _Value(fv, fty), sub, overflow_mode)
+                fv = _load_struct_field_value(ctx, state, ptr, sinfo, i, fty, pat)
+                sub_cond = _compile_match_condition(ctx, state, fv, sub, overflow_mode)
                 cond = b.and_(cond, sub_cond)
             return cond
     pv = _compile_expr(ctx, state, pat, overflow_mode=overflow_mode)
@@ -3863,6 +4166,30 @@ def _compile_match_bindings(
     if isinstance(pat, GuardedPattern):
         _compile_match_bindings(ctx, state, subj, pat.pattern)
         return
+    if isinstance(pat, (RangePattern, RangeExpr, LiteralPattern)):
+        return
+    if isinstance(pat, SlicePattern):
+        seq = _sequence_parts_from_value(ctx, state, subj, pat)
+        if seq is None:
+            return
+        elem_ty, _, data_i8 = seq
+        elem_ptr = b.bitcast(data_i8, _llvm_type(ctx, elem_ty).as_pointer())
+        for i, sub in enumerate(pat.patterns):
+            ep = b.gep(elem_ptr, [ir.Constant(ir.IntType(64), i)])
+            ev = _Value(b.load(ep), elem_ty)
+            _compile_match_bindings(ctx, state, ev, sub)
+        return
+    if isinstance(pat, TuplePattern):
+        seq = _sequence_parts_from_value(ctx, state, subj, pat)
+        if seq is None:
+            return
+        elem_ty, _, data_i8 = seq
+        elem_ptr = b.bitcast(data_i8, _llvm_type(ctx, elem_ty).as_pointer())
+        for i, sub in enumerate(pat.patterns):
+            ep = b.gep(elem_ptr, [ir.Constant(ir.IntType(64), i)])
+            ev = _Value(b.load(ep), elem_ty)
+            _compile_match_bindings(ctx, state, ev, sub)
+        return
     if isinstance(pat, OrPattern):
         # Binding extraction for `|` alternatives is not lowered here because
         # the matched alternative is not tracked in this stage.
@@ -3876,24 +4203,119 @@ def _compile_match_bindings(
                 return
             ptr = _struct_ptr(ctx, state, subj.value, subj.ty, sinfo, pat)
             for i, (sub, fty) in enumerate(zip(pat.args, sinfo.field_types)):
-                if sinfo.packed:
-                    raw, bits, _ = _packed_load_bits(ctx, state, ptr, sinfo, sinfo.decl.fields[i][0], pat)
-                    ll = _llvm_type(ctx, fty)
-                    if isinstance(ll, ir.IntType) and bits != ll.width:
-                        if ll.width > bits:
-                            info = _int_info(fty)
-                            if info is not None and info[1]:
-                                fv = b.sext(raw, ll)
-                            else:
-                                fv = b.zext(raw, ll)
-                        else:
-                            fv = b.trunc(raw, ll)
-                    else:
-                        fv = raw
-                else:
-                    fld = b.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), i)])
-                    fv = b.load(fld)
-                _compile_match_bindings(ctx, state, _Value(fv, fty), sub)
+                fv = _load_struct_field_value(ctx, state, ptr, sinfo, i, fty, pat)
+                _compile_match_bindings(ctx, state, fv, sub)
+        return
+    if isinstance(pat, StructPattern):
+        struct_name = pat.struct_name
+        subj_ty = _strip_ref_type(_canonical_type(subj.ty))
+        if struct_name in ctx.structs and subj_ty == struct_name:
+            sinfo = ctx.structs[struct_name]
+            ptr = _struct_ptr(ctx, state, subj.value, subj.ty, sinfo, pat)
+            for fname, sub in pat.field_patterns.items():
+                idx = sinfo.field_index.get(fname)
+                if idx is None:
+                    return
+                fty = sinfo.field_types[idx]
+                fv = _load_struct_field_value(ctx, state, ptr, sinfo, idx, fty, pat)
+                _compile_match_bindings(ctx, state, fv, sub)
+        return
+
+
+def _pattern_int_literal_value(pat: Any) -> int | None:
+    if isinstance(pat, LiteralPattern):
+        val = pat.value
+        if isinstance(val, IntLit):
+            return int(val.value)
+        if isinstance(val, Literal) and isinstance(val.value, int) and not isinstance(val.value, bool):
+            return int(val.value)
+        return None
+    if isinstance(pat, Literal) and isinstance(pat.value, int) and not isinstance(pat.value, bool):
+        return int(pat.value)
+    if isinstance(pat, Unary) and pat.op == "-":
+        inner = _pattern_int_literal_value(pat.expr)
+        if inner is not None:
+            return -inner
+    if isinstance(pat, CastExpr):
+        return _pattern_int_literal_value(pat.expr)
+    return None
+
+
+def _compile_match_arm_body(ctx: _ModuleCtx, state: _FnState, body: Any, overflow_mode: str) -> None:
+    if isinstance(body, list):
+        for sub in body:
+            _compile_stmt(ctx, state, sub, overflow_mode)
+            if _is_terminated(state):
+                break
+        return
+    _compile_expr(ctx, state, body, overflow_mode=overflow_mode)
+
+
+def _try_compile_int_switch_match(
+    ctx: _ModuleCtx,
+    state: _FnState,
+    st: MatchStmt,
+    subj: _Value,
+    end_block: ir.Block,
+    overflow_mode: str,
+) -> bool:
+    b = state.builder
+    subj_ll = subj.value.type
+    if not isinstance(subj_ll, ir.IntType):
+        return False
+    if _int_info(subj.ty) is None:
+        return False
+
+    case_arms: list[tuple[int, Any, Any]] = []
+    default_arm: tuple[Any, Any] | None = None
+    seen_values: set[int] = set()
+    for pat, body in st.arms:
+        if isinstance(pat, (GuardedPattern, OrPattern)):
+            return False
+        if isinstance(pat, WildcardPattern) or isinstance(pat, Name):
+            if default_arm is None:
+                default_arm = (pat, body)
+            continue
+        pv = _pattern_int_literal_value(pat)
+        if pv is None:
+            return False
+        if pv in seen_values:
+            continue
+        seen_values.add(pv)
+        case_arms.append((pv, pat, body))
+
+    if not case_arms:
+        return False
+
+    default_block = state.fn_ir.append_basic_block("match_default")
+    switch_inst = b.switch(subj.value, default_block)
+    ll_bits = subj_ll.width
+    mask = (1 << ll_bits) - 1
+    signed = bool(_int_info(subj.ty)[1])
+
+    arm_blocks: list[tuple[Any, Any, ir.Block]] = []
+    for idx, (pv, pat, body) in enumerate(case_arms):
+        raw = pv if signed else (pv & mask)
+        case_const = ir.Constant(subj_ll, raw)
+        arm_block = state.fn_ir.append_basic_block(f"match_switch_arm_{idx}")
+        switch_inst.add_case(case_const, arm_block)
+        arm_blocks.append((pat, body, arm_block))
+
+    for pat, body, arm_block in arm_blocks:
+        state.builder.position_at_end(arm_block)
+        _compile_match_bindings(ctx, state, subj, pat)
+        _compile_match_arm_body(ctx, state, body, overflow_mode)
+        if not _is_terminated(state):
+            state.builder.branch(end_block)
+
+    state.builder.position_at_end(default_block)
+    if default_arm is not None:
+        dpat, dbody = default_arm
+        _compile_match_bindings(ctx, state, subj, dpat)
+        _compile_match_arm_body(ctx, state, dbody, overflow_mode)
+    if not _is_terminated(state):
+        state.builder.branch(end_block)
+    return True
 
 
 def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str) -> None:
@@ -3917,7 +4339,14 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
             )
             return
         ty = _canonical_type(st.type_name or _expr_type(state, st.expr))
-        val = _compile_expr(ctx, state, st.expr, overflow_mode=overflow_mode)
+        promote_allocs = st.name in state.stack_promotion_bindings
+        if promote_allocs:
+            state.stack_alloc_depth += 1
+        try:
+            val = _compile_expr(ctx, state, st.expr, overflow_mode=overflow_mode)
+        finally:
+            if promote_allocs:
+                state.stack_alloc_depth -= 1
         v = _coerce_value(ctx, state, val.value, val.ty, ty, st)
         ptr = b.alloca(_llvm_type(ctx, ty), name=st.name)
         b.store(v, ptr)
@@ -4333,6 +4762,9 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
         fn = state.fn_ir
         end_block = fn.append_basic_block("match_end")
         subj = _compile_expr(ctx, state, st.expr, overflow_mode=overflow_mode)
+        if _try_compile_int_switch_match(ctx, state, st, subj, end_block, overflow_mode):
+            state.builder.position_at_end(end_block)
+            return
         cur_check = state.builder.block
         for i, (pat, body) in enumerate(st.arms):
             state.builder.position_at_end(cur_check)
@@ -4343,16 +4775,7 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
 
             state.builder.position_at_end(arm_block)
             _compile_match_bindings(ctx, state, subj, pat)
-            
-            if isinstance(body, list):
-                # Block body
-                for sub in body:
-                    _compile_stmt(ctx, state, sub, overflow_mode)
-                    if _is_terminated(state):
-                        break
-            else:
-                # Expression body - compile as expression statement
-                _compile_expr(ctx, state, body, overflow_mode=overflow_mode)
+            _compile_match_arm_body(ctx, state, body, overflow_mode)
             
             if not _is_terminated(state):
                 state.builder.branch(end_block)
@@ -4660,7 +5083,7 @@ def _build_structs(ctx: _ModuleCtx, prog: Program) -> None:
         sinfo = ctx.structs[item.name]
         if item.packed:
             try:
-                lay = layout_of_struct(item.name, ctx.struct_decls, mode="query")
+                lay = layout_of_struct(item.name, ctx.struct_decls, mode="query", _cache=ctx.layout_cache)
             except LayoutError as err:
                 raise CodegenError(_diag(item, str(err))) from err
             storage_size = max(1, lay.size)
@@ -4674,12 +5097,36 @@ def _build_structs(ctx: _ModuleCtx, prog: Program) -> None:
             sinfo.ty = ir.LiteralStructType(ll_fields, packed=False)
             sinfo.packed = False
             try:
-                lay = layout_of_struct(item.name, ctx.struct_decls, mode="query")
+                lay = layout_of_struct(item.name, ctx.struct_decls, mode="query", _cache=ctx.layout_cache)
                 sinfo.storage_size = lay.size
             except LayoutError:
                 sinfo.storage_size = 0
         sinfo.field_types = field_types
         sinfo.field_index = {fname: i for i, (fname, _) in enumerate(item.fields)}
+
+
+def _inline_attr_for_fn(item: FnDecl) -> str | None:
+    # Conservative size-based hinting; LLVM can ignore if inapplicable.
+    if bool(getattr(item, "extern", False)):
+        return None
+    if item.name in {"main", "_start"}:
+        return None
+    body = list(getattr(item, "body", []) or [])
+    if not body:
+        return None
+
+    cost = 0
+    for st in body:
+        if isinstance(st, (ReturnStmt, ExprStmt, LetStmt, AssignStmt)):
+            cost += 1
+            continue
+        # Control-flow-heavy bodies should not be force-inlined.
+        return None
+    if cost <= 2:
+        return "alwaysinline"
+    if cost <= 5:
+        return "inlinehint"
+    return None
 
 
 def _declare_functions(ctx: _ModuleCtx, prog: Program, freestanding: bool) -> tuple[list[FnDecl], str | None]:
@@ -4707,6 +5154,9 @@ def _declare_functions(ctx: _ModuleCtx, prog: Program, freestanding: bool) -> tu
             fnty = ir.FunctionType(_llvm_type(ctx, sig.ret), [_llvm_type(ctx, t) for t in sig.params])
             fn_ir = ir.Function(ctx.module, fnty, name=llvm_name)
             fn_ir.attributes.add("nounwind")
+            inline_attr = _inline_attr_for_fn(item)
+            if inline_attr is not None:
+                fn_ir.attributes.add(inline_attr)
             ctx.fn_map[key] = fn_ir
             user_fns.append(item)
 
@@ -4739,6 +5189,7 @@ def _compile_function(ctx: _ModuleCtx, item: FnDecl, overflow_mode: str) -> None
     )
 
     body_stmts: list[Any] = list(item.body)
+    state.stack_promotion_bindings = _compute_stack_promotion_bindings(ctx, body_stmts)
 
     for (pname, pty), arg in zip(item.params, fn_ir.args):
         ptype = _canonical_type(pty)
@@ -4853,6 +5304,8 @@ def to_llvm_ir(
         fn_map={},
         string_globals={},
         ffi_libs=set(getattr(prog, "ffi_libs", set())),
+        layout_cache={},
+        monomorph_aliases={},
     )
     
     # Store program reference for Any runtime checking
@@ -4860,6 +5313,25 @@ def to_llvm_ir(
 
     _build_structs(ctx, prog)
     user_fns, user_main_key = _declare_functions(ctx, prog, freestanding=freestanding)
+
+    mono_instances = getattr(prog, "monomorph_instances", {})
+    if isinstance(mono_instances, dict):
+        for key, mono_symbol in mono_instances.items():
+            if not isinstance(mono_symbol, str) or not mono_symbol:
+                continue
+            if not isinstance(key, tuple) or not key:
+                continue
+            base_symbol = key[0]
+            if not isinstance(base_symbol, str):
+                continue
+            if mono_symbol in ctx.fn_sigs:
+                continue
+            base_sig = ctx.fn_sigs.get(base_symbol)
+            if base_sig is None:
+                continue
+            ctx.monomorph_aliases[mono_symbol] = base_symbol
+            # Reuse the existing lowered implementation via alias lookup.
+            ctx.fn_sigs[mono_symbol] = base_sig
 
     for fn in user_fns:
         _compile_function(ctx, fn, overflow_mode)

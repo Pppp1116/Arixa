@@ -478,7 +478,7 @@ def optimize_program_enhanced(prog: Program, overflow_mode: str = "trap", profil
     
     # Apply base optimizer for constant folding and basic optimizations
     from .optimizer import optimize_program
-    prog = optimize_program(prog)
+    prog = optimize_program(prog, overflow_mode=overflow_mode)
     
     # Apply profile-guided optimizations if profile is provided
     if profile != "debug":

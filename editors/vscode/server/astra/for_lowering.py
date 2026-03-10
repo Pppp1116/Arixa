@@ -125,7 +125,7 @@ def lower_for_loops(prog: Program) -> Program:
                 st.line,
                 st.col,
             )
-            loop_var = LetStmt(st.var, Name(idx_name, st.pos, st.line, st.col), False, None, st.pos, st.line, st.col)
+            loop_var = LetStmt(st.var_name, Name(idx_name, st.pos, st.line, st.col), False, None, st.pos, st.line, st.col)
             patched = _patch_continues(lowered_body, step)
             w = WhileStmt(cond, [loop_var, *patched, step], st.pos, st.line, st.col)
             return [end_init, idx_init, w]
@@ -167,7 +167,7 @@ def lower_for_loops(prog: Program) -> Program:
             st.line,
             st.col,
         )
-        loop_var = LetStmt(st.var, elem_expr, False, None, st.pos, st.line, st.col)
+        loop_var = LetStmt(st.var_name, elem_expr, False, None, st.pos, st.line, st.col)
         patched = _patch_continues(lowered_body, step)
         w = WhileStmt(cond, [loop_var, *patched, step], st.pos, st.line, st.col)
         return [iter_init, len_init, idx_init, w]

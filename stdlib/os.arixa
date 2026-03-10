@@ -1,0 +1,121 @@
+import std.core;
+
+import std.hardware;
+
+/// Minimal freestanding OS/kernel primitives for drivers.
+type Errno = Int;
+
+const ERR_OK = 0;
+const ERR_PERM = 1;
+const ERR_NOENT = 2;
+const ERR_IO = 5;
+const ERR_NOMEM = 12;
+const ERR_BUSY = 16;
+const ERR_INVAL = 22;
+const ERR_NOSYS = 38;
+const ERR_TIMED_OUT = 110;
+
+type DeviceId = Int;
+
+/// Page-size constants commonly used by kernel allocators and MMU code.
+const PAGE_SIZE_4K = 4096;
+const PAGE_SIZE_16K = 16384;
+const PAGE_SIZE_64K = 65536;
+const PAGE_SIZE_2M = 2097152;
+const PAGE_SIZE_1G = 1073741824;
+
+/// True when return code is a successful (non-negative) status.
+fn is_ok(code Int) Bool {
+    return code >= 0;
+}
+
+/// True when return code is a failure (negative errno style).
+fn is_error(code Int) Bool {
+    return code < 0;
+}
+
+/// Return `-err` style error code.
+fn err(err Int) Int {
+    return 0 - err;
+}
+
+/// Pack major/minor numbers into a device id.
+fn make_device_id(major Int, minor Int) Int {
+    return (major & 4095) << 20 | (minor & 1048575);
+}
+
+/// Extract major number from a packed device id.
+fn device_major(id Int) Int {
+    return id >> 20 & 4095;
+}
+
+/// Extract minor number from a packed device id.
+fn device_minor(id Int) Int {
+    return id & 1048575;
+}
+
+/// Return true when `addr` is aligned to `page_size`.
+fn is_page_aligned(addr Int, page_size Int) Bool {
+    if page_size <= 0 {
+        return false;
+    }
+    else {}
+    return addr % page_size == 0;
+}
+
+/// Align address upwards to page boundary.
+fn align_up_page(addr Int, page_size Int) Int | none {
+    return align_up_checked(addr, page_size);
+}
+
+/// Align address downwards to page boundary.
+fn align_down_page(addr Int, page_size Int) Int | none {
+    return align_down_checked(addr, page_size);
+}
+
+/// Wait until predicate returns true or timeout cycles are exhausted.
+fn poll_until(predicate fn() Bool, timeout_cycles Int) Bool {
+    return spin_wait(predicate, timeout_cycles);
+}
+
+/// Simple spinlock for freestanding kernels/drivers.
+struct SpinLock {
+    handle Int,
+}
+
+/// Create unlocked spinlock.
+fn spin_lock_new() SpinLock {
+    return SpinLock(__atomic_int_new(0));
+}
+
+/// Try to acquire lock once.
+fn spin_lock_try_acquire(lock &SpinLock) Bool {
+    return __atomic_compare_exchange(lock.handle, 0, 1);
+}
+
+/// Acquire lock with bounded spinning.
+/// 
+/// `max_spins < 0` means spin indefinitely.
+fn spin_lock_acquire(lock &SpinLock, max_spins Int) Bool {
+    mut spins = 0;
+    while max_spins < 0 || spins < max_spins {
+        if spin_lock_try_acquire(lock) {
+            return true;
+        }
+        else {}
+        cpu_pause();
+        spins += 1;
+    }
+    return false;
+}
+
+/// Release lock.
+fn spin_lock_release(lock &SpinLock) {
+    __atomic_store(lock.handle, 0);
+    memory_barrier(MEMORY_BARRIER_WRITE);
+}
+
+/// Return whether lock currently appears held.
+fn spin_lock_is_locked(lock &SpinLock) Bool {
+    return __atomic_load(lock.handle) != 0;
+}

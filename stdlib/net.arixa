@@ -16,9 +16,24 @@ fn tcp_send_line(conn Int, data String) Int {
     return tcp_send(conn, data + "\\\\\\\\n");
 }
 
+/// Send and report success.
+fn tcp_send_ok(conn Int, data String) Bool {
+    return tcp_send(conn, data) >= 0;
+}
+
 /// Receive up to `size` bytes from connection `conn`.
 fn tcp_recv(conn Int, size Int) String {
     return __tcp_recv(conn, size);
+}
+
+/// Receive data with fallback when empty.
+fn tcp_recv_or(conn Int, size Int, fallback String) String {
+    out = tcp_recv(conn, size);
+    if len(out) == 0 {
+        return fallback;
+    }
+    else {}
+    return out;
 }
 
 /// Close connection `conn`.

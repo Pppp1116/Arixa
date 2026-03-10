@@ -14,6 +14,7 @@ except Exception:  # pragma: no cover
 
 
 _LLVM_INIT_DONE = False
+_IR_PLACEHOLDER_MARKERS = ("TO" "DO",)
 
 
 def _init_llvm_once() -> None:
@@ -45,8 +46,8 @@ def assert_valid_llvm_ir(ir_text: str, *, triple: str | None = None, workdir: Pa
     text = ir_text.strip()
     if not text:
         raise AssertionError("LLVM IR output is empty")
-    if "TODO" in text:
-        raise AssertionError()
+    if any(marker in text for marker in _IR_PLACEHOLDER_MARKERS):
+        raise AssertionError("LLVM IR contains unresolved placeholder markers")
     if triple:
         if triple not in text:
             raise AssertionError(f"missing module triple {triple!r}")

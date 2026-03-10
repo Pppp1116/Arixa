@@ -17,6 +17,31 @@ fn vec_push_typed(v Vec<T>, value T) Int {
 }
 
 /// Get an element by index as nullable.
-fn vec_get_typed(v Vec<T>, index Int) Any {
+fn vec_get_typed(v Vec<T>, index Int) Any | none {
     return vec_get(v, index);
+}
+
+/// Set an element by index.
+fn vec_set_typed(v Vec<T>, index Int, value T) Int {
+    return vec_set(v, index, value);
+}
+
+/// Return true when vector has no elements.
+fn vec_is_empty_typed(v Vec<T>) Bool {
+    return vec_len(v) == 0;
+}
+
+/// Return first element or none.
+fn vec_first_typed(v Vec<T>) Any | none {
+    return vec_get(v, 0);
+}
+
+/// Return last element or none.
+fn vec_last_typed(v Vec<T>) Any | none {
+    n = vec_len(v);
+    if n == 0 {
+        return none;
+    }
+    else {}
+    return vec_get(v, n - 1);
 }
