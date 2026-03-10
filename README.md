@@ -160,18 +160,21 @@ For more information, see the [Error Reporting Guide](docs/error_reporting.md).
 
 ## 📚 Documentation
 
-- **Getting Started**: `docs/development/getting-started.md`
-- **Error Reporting**: `docs/error_reporting.md`
-- **Language Specification**: `docs/language/specification.md`
-- **Language Reference**: `docs/language/`
-  - **Any Type Optimization**: `docs/language/any_type_optimization.md`
-- **Standard Library**: `docs/stdlib/`
-- **Compiler Internals**: `docs/compiler/`
-- **GPU Development**: `docs/gpu/`
-- **Performance Analysis**: `docs/performance-analysis.md`
-- **Tooling & VS Code**: `docs/tools/`
-- **Development Guide**: `docs/development/`
-- **Reference Materials**: `docs/reference/`
+- Documentation index: [`docs/README.md`](docs/README.md)
+- Language specification (canonical): [`docs/language/specification.md`](docs/language/specification.md)
+- Compiler internals:
+  - [`docs/compiler/overview.md`](docs/compiler/overview.md)
+  - [`docs/compiler/architecture.md`](docs/compiler/architecture.md)
+  - [`docs/compiler/llvm_backend.md`](docs/compiler/llvm_backend.md)
+- GPU documentation:
+  - [`docs/gpu/README.md`](docs/gpu/README.md)
+  - [`docs/gpu/OVERVIEW.md`](docs/gpu/OVERVIEW.md)
+- Development guide: [`docs/development/getting-started.md`](docs/development/getting-started.md)
+- Error reporting: [`docs/error_reporting.md`](docs/error_reporting.md)
+- Performance and safety analysis:
+  - [`docs/performance-analysis.md`](docs/performance-analysis.md)
+  - [`docs/safety-analysis.md`](docs/safety-analysis.md)
+- Standard library modules are currently source-first under [`stdlib/`](stdlib/)
 
 Current compiler behavior note:
 

@@ -48,9 +48,9 @@ fn process_mixed_data() Any {
 
 ### 📚 Documentation Updates
 
-- **New**: [Any Type Optimization Guide](language/any_type_optimization.md)
-- **Updated**: [Performance Analysis](performance-analysis.md) with optimization details
-- **Enhanced**: [Type System](language/types.md) with Any usage guidelines
+- **New**: Any type optimization guidance in the [Language Specification](../language/specification.md)
+- **Updated**: [Performance Analysis](../performance-analysis.md) with optimization details
+- **Enhanced**: [Type System](../language/specification.md) with Any usage guidelines
 - **Added**: Migration guide and best practices for Any optimization
 
 ### 🧪 Testing

@@ -7,7 +7,7 @@
 - **Conditional compilation** using `ASTRA_ENABLE_ANY_RUNTIME` flag
 - **Automatic detection** of Any usage during semantic analysis
 - **Typed containers** (`Vec<T>`) are completely separate from dynamic Any containers
-- See [Any Type Optimization](language/any_type_optimization.md) for details
+- See the [Language Specification](language/specification.md) for details
 
 ### Allocation Tracking Optimization
 - **Debug-only feature** - allocation tracking disabled in release builds

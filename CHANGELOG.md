@@ -20,9 +20,9 @@ All notable changes to ASTRA will be documented in this file.
 - **Eliminated double malloc overhead** in production code
 
 ### 📚 Documentation
-- Added comprehensive [Any Type Optimization](docs/language/any_type_optimization.md) guide
+- Added comprehensive Any type optimization guidance in the [Language Specification](docs/language/specification.md)
 - Updated [Performance Analysis](docs/performance-analysis.md) with optimization details
-- Enhanced [Type System](docs/language/types.md) documentation with Any usage guidelines
+- Enhanced [Type System](docs/language/specification.md) documentation with Any usage guidelines
 - Added migration guide and best practices
 
 ### 🧪 Testing
