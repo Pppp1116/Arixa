@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from astra import lsp
+from astra import semantic as sema
 
 
 class LspProc:
@@ -241,3 +242,76 @@ def test_lsp_cancel_request_drops_response(tmp_path: Path):
         assert not msg or msg.get("id") != req_id
     finally:
         proc.close()
+
+
+def test_lsp_hover_builtin_and_gpu_api_docs(tmp_path: Path):
+    server = lsp.LSPServer(log=lsp.logging.getLogger("test-lsp"), debounce_ms=0)
+    src = 'fn main() Int{ static_assert(true); gpu.launch; return 0; }\n'
+    uri = (tmp_path / "h.astra").as_uri()
+    server.docs[uri] = lsp.TextDocument(uri=uri, text=src, version=1, language_id="astra")
+
+    # static_assert hover
+    hover_builtin = server._hover(uri, 0, src.index("static_assert"))
+    assert hover_builtin is not None
+    assert "Compile-time assertion" in hover_builtin["contents"]["value"]
+
+    # gpu API hover on launch token
+    launch_col = src.index("launch")
+    hover_gpu = server._hover(uri, 0, launch_col)
+    assert hover_gpu is not None
+    assert "gpu.launch" in hover_gpu["contents"]["value"]
+
+
+def test_lsp_member_completion_includes_struct_fields(tmp_path: Path):
+    server = lsp.LSPServer(log=lsp.logging.getLogger("test-lsp"), debounce_ms=0)
+    src = """
+struct Pair { x Int, y Int }
+fn main() Int{
+  p = Pair(1, 2);
+  p.
+  return 0;
+}
+"""
+    uri = (tmp_path / "c.astra").as_uri()
+    server.docs[uri] = lsp.TextDocument(uri=uri, text=src, version=1, language_id="astra")
+    lines = src.splitlines()
+    line = next(i for i, row in enumerate(lines) if row.strip() == "p.")
+    col = lines[line].index(".") + 1
+    items = server._completion(uri, line, col)
+    labels = {it["label"] for it in items}
+    assert "x" in labels
+    assert "y" in labels
+
+
+def test_lsp_semantic_diagnostics_surface_static_assert_failure(tmp_path: Path):
+    src = 'const N = 2; fn main() Int{ static_assert((N * 3) == 5, "bad math"); return 0; }\n'
+    uri = (tmp_path / "d.astra").as_uri()
+    diags = lsp._semantic_diagnostics(src, str(tmp_path / "d.astra"), uri, freestanding=False, overflow="trap")
+    assert any("static assertion failed: bad math" in d.get("message", "") for d in diags)
+
+
+def test_lsp_metadata_uses_semantic_source_of_truth():
+    assert lsp.GPU_API_DOCS is sema.GPU_API_DOCS
+    assert lsp.BUILTIN_SIGS is sema.BUILTIN_SIGS
+    assert lsp.BUILTIN_DOCS is sema.BUILTIN_DOCS
+
+
+def test_lsp_completion_handles_incomplete_gpu_member_access(tmp_path: Path):
+    server = lsp.LSPServer(log=lsp.logging.getLogger("test-lsp"), debounce_ms=0)
+    src = 'fn main() Int{ gpu.\n  return 0; }\n'
+    uri = (tmp_path / "gpu_inc.astra").as_uri()
+    server.docs[uri] = lsp.TextDocument(uri=uri, text=src, version=1, language_id="astra")
+    items = server._completion(uri, 0, src.index(".") + 1)
+    labels = {it["label"] for it in items}
+    assert "launch" in labels or "gpu.launch" in labels
+
+
+def test_lsp_completion_handles_incomplete_function_call(tmp_path: Path):
+    server = lsp.LSPServer(log=lsp.logging.getLogger("test-lsp"), debounce_ms=0)
+    src = 'fn foo(x Int, y Int) Int{ return x + y; } fn main() Int{ foo(1,\n  return 0; }\n'
+    uri = (tmp_path / "call_inc.astra").as_uri()
+    server.docs[uri] = lsp.TextDocument(uri=uri, text=src, version=1, language_id="astra")
+    line = 0
+    col = src.index("foo(1,") + len("foo(1,")
+    items = server._completion(uri, line, col)
+    assert isinstance(items, list)
