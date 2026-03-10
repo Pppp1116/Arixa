@@ -733,6 +733,8 @@ double astra_any_to_f64(uintptr_t value) {
   return 0.0;
 }
 
+uintptr_t astra_to_json(uintptr_t v);
+
 uintptr_t astra_any_to_str(uintptr_t value) {
   AstraAnySlot *entry = astra_any_expect(value);
   if (entry->tag == ASTRA_ANY_STR) {
@@ -740,6 +742,42 @@ uintptr_t astra_any_to_str(uintptr_t value) {
   }
   astra_trap();
   return 0;
+}
+
+uintptr_t astra_any_to_display(uintptr_t value) {
+  AstraAnySlot *entry = astra_any_find_slot(value);
+  if (entry == NULL) {
+    return (uintptr_t)astra_strdup_s("none");
+  }
+  char num[64];
+  switch (entry->tag) {
+  case ASTRA_ANY_NONE:
+    return (uintptr_t)astra_strdup_s("none");
+  case ASTRA_ANY_INT:
+    (void)snprintf(num, sizeof(num), "%lld", (long long)entry->value.i64);
+    return (uintptr_t)astra_strdup_s(num);
+  case ASTRA_ANY_BOOL:
+    return (uintptr_t)astra_strdup_s(entry->value.b ? "true" : "false");
+  case ASTRA_ANY_FLOAT:
+    if (isnan(entry->value.f64)) {
+      return (uintptr_t)astra_strdup_s("nan");
+    }
+    if (isinf(entry->value.f64)) {
+      return (uintptr_t)astra_strdup_s(entry->value.f64 > 0.0 ? "inf" : "-inf");
+    }
+    (void)snprintf(num, sizeof(num), "%.15g", entry->value.f64);
+    return (uintptr_t)astra_strdup_s(num);
+  case ASTRA_ANY_STR:
+    return (uintptr_t)astra_strdup_s((const char *)entry->value.ptr);
+  case ASTRA_ANY_PTR:
+    (void)snprintf(num, sizeof(num), "%llu", (unsigned long long)entry->value.ptr);
+    return (uintptr_t)astra_strdup_s(num);
+  case ASTRA_ANY_LIST:
+  case ASTRA_ANY_MAP:
+    return astra_to_json(value);
+  default:
+    return (uintptr_t)astra_strdup_s("none");
+  }
 }
 
 uintptr_t astra_any_to_ptr(uintptr_t value) {

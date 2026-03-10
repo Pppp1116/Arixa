@@ -13,6 +13,154 @@ const MEMORY_BARRIER_WRITE = 2;
 /// This is a compiler intrinsic that prevents reordering of memory operations.
 fn memory_barrier(barrier_type MemoryBarrier) {}
 
+/// Convenience full memory barrier.
+fn memory_barrier_full() {
+    memory_barrier(MEMORY_BARRIER_FULL);
+}
+
+/// Convenience read memory barrier.
+fn memory_barrier_read() {
+    memory_barrier(MEMORY_BARRIER_READ);
+}
+
+/// Convenience write memory barrier.
+fn memory_barrier_write() {
+    memory_barrier(MEMORY_BARRIER_WRITE);
+}
+
+/// Volatile MMIO loads and stores.
+///
+/// These are intended for device register access where compiler reordering or
+/// eliding reads/writes is invalid.
+fn volatile_read8(addr Int) u8 {
+    return __fs_volatile_read8_impl(addr);
+}
+
+fn volatile_read16(addr Int) u16 {
+    return __fs_volatile_read16_impl(addr);
+}
+
+fn volatile_read32(addr Int) u32 {
+    return __fs_volatile_read32_impl(addr);
+}
+
+fn volatile_read64(addr Int) u64 {
+    return __fs_volatile_read64_impl(addr);
+}
+
+fn volatile_write8(addr Int, value u8) {
+    __fs_volatile_write8_impl(addr, value);
+}
+
+fn volatile_write16(addr Int, value u16) {
+    __fs_volatile_write16_impl(addr, value);
+}
+
+fn volatile_write32(addr Int, value u32) {
+    __fs_volatile_write32_impl(addr, value);
+}
+
+fn volatile_write64(addr Int, value u64) {
+    __fs_volatile_write64_impl(addr, value);
+}
+
+/// Typed register descriptors for MMIO mappings.
+struct Reg8 {
+    addr Int,
+}
+
+struct Reg16 {
+    addr Int,
+}
+
+struct Reg32 {
+    addr Int,
+}
+
+struct Reg64 {
+    addr Int,
+}
+
+fn reg8(addr Int) Reg8 {
+    return Reg8(addr);
+}
+
+fn reg16(addr Int) Reg16 {
+    return Reg16(addr);
+}
+
+fn reg32(addr Int) Reg32 {
+    return Reg32(addr);
+}
+
+fn reg64(addr Int) Reg64 {
+    return Reg64(addr);
+}
+
+fn reg8_read(r &Reg8) u8 {
+    return volatile_read8(r.addr);
+}
+
+fn reg16_read(r &Reg16) u16 {
+    return volatile_read16(r.addr);
+}
+
+fn reg32_read(r &Reg32) u32 {
+    return volatile_read32(r.addr);
+}
+
+fn reg64_read(r &Reg64) u64 {
+    return volatile_read64(r.addr);
+}
+
+fn reg8_write(r &Reg8, value u8) {
+    volatile_write8(r.addr, value);
+}
+
+fn reg16_write(r &Reg16, value u16) {
+    volatile_write16(r.addr, value);
+}
+
+fn reg32_write(r &Reg32, value u32) {
+    volatile_write32(r.addr, value);
+}
+
+fn reg64_write(r &Reg64, value u64) {
+    volatile_write64(r.addr, value);
+}
+
+fn reg8_set_bits(r &Reg8, mask u8) {
+    reg8_write(r, reg8_read(r) | mask);
+}
+
+fn reg16_set_bits(r &Reg16, mask u16) {
+    reg16_write(r, reg16_read(r) | mask);
+}
+
+fn reg32_set_bits(r &Reg32, mask u32) {
+    reg32_write(r, reg32_read(r) | mask);
+}
+
+fn reg64_set_bits(r &Reg64, mask u64) {
+    reg64_write(r, reg64_read(r) | mask);
+}
+
+fn reg8_clear_bits(r &Reg8, mask u8) {
+    reg8_write(r, reg8_read(r) & ~mask);
+}
+
+fn reg16_clear_bits(r &Reg16, mask u16) {
+    reg16_write(r, reg16_read(r) & ~mask);
+}
+
+fn reg32_clear_bits(r &Reg32, mask u32) {
+    reg32_write(r, reg32_read(r) & ~mask);
+}
+
+fn reg64_clear_bits(r &Reg64, mask u64) {
+    reg64_write(r, reg64_read(r) & ~mask);
+}
+
 /// Atomic memory operations without runtime dependencies.
 /// These use the built-in atomic operations but provide safer interfaces.
 /// Atomic compare-and-swap loop.
@@ -243,3 +391,12 @@ fn wait_for_reg_set(addr &Int, mask Int, timeout Int) Bool {
 fn wait_for_reg_clear(addr &Int, mask Int, timeout Int) Bool {
     return wait_for_reg_field(addr, mask, 0, timeout);
 }
+
+extern fn __fs_volatile_read8_impl(addr Int) u8;
+extern fn __fs_volatile_read16_impl(addr Int) u16;
+extern fn __fs_volatile_read32_impl(addr Int) u32;
+extern fn __fs_volatile_read64_impl(addr Int) u64;
+extern fn __fs_volatile_write8_impl(addr Int, value u8);
+extern fn __fs_volatile_write16_impl(addr Int, value u16);
+extern fn __fs_volatile_write32_impl(addr Int, value u32);
+extern fn __fs_volatile_write64_impl(addr Int, value u64);

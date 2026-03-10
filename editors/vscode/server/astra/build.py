@@ -811,6 +811,117 @@ def _strict_validate_program(prog: Program, src_file: Path) -> None:
         raise RuntimeError(f"CODEGEN {src_file}:1:1: strict mode rejected backend lowering: {details}")
 
 
+def _freestanding_entry_source() -> str:
+    return (
+        """
+extern long _start(void);
+
+__attribute__((noreturn)) static void __astra_exit(long code) {
+#if defined(__x86_64__)
+    __asm__ __volatile__(
+        "movq $60, %%rax\\n\\t"
+        "movq %0, %%rdi\\n\\t"
+        "syscall\\n\\t"
+        :
+        : "r"(code)
+        : "rax", "rdi", "rcx", "r11", "memory"
+    );
+#elif defined(__aarch64__)
+    __asm__ __volatile__(
+        "mov x8, #93\\n\\t"
+        "mov x0, %0\\n\\t"
+        "svc #0\\n\\t"
+        :
+        : "r"(code)
+        : "x0", "x8", "memory"
+    );
+#elif defined(__riscv) && (__riscv_xlen == 64)
+    __asm__ __volatile__(
+        "li a7, 93\\n\\t"
+        "mv a0, %0\\n\\t"
+        "ecall\\n\\t"
+        :
+        : "r"(code)
+        : "a0", "a7", "memory"
+    );
+#else
+    for (;;) {}
+#endif
+    __builtin_unreachable();
+}
+
+__attribute__((noreturn)) void __astra_entry(void) {
+    __astra_exit(_start());
+}
+""".strip()
+        + "\n"
+    )
+
+
+def _freestanding_hooks_source() -> str:
+    return (
+        """
+#include <stdint.h>
+
+static volatile uint64_t __astra_fs_tick_now = 0;
+static volatile int64_t __astra_fs_panic_handler = 0;
+static volatile int64_t __astra_fs_last_panic_code = 0;
+
+uint8_t __fs_volatile_read8_impl(int64_t addr) {
+    return *(volatile uint8_t *)(uintptr_t)addr;
+}
+
+uint16_t __fs_volatile_read16_impl(int64_t addr) {
+    return *(volatile uint16_t *)(uintptr_t)addr;
+}
+
+uint32_t __fs_volatile_read32_impl(int64_t addr) {
+    return *(volatile uint32_t *)(uintptr_t)addr;
+}
+
+uint64_t __fs_volatile_read64_impl(int64_t addr) {
+    return *(volatile uint64_t *)(uintptr_t)addr;
+}
+
+void __fs_volatile_write8_impl(int64_t addr, uint8_t value) {
+    *(volatile uint8_t *)(uintptr_t)addr = value;
+}
+
+void __fs_volatile_write16_impl(int64_t addr, uint16_t value) {
+    *(volatile uint16_t *)(uintptr_t)addr = value;
+}
+
+void __fs_volatile_write32_impl(int64_t addr, uint32_t value) {
+    *(volatile uint32_t *)(uintptr_t)addr = value;
+}
+
+void __fs_volatile_write64_impl(int64_t addr, uint64_t value) {
+    *(volatile uint64_t *)(uintptr_t)addr = value;
+}
+
+int64_t __fs_tick_now_impl(void) {
+    return (int64_t)__astra_fs_tick_now;
+}
+
+int64_t __fs_panic_set_handler_impl(int64_t handler_id) {
+    int64_t prev = __astra_fs_panic_handler;
+    __astra_fs_panic_handler = handler_id;
+    return prev;
+}
+
+int64_t __fs_panic_get_handler_impl(void) {
+    return __astra_fs_panic_handler;
+}
+
+__attribute__((noreturn)) void __fs_panic_with_code_impl(int64_t code) {
+    __astra_fs_last_panic_code = code;
+    for (;;) {}
+}
+""".strip()
+        + "\n"
+    )
+
+
 def _build_native_llvm(
     ir_text: str,
     out_path: str,
@@ -843,6 +954,10 @@ def _build_native_llvm(
     with tempfile.TemporaryDirectory(prefix="astra-native-") as td:
         ll_path = Path(td) / "module.ll"
         ll_path.write_text(ir_text)
+        hooks_c: Path | None = None
+        if freestanding:
+            hooks_c = Path(td) / "freestanding_hooks.c"
+            hooks_c.write_text(_freestanding_hooks_source())
         is_windows = sys.platform.startswith("win")
         if kind == "lib":
             cmd = [clang, opt_flag] + debug_flags + define_flags + ["-shared", "-fPIC", str(ll_path), "-o", str(out)]
@@ -858,49 +973,18 @@ def _build_native_llvm(
                     cmd.insert(-2, "-lws2_32")
                 else:
                     cmd.insert(-2, "-lm")
+            elif hooks_c is not None:
+                cmd.insert(-2, str(hooks_c))
         elif freestanding:
             entry_c = Path(td) / "freestanding_entry.c"
-            entry_c.write_text(
-                """
-extern long _start(void);
-
-__attribute__((noreturn)) static void __astra_exit(long code) {
-#if defined(__x86_64__)
-    __asm__ __volatile__(
-        "movq $60, %%rax\\n\\t"
-        "movq %0, %%rdi\\n\\t"
-        "syscall\\n\\t"
-        :
-        : "r"(code)
-        : "rax", "rdi", "rcx", "r11", "memory"
-    );
-#elif defined(__aarch64__)
-    __asm__ __volatile__(
-        "mov x8, #93\\n\\t"
-        "mov x0, %0\\n\\t"
-        "svc #0\\n\\t"
-        :
-        : "r"(code)
-        : "x0", "x8", "memory"
-    );
-#else
-    for (;;) {}
-#endif
-    __builtin_unreachable();
-}
-
-__attribute__((noreturn)) void __astra_entry(void) {
-    __astra_exit(_start());
-}
-""".strip()
-                + "\n"
-            )
+            entry_c.write_text(_freestanding_entry_source())
             cmd = [
                 clang,
                 opt_flag,
             ] + debug_flags + define_flags + [
                 str(ll_path),
                 str(entry_c),
+                str(hooks_c),
                 "-nostdlib",
                 "-nostartfiles",
                 "-Wl,-e,__astra_entry",
@@ -952,7 +1036,7 @@ def _require_runtime_free_freestanding(ir_text: str, src_file: Path) -> None:
         {
             name
             for name in re.findall(r"(?m)^\s*declare\s+[^@]*@([A-Za-z_.$][A-Za-z0-9_.$]*)\(", ir_text)
-            if not name.startswith("llvm.")
+            if not name.startswith("llvm.") and not name.startswith("__")
         }
     )
     if externs:

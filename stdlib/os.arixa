@@ -1,5 +1,7 @@
 import std.core;
 
+import std.boot;
+
 import std.hardware;
 
 /// Minimal freestanding OS/kernel primitives for drivers.
@@ -16,6 +18,13 @@ const ERR_NOSYS = 38;
 const ERR_TIMED_OUT = 110;
 
 type DeviceId = Int;
+
+type PanicHandlerId = Int;
+
+const PANIC_REASON_GENERIC = 1;
+const PANIC_REASON_UNREACHABLE = 2;
+const PANIC_REASON_ASSERT = 3;
+const PANIC_REASON_OOM = 4;
 
 /// Page-size constants commonly used by kernel allocators and MMU code.
 const PAGE_SIZE_4K = 4096;
@@ -78,6 +87,79 @@ fn poll_until(predicate fn() Bool, timeout_cycles Int) Bool {
     return spin_wait(predicate, timeout_cycles);
 }
 
+/// IRQ/global-interrupt control helpers.
+fn irq_enable() {
+    set_interrupts_enabled(true);
+}
+
+fn irq_disable() {
+    set_interrupts_enabled(false);
+}
+
+/// Save interrupt state and enter critical section.
+fn irq_save() Int {
+    return enter_critical_section() as Int;
+}
+
+/// Restore interrupt state captured by `irq_save`.
+fn irq_restore(state Int) {
+    exit_critical_section(state as u32);
+}
+
+/// Run callback with interrupts disabled, restoring previous state afterwards.
+fn with_irqs_disabled(work fn() Int) Int {
+    state = irq_save();
+    out = work();
+    irq_restore(state);
+    return out;
+}
+
+/// Kernel tick abstraction.
+fn tick_now() Int {
+    return __fs_tick_now_impl();
+}
+
+fn tick_hz() Int {
+    return get_system_tick_frequency() as Int;
+}
+
+fn ms_to_ticks(ms Int) Int | none {
+    hz = tick_hz();
+    if ms < 0 || hz <= 0 {
+        return none;
+    }
+    else {}
+    prod = mul_checked(ms, hz);
+    if prod == none {
+        return none;
+    }
+    else {}
+    return (prod as Int | none ?? 0) / 1000;
+}
+
+fn ticks_to_ms(ticks Int) Int | none {
+    hz = tick_hz();
+    if ticks < 0 || hz <= 0 {
+        return none;
+    }
+    else {}
+    prod = mul_checked(ticks, 1000);
+    if prod == none {
+        return none;
+    }
+    else {}
+    return (prod as Int | none ?? 0) / hz;
+}
+
+fn tick_deadline_after(delta_ticks Int) Int | none {
+    now = tick_now();
+    return add_checked(now, delta_ticks);
+}
+
+fn tick_expired(now Int, deadline Int) Bool {
+    return now >= deadline;
+}
+
 /// Simple spinlock for freestanding kernels/drivers.
 struct SpinLock {
     handle Int,
@@ -119,3 +201,102 @@ fn spin_lock_release(lock &SpinLock) {
 fn spin_lock_is_locked(lock &SpinLock) Bool {
     return __atomic_load(lock.handle) != 0;
 }
+
+/// Single-producer single-consumer lock-free ring buffer for Int.
+///
+/// Capacity is rounded up to at least 2, and one slot is reserved to
+/// distinguish full from empty.
+struct SpscRingInt {
+    data Vec<Int>,
+    capacity Int,
+    head_handle Int,
+    tail_handle Int,
+}
+
+fn spsc_ring_int_new(capacity Int) SpscRingInt {
+    cap = if capacity < 2 { 2 } else { capacity };
+    mut data = vec_new() as Vec<Int>;
+    mut i = 0;
+    while i < cap {
+        vec_push(data, 0);
+        i += 1;
+    }
+    return SpscRingInt(data, cap, __atomic_int_new(0), __atomic_int_new(0));
+}
+
+fn spsc_ring_int_capacity(ring SpscRingInt) Int {
+    return ring.capacity - 1;
+}
+
+fn spsc_ring_int_is_empty(ring SpscRingInt) Bool {
+    head = __atomic_load(ring.head_handle);
+    tail = __atomic_load(ring.tail_handle);
+    return head == tail;
+}
+
+fn spsc_ring_int_is_full(ring SpscRingInt) Bool {
+    head = __atomic_load(ring.head_handle);
+    tail = __atomic_load(ring.tail_handle);
+    next_tail = (tail + 1) % ring.capacity;
+    return next_tail == head;
+}
+
+fn spsc_ring_int_len(ring SpscRingInt) Int {
+    head = __atomic_load(ring.head_handle);
+    tail = __atomic_load(ring.tail_handle);
+    if tail >= head {
+        return tail - head;
+    }
+    else {}
+    return ring.capacity - (head - tail);
+}
+
+fn spsc_ring_int_push(ring SpscRingInt, value Int) Bool {
+    head = __atomic_load(ring.head_handle);
+    tail = __atomic_load(ring.tail_handle);
+    next_tail = (tail + 1) % ring.capacity;
+    if next_tail == head {
+        return false;
+    }
+    else {}
+    vec_set(ring.data, tail, value);
+    memory_barrier_write();
+    __atomic_store(ring.tail_handle, next_tail);
+    return true;
+}
+
+fn spsc_ring_int_pop(ring SpscRingInt) Int | none {
+    head = __atomic_load(ring.head_handle);
+    tail = __atomic_load(ring.tail_handle);
+    if head == tail {
+        return none;
+    }
+    else {}
+    item = vec_get(ring.data, head);
+    next_head = (head + 1) % ring.capacity;
+    memory_barrier_read();
+    __atomic_store(ring.head_handle, next_head);
+    return item as Int | none;
+}
+
+/// Panic handler hooks.
+fn panic_set_handler(handler_id PanicHandlerId) PanicHandlerId {
+    return __fs_panic_set_handler_impl(handler_id);
+}
+
+fn panic_get_handler() PanicHandlerId {
+    return __fs_panic_get_handler_impl();
+}
+
+fn panic_with_code(code Int) Never {
+    __fs_panic_with_code_impl(code);
+}
+
+fn panic_unreachable() Never {
+    panic_with_code(PANIC_REASON_UNREACHABLE);
+}
+
+extern fn __fs_tick_now_impl() Int;
+extern fn __fs_panic_set_handler_impl(handler_id PanicHandlerId) PanicHandlerId;
+extern fn __fs_panic_get_handler_impl() PanicHandlerId;
+extern fn __fs_panic_with_code_impl(code Int) Never;

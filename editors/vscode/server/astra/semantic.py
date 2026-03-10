@@ -740,7 +740,7 @@ BUILTIN_SIGS: dict[str, BuiltinSig] = {
 for _name, _sig in list(BUILTIN_SIGS.items()):
     if _name.startswith("__"):
         continue
-    if _name in {"print", "len", "read_file", "write_file", "args", "arg", "spawn", "join", "await_result"}:
+    if _name in {"len", "read_file", "write_file", "args", "arg", "spawn", "join", "await_result"}:
         continue
     BUILTIN_SIGS[f"__{_name}"] = _sig
 

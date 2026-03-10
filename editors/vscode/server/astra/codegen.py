@@ -300,8 +300,39 @@ def to_python(
         "    if signed and out >= (1 << (bits - 1)):",
         "        out -= (1 << bits)",
         "    return out",
-        "def print_(*args): print(*args); return None",
-        "def format_(*args): return ' '.join(str(arg) for arg in args)",
+        "def __astra_display(arg):",
+        "    if isinstance(arg, bool):",
+        "        return 'true' if arg else 'false'",
+        "    if isinstance(arg, int):",
+        "        return str(arg)",
+        "    if isinstance(arg, float):",
+        "        if arg != arg:",
+        "            return 'nan'",
+        "        if arg == float('inf'):",
+        "            return 'inf'",
+        "        if arg == float('-inf'):",
+        "            return '-inf'",
+        "        return format(arg, '.15g')",
+        "    if isinstance(arg, str):",
+        "        return arg",
+        "    if arg is None:",
+        "        return 'none'",
+        "    if hasattr(arg, '__dict__'):",
+        "        try:",
+        "            return json.dumps(arg.__dict__, sort_keys=True)",
+        "        except Exception:",
+        "            pass",
+        "    try:",
+        "        return json.dumps(arg, sort_keys=True)",
+        "    except Exception:",
+        "        return str(arg)",
+        "def print_(*args):",
+        "    if not args:",
+        "        print()",
+        "    else:",
+        "        print(' '.join(__astra_display(arg) for arg in args))",
+        "    return None",
+        "def format_(*args): return ' '.join(__astra_display(arg) for arg in args)",
         "class _AstraTryNone(Exception):",
         "    pass",
         "class _AstraTryResultErr(Exception):",
@@ -720,6 +751,99 @@ def to_python(
         "def __chan_recv_try(cid): return _astra_host_chan_recv_try(cid)",
         "def __chan_recv_blocking(cid): return _astra_host_chan_recv_blocking(cid)",
         "def __chan_close(cid): return _astra_host_chan_close(cid)",
+        "def __str_char_at_impl(s, index):",
+        "    ss = '' if s is None else str(s)",
+        "    i = int(index)",
+        "    if i < 0 or i >= len(ss):",
+        "        return 0",
+        "    return ord(ss[i])",
+        "def __str_from_char_impl(c):",
+        "    if isinstance(c, int):",
+        "        try:",
+        "            return chr(c)",
+        "        except (ValueError, OverflowError):",
+        "            return ''",
+        "    text = str(c)",
+        "    return text[:1] if text else ''",
+        "def __str_substring_impl(s, start, length):",
+        "    ss = '' if s is None else str(s)",
+        "    st = int(start)",
+        "    ln = int(length)",
+        "    if st < 0 or ln < 0 or st >= len(ss):",
+        "        return ''",
+        "    return ss[st:st + ln]",
+        "def __str_to_upper_impl(s): return ('' if s is None else str(s)).upper()",
+        "def __str_to_lower_impl(s): return ('' if s is None else str(s)).lower()",
+        "def __str_trim_impl(s): return ('' if s is None else str(s)).strip()",
+        "def __str_find_impl(s, pattern): return ('' if s is None else str(s)).find('' if pattern is None else str(pattern))",
+        "def __str_replace_impl(s, pattern, replacement):",
+        "    return ('' if s is None else str(s)).replace('' if pattern is None else str(pattern), '' if replacement is None else str(replacement))",
+        "def __str_split_impl(s, delimiter):",
+        "    ss = '' if s is None else str(s)",
+        "    dd = '' if delimiter is None else str(delimiter)",
+        "    if dd == '':",
+        "        return [ss]",
+        "    return ss.split(dd)",
+        "def __str_trim_start_impl(s): return ('' if s is None else str(s)).lstrip()",
+        "def __str_trim_end_impl(s): return ('' if s is None else str(s)).rstrip()",
+        "def __str_join_impl(parts, delimiter):",
+        "    dd = '' if delimiter is None else str(delimiter)",
+        "    return dd.join(str(p) for p in parts)",
+        "def __string_to_utf8_impl(s): return list(('' if s is None else str(s)).encode('utf-8'))",
+        "def __utf8_to_string_impl(bs):",
+        "    try:",
+        "        return bytes(int(b) & 0xFF for b in bs).decode('utf-8')",
+        "    except Exception:",
+        "        return None",
+        "def __bytes_to_hex_impl(data):",
+        "    try:",
+        "        return bytes(int(b) & 0xFF for b in data).hex()",
+        "    except Exception:",
+        "        return ''",
+        "def __bytes_to_hex_upper_impl(data):",
+        "    try:",
+        "        return bytes(int(b) & 0xFF for b in data).hex().upper()",
+        "    except Exception:",
+        "        return ''",
+        "def __hex_to_bytes_impl(text):",
+        "    try:",
+        "        return list(bytes.fromhex('' if text is None else str(text)))",
+        "    except ValueError:",
+        "        return None",
+        "def __bytes_to_base64_impl(data):",
+        "    import base64",
+        "    try:",
+        "        return base64.b64encode(bytes(int(b) & 0xFF for b in data)).decode('ascii')",
+        "    except Exception:",
+        "        return ''",
+        "def __base64_to_bytes_impl(text):",
+        "    import base64",
+        "    try:",
+        "        return list(base64.b64decode('' if text is None else str(text), validate=True))",
+        "    except Exception:",
+        "        return None",
+        "def __url_encode_impl(s):",
+        "    import urllib.parse",
+        "    return urllib.parse.quote('' if s is None else str(s), safe='-_.~')",
+        "def __url_decode_impl(text):",
+        "    import urllib.parse",
+        "    s = '' if text is None else str(text)",
+        "    i = 0",
+        "    while i < len(s):",
+        "        if s[i] == '%':",
+        "            if i + 2 >= len(s):",
+        "                return None",
+        "            h1 = s[i + 1]",
+        "            h2 = s[i + 2]",
+        "            if not ((h1.isdigit() or ('a' <= h1.lower() <= 'f')) and (h2.isdigit() or ('a' <= h2.lower() <= 'f'))):",
+        "                return None",
+        "            i += 3",
+        "            continue",
+        "        i += 1",
+        "    try:",
+        "        return urllib.parse.unquote(s)",
+        "    except Exception:",
+        "        return None",
         "def _astra_load_lib(name):",
         "    if name in _astra_libs:",
         "        return _astra_libs[name]",
@@ -1077,6 +1201,8 @@ def _expr(e: Any) -> str:
         if e.op == "!":
             return f"(not {_expr(e.expr)})"
         return f"({e.op}{_expr(e.expr)})"
+    if isinstance(e, IfExpression):
+        return f"({_expr(e.then_expr)} if {_expr(e.cond)} else {_expr(e.else_expr)})"
     if isinstance(e, Binary):
         if e.op == "??":
             return f"((lambda __v: __v if __v is not None else {_expr(e.right)})({_expr(e.left)}))"
@@ -1100,27 +1226,10 @@ def _expr(e: Any) -> str:
             return f"panic({_expr(args[0])})"
         if name in {"static_assert", "__static_assert"}:
             return "None"
-        if name == "format":
-            # Handle format function with string interpolation support
+        if name in {"format", "__format"}:
             if len(args) == 1 and isinstance(args[0], StringInterpolation):
-                # Single string interpolation argument
                 return _expr(args[0])
-            else:
-                # Multiple arguments - join with spaces
-                exprs = [_expr(arg) for arg in args]
-                # Convert non-string expressions to string
-                for i, (arg, expr) in enumerate(zip(args, exprs)):
-                    arg_type = getattr(arg, 'inferred_type', 'Any')
-                    # Also check literal values
-                    if isinstance(arg, Literal):
-                        if isinstance(arg.value, (int, float, bool)):
-                            exprs[i] = f"str({expr})"
-                        elif arg_type in {'Int', 'isize', 'usize', 'Float', 'f64', 'Bool'}:
-                            exprs[i] = f"str({expr})"
-                    # Handle boolean literals that might have lost type info
-                    elif expr == "True" or expr == "False":
-                        exprs[i] = f"str({expr})"
-                return " + ' ' + ".join(exprs) if len(exprs) > 1 else exprs[0]
+            return f"format_({', '.join(_expr(a) for a in args)})"
         if name in {
             "countOnes",
             "__countOnes",
@@ -1139,7 +1248,13 @@ def _expr(e: Any) -> str:
         if name in {"rotl", "__rotl", "rotr", "__rotr"} and len(args) == 2:
             bits = _known_py_int_bits(args[0])
             return f"{name}({_expr(args[0])}, {_expr(args[1])}, {bits})"
-        name = {"print": "print_", "format": "format_", "len": "len_"}.get(name, name)
+        name = {
+            "print": "print_",
+            "__print": "print_",
+            "format": "format_",
+            "__format": "format_",
+            "len": "len_",
+        }.get(name, name)
         return f"{name}({', '.join(_expr(a) for a in args)})"
     if isinstance(e, IndexExpr):
         return f"({_expr(e.obj)})[{_expr(e.index)}]"

@@ -406,6 +406,60 @@ fn _start() Int{
         build(str(src), str(out), "llvm", freestanding=True)
 
 
+def test_build_freestanding_allows_platform_hook_symbols(tmp_path: Path):
+    src = tmp_path / "fs_hook.astra"
+    out = tmp_path / "fs_hook.ll"
+    src.write_text(
+        """
+extern c fn __fs_tick_now_impl() Int;
+fn _start() Int{
+  return __fs_tick_now_impl();
+}
+"""
+    )
+    st = build(str(src), str(out), "llvm", freestanding=True)
+    assert st in {"built", "cached"}
+    text = out.read_text()
+    assert "__fs_tick_now_impl" in text
+
+
+@pytest.mark.skipif(
+    shutil.which("clang") is None,
+    reason="native target requires clang",
+)
+def test_build_native_freestanding_platform_hook_symbol_links_with_default_hooks(tmp_path: Path):
+    src = tmp_path / "fs_hook_native.astra"
+    out = tmp_path / "fs_hook_native.exe"
+    src.write_text(
+        """
+extern c fn __fs_tick_now_impl() Int;
+fn _start() Int{
+  return __fs_tick_now_impl();
+}
+"""
+    )
+    st = build(str(src), str(out), "native", freestanding=True)
+    assert st in {"built", "cached"}
+    assert out.exists()
+    cp = subprocess.run([str(out)], capture_output=True, text=True)
+    assert cp.returncode == 0
+
+
+def test_freestanding_hooks_source_includes_default_platform_hooks() -> None:
+    text = build_mod._freestanding_hooks_source()
+    assert "__fs_volatile_read8_impl" in text
+    assert "__fs_volatile_write64_impl" in text
+    assert "__fs_tick_now_impl" in text
+    assert "__fs_panic_with_code_impl" in text
+
+
+def test_freestanding_entry_source_includes_riscv64_exit_path() -> None:
+    text = build_mod._freestanding_entry_source()
+    assert "__riscv" in text
+    assert "li a7, 93" in text
+    assert "__astra_entry" in text
+
+
 def test_build_freestanding_supports_vec_builtins_without_runtime_symbols(tmp_path: Path):
     src = tmp_path / "vec_fs.astra"
     out = tmp_path / "vec_fs.ll"
