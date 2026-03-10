@@ -2,7 +2,10 @@
 
 import argparse
 import json
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python < 3.11
+    import tomli as tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
