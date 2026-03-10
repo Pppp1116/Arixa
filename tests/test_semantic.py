@@ -1295,7 +1295,7 @@ def test_use_after_move_is_rejected_for_non_copy_values():
         analyze(parse(src))
         assert False
     except SemanticError as e:
-        assert "use-after-move of a" in str(e)
+        assert "cannot be used afterwards" in str(e)
 
 
 def test_drop_is_not_a_builtin_statement_or_function():
@@ -1321,9 +1321,94 @@ def test_copy_values_are_usable_after_assignment():
     analyze(parse(src))
 
 
+
+
+def test_use_after_move_reports_original_move_site():
+    src = "struct S { v Int } fn id(v S) S { return v; } fn main() Int{ a = S(1); b = id(a); return a.v; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        msg = str(e)
+        assert "Value `a` was moved here" in msg
+        assert "But used again here" in msg
+        assert "cannot be used afterwards" in msg
+
+
+def test_static_assert_compile_time_true_and_false():
+    analyze(parse("fn main() Int{ static_assert(2 < 3); return 0; }"))
+    src_bad = 'fn main() Int{ static_assert(false, "math broke"); return 0; }'
+    try:
+        analyze(parse(src_bad))
+        assert False
+    except SemanticError as e:
+        assert "static assertion failed: math broke" in str(e)
+
+
+
+
+def test_static_assert_fails_for_constexpr_false_condition():
+    src = 'const N = 2; fn main() Int{ static_assert((N * 3) == 5, "bad math"); return 0; }'
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "static assertion failed: bad math" in str(e)
+
+
+def test_const_propagation_through_immutable_binding_for_gpu_launch_checks():
+    src = """
+gpu fn k(out GpuMutSlice<Int>) Void{ }
+fn main() Int{
+  out: GpuBuffer<Int> = gpu.alloc(1);
+  block = 32 * 40;
+  gpu.launch(k, 1, block, out);
+  return 0;
+}
+"""
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "block_size exceeds CUDA limit 1024" in str(e)
+
+
+def test_const_propagation_enables_static_assert_through_local_binding():
+    src = 'fn main() Int{ n = 32 * 8; static_assert(n == 256, "n mismatch"); return 0; }'
+    analyze(parse(src))
 def test_slice_get_returns_option_type():
     src = "fn main() Int{ x: Int? = 1; return x ?? 0; }"
     analyze(parse(src))
+
+
+
+
+def test_move_through_function_call_then_use_is_rejected():
+    src = "struct S { v Int } fn take(x S) Int { return x.v; } fn main() Int{ a = S(9); n = take(a); return a.v + n; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "cannot be used afterwards" in str(e)
+
+
+def test_move_across_loop_branch_marks_value_moved():
+    src = """
+struct S { v Int }
+fn main() Int{
+  mut x = S(1);
+  while true {
+    y = x;
+    break;
+  }
+  return x.v;
+}
+"""
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "cannot be used afterwards" in str(e)
 
 
 def test_free_is_not_a_default_builtin():
@@ -1398,3 +1483,28 @@ fn main() Int{
         assert False
     except SemanticError as e:
         assert "spawn arg 1 requires Send" in str(e)
+
+
+def test_constexpr_scope_restored_after_error_recovery_with_collect_errors():
+    src = """
+fn fail() Int{
+  x = 1;
+  if true {
+    y = 2;
+    unknown_call();
+  }
+  return x;
+}
+
+fn main() Int{
+  static_assert(y == 2, "should not leak");
+  return 0;
+}
+"""
+    try:
+        analyze(parse(src), collect_errors=True)
+        assert False
+    except SemanticError as e:
+        msg = str(e)
+        assert "undefined function unknown_call" in msg
+        assert "undefined name y" in msg

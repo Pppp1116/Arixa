@@ -5,6 +5,23 @@ import subprocess
 import tempfile
 import os
 import sys
+import shutil
+
+import pytest
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ARIXA_BIN = os.path.join(REPO_ROOT, '.venv', 'bin', 'arixa')
+
+
+def _get_arixa_command():
+    if os.path.exists(ARIXA_BIN):
+        return ARIXA_BIN
+
+    path_cmd = shutil.which('arixa')
+    if path_cmd:
+        return path_cmd
+
+    pytest.skip('arixa CLI binary not available in .venv/bin or PATH')
 
 def test_bytes_module():
     """Test basic bytes module operations."""
@@ -100,8 +117,8 @@ fn main() Int {
         
         # Compile and run the test
         result = subprocess.run([
-            '.venv/bin/arixa', 'build', '-o', output_file, '--target', 'py', test_file
-        ], capture_output=True, text=True, cwd='/home/pedro/rust-projects/language/ASTRA')
+            _get_arixa_command(), 'build', '-o', output_file, '--target', 'py', test_file
+        ], capture_output=True, text=True, cwd=REPO_ROOT)
         
         print("Build STDOUT:", result.stdout)
         print("Build STDERR:", result.stderr)
@@ -112,8 +129,8 @@ fn main() Int {
             
         # Run the compiled Python code
         result = subprocess.run([
-            'python3', output_file
-        ], capture_output=True, text=True, cwd='/home/pedro/rust-projects/language/ASTRA')
+            sys.executable, output_file
+        ], capture_output=True, text=True, cwd=REPO_ROOT)
         
         print("Run STDOUT:", result.stdout)
         print("Run STDERR:", result.stderr)
@@ -190,8 +207,8 @@ fn main() Int {
         
         # Compile and run the test
         result = subprocess.run([
-            '.venv/bin/arixa', 'build', '-o', output_file, '--target', 'py', test_file
-        ], capture_output=True, text=True, cwd='/home/pedro/rust-projects/language/ASTRA')
+            _get_arixa_command(), 'build', '-o', output_file, '--target', 'py', test_file
+        ], capture_output=True, text=True, cwd=REPO_ROOT)
         
         print("Build STDOUT:", result.stdout)
         print("Build STDERR:", result.stderr)
@@ -202,8 +219,8 @@ fn main() Int {
             
         # Run the compiled Python code
         result = subprocess.run([
-            'python3', output_file
-        ], capture_output=True, text=True, cwd='/home/pedro/rust-projects/language/ASTRA')
+            sys.executable, output_file
+        ], capture_output=True, text=True, cwd=REPO_ROOT)
         
         print("Run STDOUT:", result.stdout)
         print("Run STDERR:", result.stderr)
