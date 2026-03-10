@@ -14,6 +14,7 @@
 #include <windows.h>
 #include <bcrypt.h>
 #include <io.h>
+#include <direct.h>
 #include <malloc.h>
 #else
 #include <unistd.h>
