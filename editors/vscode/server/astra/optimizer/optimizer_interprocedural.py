@@ -286,16 +286,18 @@ class FunctionInliner:
             if isinstance(stmt.expr, Call):
                 inlined_call = self._inline_call(stmt.expr, functions)
                 if inlined_call is not None:
-                    return inlined_call
+                    setup_statements, result_expr = inlined_call
+                    stmt.expr = result_expr
+                    return [*setup_statements, stmt]
             return stmt
         
         elif isinstance(stmt, LetStmt):
             if isinstance(stmt.expr, Call):
                 inlined_call = self._inline_call(stmt.expr, functions)
                 if inlined_call is not None:
-                    # Create let statement with inlined result
-                    stmt.expr = inlined_call[-1] if inlined_call else stmt.expr
-                    return stmt
+                    setup_statements, result_expr = inlined_call
+                    stmt.expr = result_expr
+                    return [*setup_statements, stmt]
             else:
                 stmt.expr = self._inline_expr(stmt.expr, functions)
             return stmt
@@ -304,8 +306,9 @@ class FunctionInliner:
             if isinstance(stmt.expr, Call):
                 inlined_call = self._inline_call(stmt.expr, functions)
                 if inlined_call is not None:
-                    stmt.expr = inlined_call[-1] if inlined_call else stmt.expr
-                    return stmt
+                    setup_statements, result_expr = inlined_call
+                    stmt.expr = result_expr
+                    return [*setup_statements, stmt]
             else:
                 stmt.expr = self._inline_expr(stmt.expr, functions)
             return stmt
@@ -314,8 +317,9 @@ class FunctionInliner:
             if stmt.expr is not None and isinstance(stmt.expr, Call):
                 inlined_call = self._inline_call(stmt.expr, functions)
                 if inlined_call is not None:
-                    stmt.expr = inlined_call[-1] if inlined_call else stmt.expr
-                    return stmt
+                    setup_statements, result_expr = inlined_call
+                    stmt.expr = result_expr
+                    return [*setup_statements, stmt]
             elif stmt.expr is not None:
                 stmt.expr = self._inline_expr(stmt.expr, functions)
             return stmt
@@ -337,7 +341,13 @@ class FunctionInliner:
         """Inline functions in expression."""
         if isinstance(expr, Call):
             inlined_call = self._inline_call(expr, functions)
-            return inlined_call[-1] if inlined_call else expr
+            if inlined_call is None:
+                return expr
+            setup_statements, result_expr = inlined_call
+            # Expression contexts cannot safely inject statement setup.
+            if setup_statements:
+                return expr
+            return result_expr
         elif isinstance(expr, (Unary, Binary)):
             if hasattr(expr, 'expr'):
                 expr.expr = self._inline_expr(expr.expr, functions)
@@ -351,7 +361,7 @@ class FunctionInliner:
         
         return expr
     
-    def _inline_call(self, call_expr: Call, functions: Dict[str, FunctionInfo]) -> Optional[List[Any]]:
+    def _inline_call(self, call_expr: Call, functions: Dict[str, FunctionInfo]) -> Optional[Tuple[List[Any], Any]]:
         """Inline a function call."""
         if not isinstance(call_expr.fn, Name):
             return None
@@ -367,7 +377,7 @@ class FunctionInliner:
             return None
         
         # Create inlined body
-        return self._create_inlined_body(func_info, call_expr.args)
+        return self._create_inlined_body(func_info, call_expr.args, call_expr)
     
     def _is_inlineable(self, func_info: FunctionInfo) -> bool:
         """Check if a function is suitable for inlining."""
@@ -388,9 +398,32 @@ class FunctionInliner:
             return False
         
         return True
+
+    def _contains_nested_return(self, stmt: Any) -> bool:
+        """Check whether a non-top-level statement contains a nested return."""
+        if isinstance(stmt, ReturnStmt):
+            return True
+        if isinstance(stmt, IfStmt):
+            return any(self._contains_nested_return(s) for s in stmt.then_body) or any(
+                self._contains_nested_return(s) for s in stmt.else_body
+            )
+        if isinstance(stmt, WhileStmt):
+            return any(self._contains_nested_return(s) for s in stmt.body)
+        if isinstance(stmt, IteratorForStmt):
+            return any(self._contains_nested_return(s) for s in stmt.body)
+        if isinstance(stmt, MatchStmt):
+            for _, arm_body in stmt.arms:
+                if any(self._contains_nested_return(s) for s in arm_body):
+                    return True
+            return False
+        if isinstance(stmt, UnsafeStmt):
+            return any(self._contains_nested_return(s) for s in stmt.body)
+        if isinstance(stmt, ComptimeStmt):
+            return any(self._contains_nested_return(s) for s in stmt.body)
+        return False
     
-    def _create_inlined_body(self, func_info: FunctionInfo, args: List[Any]) -> List[Any]:
-        """Create inlined function body."""
+    def _create_inlined_body(self, func_info: FunctionInfo, args: List[Any], fallback_expr: Any) -> Tuple[List[Any], Any]:
+        """Create inlined function body and replacement expression."""
         # This is a simplified inlining implementation
         # Full implementation would:
         # 1. Map parameters to arguments
@@ -398,10 +431,18 @@ class FunctionInliner:
         # 3. Handle return statements
         # 4. Handle control flow
         
-        inlined_body = []
+        setup_statements = []
+        result_expr = fallback_expr
+
+        top_level_returns = [stmt for stmt in func_info.body if isinstance(stmt, ReturnStmt)]
+        has_nested_return = any(
+            self._contains_nested_return(stmt) for stmt in func_info.body if not isinstance(stmt, ReturnStmt)
+        )
+        if len(top_level_returns) != 1 or has_nested_return:
+            return setup_statements, result_expr
         
         # Create parameter assignments
-        for i, (param, _) in enumerate(func_info.params):
+        for i, param in enumerate(func_info.params):
             if i < len(args):
                 param_assign = LetStmt(
                     name=param,
@@ -410,14 +451,18 @@ class FunctionInliner:
                     type_name=None,
                     pos=0, line=0, col=0
                 )
-                inlined_body.append(param_assign)
+                setup_statements.append(param_assign)
         
-        # Clone function body
+        # Clone function body; stop at first return and use its expression.
         for stmt in func_info.body:
             cloned_stmt = self._clone_stmt(stmt)
-            inlined_body.append(cloned_stmt)
+            if isinstance(cloned_stmt, ReturnStmt):
+                if cloned_stmt.expr is not None:
+                    result_expr = cloned_stmt.expr
+                break
+            setup_statements.append(cloned_stmt)
         
-        return inlined_body
+        return setup_statements, result_expr
     
     def _clone_stmt(self, stmt: Any) -> Any:
         """Clone a statement for inlining."""

@@ -17,6 +17,7 @@ from astra.ast import (
     ForStmt,
     IteratorForStmt,
     GuardedPattern,
+    IfExpression,
     IfStmt,
     ImportDecl,
     IndexExpr,
@@ -39,6 +40,7 @@ from astra.ast import (
     TypeAliasDecl,
     TryExpr,
     Unary,
+    UnreachableStmt,
     UnsafeStmt,
     WildcardPattern,
 )
@@ -136,13 +138,22 @@ def test_if_statement_else_is_optional():
     assert fn.body[0].else_body == []
 
 
-def test_if_expression_requires_else_clause():
-    bad = "fn main() Int{ x = if true { 1 }; return x; }"
-    try:
-        parse(bad)
-        assert False, "expected ParseError"
-    except ParseError as e:
-        assert "expected else" in str(e)
+def test_if_expression_else_is_optional():
+    src = "fn main() Void{ y = if true { 1 }; return; }"
+    prog = parse(src)
+    fn = prog.items[0]
+    stmt = fn.body[0]
+    assert isinstance(stmt, LetStmt)
+    assert isinstance(stmt.expr, IfExpression)
+    assert stmt.expr.else_expr is None
+
+
+def test_parse_unreachable_statement():
+    src = "fn main() Int{ if true { unreachable; } else { return 1; } return 0; }"
+    prog = parse(src)
+    fn = prog.items[0]
+    assert isinstance(fn.body[0], IfStmt)
+    assert isinstance(fn.body[0].then_body[0], UnreachableStmt)
 
 
 def test_parse_match_accepts_wildcard_pattern():
@@ -407,10 +418,10 @@ def test_parse_nullable_type_sugar():
 
 
 def test_removed_keywords_parse_as_identifiers_in_bindings():
-    src = "fn main() Int{ let = 1; defer = 2; drop = 3; return let + defer + drop; }"
+    src = "fn main() Int{ alpha = 1; defer = 2; drop = 3; return alpha + defer + drop; }"
     prog = parse(src)
     fn = prog.items[0]
-    assert isinstance(fn.body[0], LetStmt) and fn.body[0].name == "let"
+    assert isinstance(fn.body[0], LetStmt) and fn.body[0].name == "alpha"
     assert isinstance(fn.body[1], LetStmt) and fn.body[1].name == "defer"
     assert isinstance(fn.body[2], LetStmt) and fn.body[2].name == "drop"
 

@@ -184,7 +184,7 @@ def _optimize_stmt(st: Any, env: dict[str, Any], mutable_names: set[str]) -> tup
         st.body = body_out
         env.clear()
         return st, env, _stmts_terminate(st.body)
-    if isinstance(st, (BreakStmt, ContinueStmt)):
+    if isinstance(st, (BreakStmt, ContinueStmt, UnreachableStmt)):
         return st, env, True
     return st, env, False
 
@@ -205,7 +205,7 @@ def _stmts_terminate(stmts: list[Any]) -> bool:
     tail = stmts[-1]
     if isinstance(tail, UnsafeStmt):
         return _stmts_terminate(tail.body)
-    return isinstance(tail, (ReturnStmt, BreakStmt, ContinueStmt))
+    return isinstance(tail, (ReturnStmt, BreakStmt, ContinueStmt, UnreachableStmt))
 
 
 def _fold_target_expr(target: Any, env: dict[str, Any], mutable_names: set[str]) -> Any:
@@ -836,7 +836,7 @@ def _cse_stmt(st: Any, avail: dict[Any, tuple[str, set[str]]]) -> tuple[Any | No
         st.body, _ = _cse_stmts(st.body, {})
         return st, {}, _stmts_terminate(st.body)
 
-    if isinstance(st, (BreakStmt, ContinueStmt)):
+    if isinstance(st, (BreakStmt, ContinueStmt, UnreachableStmt)):
         return st, avail, True
 
     return st, avail, False
@@ -1095,7 +1095,7 @@ def _dse_stmts(stmts: list[Any], live_out: set[str]) -> tuple[list[Any], set[str
             out_rev.append(st)
             live |= body_live
             continue
-        if isinstance(st, (BreakStmt, ContinueStmt)):
+        if isinstance(st, (BreakStmt, ContinueStmt, UnreachableStmt)):
             out_rev.append(st)
             continue
         out_rev.append(st)

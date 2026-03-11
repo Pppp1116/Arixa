@@ -81,7 +81,7 @@ class ErrorReporter:
                     ErrorSuggestion(
                         "Declare variable",
                         "Declare the variable before using it",
-                        "let x = 42;"
+                        "x = 42;"
                     )
                 ]
             },

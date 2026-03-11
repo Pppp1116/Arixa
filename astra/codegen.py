@@ -28,6 +28,7 @@ def _diag(node: Any, msg: str) -> str:
 
 BIN_OP_MAP = {"&&": "and", "||": "or"}
 _PY_STRUCTS: dict[str, StructDecl] = {}
+_PY_PROFILE = "debug"
 
 
 def _canonical_type(typ: str) -> str:
@@ -193,6 +194,9 @@ def _gpu_cuda_stmts(body: list[Any], *, ind: int, array_params: set[str]) -> lis
         if isinstance(st, ContinueStmt):
             out.append(f"{p}continue")
             continue
+        if isinstance(st, UnreachableStmt):
+            out.append(f"{p}raise RuntimeError('entered unreachable')")
+            continue
         raise CodegenError(_diag(st, f"unsupported CUDA kernel statement {type(st).__name__}"))
     return out
 
@@ -218,6 +222,7 @@ def to_python(
     prog: Program,
     freestanding: bool = False,
     overflow_mode: str = "trap",
+    profile: str = "debug",
     *,
     emit_entrypoint: bool = True,
 ) -> str:
@@ -227,17 +232,19 @@ def to_python(
         prog: Program AST to read or mutate.
         freestanding: Whether hosted-runtime features are disallowed.
         overflow_mode: Integer overflow behavior mode requested by the caller.
+        profile: Build profile selector, typically `debug` or `release`.
         emit_entrypoint: Input value used by this routine.
     
     Returns:
         Value described by the function return annotation.
     """
     import sys
-    global _PY_STRUCTS
+    global _PY_STRUCTS, _PY_PROFILE
     
     # Note: lower_for_loops is already called in build.py, so we don't call it here again
     gpu_ir_payload = lower_gpu_kernels(prog).to_dict()
     _PY_STRUCTS = {item.name: item for item in prog.items if isinstance(item, StructDecl)}
+    _PY_PROFILE = profile
     main_entry = "main"
     for item in prog.items:
         if isinstance(item, FnDecl) and item.name == "main":
@@ -278,6 +285,7 @@ def to_python(
         "_astra_next_sock = 1",
         "_astra_registry_lock = threading.Lock()",
         "_astra_libs = {}",
+        f"_ASTRA_PROFILE = {profile!r}",
         "def __astra_cast(v, t):",
         "    if t in ('Float', 'f16', 'f32', 'f64', 'f80', 'f128'):",
         "        return float(v)",
@@ -563,6 +571,26 @@ def to_python(
         "    return list(os.urandom(n))",
         "def proc_exit(code): raise SystemExit(int(code))",
         "def panic(msg): import sys; print(f'panic: {msg}', file=sys.stderr); sys.exit(101)",
+        "def assert_(cond):",
+        "    if not bool(cond):",
+        "        panic('assert failed')",
+        "    return None",
+        "def debug_assert_(cond):",
+        "    if _ASTRA_PROFILE == 'debug' and not bool(cond):",
+        "        panic('debug_assert failed')",
+        "    return None",
+        "def assume_(cond):",
+        "    if _ASTRA_PROFILE == 'debug' and not bool(cond):",
+        "        panic('assume failed')",
+        "    return None",
+        "def likely_(cond):",
+        "    return bool(cond)",
+        "def unlikely_(cond):",
+        "    return bool(cond)",
+        "def __astra_unreachable():",
+        "    if _ASTRA_PROFILE == 'debug':",
+        "        panic('entered unreachable')",
+        "    raise RuntimeError('entered unreachable')",
         "def env_get(k): return os.environ.get(str(k), '')",
         "def cwd(): return os.getcwd()",
         "def proc_run(cmd):",
@@ -1187,8 +1215,6 @@ def _expr(e: Any) -> str:
         if kind == "result":
             return f"__astra_try_unwrap_result({_expr(e.expr)})"
         inferred = getattr(e.expr, "inferred_type", "")
-        if isinstance(inferred, str) and inferred.startswith("Result<"):
-            return f"__astra_try_unwrap_result({_expr(e.expr)})"
         return f"__astra_try_unwrap({_expr(e.expr)})"
     if isinstance(e, CastExpr):
         return f"__astra_cast({_expr(e.expr)}, {_canonical_type(e.type_name)!r})"
@@ -1202,6 +1228,9 @@ def _expr(e: Any) -> str:
             return f"(not {_expr(e.expr)})"
         return f"({e.op}{_expr(e.expr)})"
     if isinstance(e, IfExpression):
+        if e.else_expr is None:
+            # Evaluate then-branch for side effects and normalize expression result to unit.
+            return f"((({_expr(e.then_expr)}), None)[1] if {_expr(e.cond)} else None)"
         return f"({_expr(e.then_expr)} if {_expr(e.cond)} else {_expr(e.else_expr)})"
     if isinstance(e, Binary):
         if e.op == "??":
@@ -1226,6 +1255,18 @@ def _expr(e: Any) -> str:
             return f"panic({_expr(args[0])})"
         if name in {"static_assert", "__static_assert"}:
             return "None"
+        if name in {"assert", "__assert"}:
+            return f"assert_({_expr(args[0])})" if args else "assert_(False)"
+        if name in {"debug_assert", "__debug_assert"}:
+            if _PY_PROFILE == "release":
+                return "None"
+            return f"debug_assert_({_expr(args[0])})" if args else "debug_assert_(False)"
+        if name in {"assume", "__assume"}:
+            return f"assume_({_expr(args[0])})" if args else "assume_(False)"
+        if name in {"likely", "__likely"}:
+            return f"likely_({_expr(args[0])})" if args else "likely_(False)"
+        if name in {"unlikely", "__unlikely"}:
+            return f"unlikely_({_expr(args[0])})" if args else "unlikely_(False)"
         if name in {"format", "__format"}:
             if len(args) == 1 and isinstance(args[0], StringInterpolation):
                 return _expr(args[0])
@@ -1495,6 +1536,8 @@ def _stmt_py(st: Any, ind: int) -> list[str]:
         return [f"{p}break"]
     if isinstance(st, ContinueStmt):
         return [f"{p}continue"]
+    if isinstance(st, UnreachableStmt):
+        return [f"{p}__astra_unreachable()"]
     if isinstance(st, UnsafeStmt):
         lines: list[str] = []
         for s in st.body:
@@ -1506,6 +1549,8 @@ def _stmt_py(st: Any, ind: int) -> list[str]:
         if isinstance(st.expr, Call):
             call_name = st.expr.resolved_name or _call_name(st.expr.fn)
             if call_name in {"static_assert", "__static_assert"}:
+                return []
+            if call_name in {"debug_assert", "__debug_assert"} and _PY_PROFILE == "release":
                 return []
         return [f"{p}{_expr(st.expr)}"]
     if isinstance(st, IfStmt):

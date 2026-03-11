@@ -342,7 +342,7 @@ class EffectAnalyzer:
         return result
     
     def _analyze_let_stmt(self, stmt: LetStmt) -> EffectInfo:
-        """Analyze let statement effects."""
+        """Analyze binding statement effects."""
         effect = self.analyze_expression(stmt.expr)
         
         # Let statement introduces a new binding

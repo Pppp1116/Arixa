@@ -193,7 +193,7 @@ class DeadCodeAnalyzer:
     
     def check_unreachable_code(self, stmt):
         """Check for unreachable code after return/break/continue."""
-        if isinstance(stmt, (ReturnStmt, BreakStmt, ContinueStmt)):
+        if isinstance(stmt, (ReturnStmt, BreakStmt, ContinueStmt, UnreachableStmt)):
             return True  # Code after this is unreachable
         return False
 
@@ -673,6 +673,11 @@ BUILTIN_SIGS: dict[str, BuiltinSig] = {
     "write_file": BuiltinSig(["String", "String"], "Int"),
     "args": BuiltinSig([], "Any"),
     "arg": BuiltinSig(["Int"], "String"),
+    "assert": BuiltinSig(["Bool"], "Void"),
+    "debug_assert": BuiltinSig(["Bool"], "Void"),
+    "assume": BuiltinSig(["Bool"], "Void"),
+    "likely": BuiltinSig(["Bool"], "Bool"),
+    "unlikely": BuiltinSig(["Bool"], "Bool"),
     "static_assert": BuiltinSig(None, "Void"),
     "spawn": BuiltinSig(["Any"], "Int"),
     "join": BuiltinSig(["Int"], "Any"),
@@ -795,6 +800,11 @@ _FREESTANDING_MODE_STACK: list[bool] = []
 
 
 BUILTIN_DOCS: dict[str, str] = {
+    "assert": "Runtime assertion. Panics/traps when condition is false.",
+    "debug_assert": "Debug-only assertion. Enabled in debug builds and removed in release builds.",
+    "assume": "Optimization hint. Debug builds trap on false; release builds treat condition as assumed true.",
+    "likely": "Branch prediction hint. Returns Bool and marks the true branch as likely.",
+    "unlikely": "Branch prediction hint. Returns Bool and marks the true branch as unlikely.",
     "static_assert": "Compile-time assertion. Use static_assert(condition[, message]).",
     "len": "Returns the length of a slice/vector/string-like value.",
     "format": "Formats values into a string.",
@@ -3227,6 +3237,8 @@ def _has_value_return(body: list[Any]) -> bool:
             if st.expr is not None:
                 return True
             continue
+        if isinstance(st, UnreachableStmt):
+            return True
         if isinstance(st, IfStmt):
             if _has_value_return(st.then_body) or _has_value_return(st.else_body):
                 return True
@@ -3249,6 +3261,10 @@ def _has_value_return(body: list[Any]) -> bool:
                     # Expression body - expressions don't contain return statements
                     # So they don't have value returns in the same way
                     pass
+        if isinstance(st, ExprStmt):
+            expr_ty = _canonical_type(getattr(st.expr, "inferred_type", ""))
+            if expr_ty == "Never":
+                return True
     return False
 
 
@@ -3306,6 +3322,10 @@ def _check_block(
             # Track variables declared in this scope
             if isinstance(st, LetStmt) and st.name != "_":
                 scope_vars.add(st.name)
+            if isinstance(st, (ReturnStmt, BreakStmt, ContinueStmt, UnreachableStmt)):
+                break
+            if bool(getattr(st, "_terminates", False)):
+                break
 
         # Automatic cleanup when scope exits
         # Variables with owned allocations are automatically cleaned up
@@ -3890,6 +3910,34 @@ def _check_stmt(
             return None
         return expr.left.value, _canonical_type(expr.right.value)
 
+    def _infer_stmt_expr(expr: Any, *, allow_unit_if: bool = False) -> str:
+        had_flag = hasattr(expr, "_allow_unit_context")
+        prev_flag = getattr(expr, "_allow_unit_context", False)
+        if allow_unit_if:
+            setattr(expr, "_allow_unit_context", True)
+        try:
+            return _infer(
+                expr,
+                scopes,
+                mut_scopes,
+                fn_groups,
+                structs,
+                enums,
+                owned,
+                borrow,
+                move,
+                filename,
+                fn_name,
+                unsafe_ok,
+                gpu_kernel,
+            )
+        finally:
+            if allow_unit_if:
+                if had_flag:
+                    setattr(expr, "_allow_unit_context", prev_flag)
+                else:
+                    delattr(expr, "_allow_unit_context")
+
     if gpu_kernel and isinstance(st, (ComptimeStmt, UnsafeStmt, MatchStmt)):
         raise SemanticError(
             _diag(
@@ -3907,7 +3955,7 @@ def _check_stmt(
                 raise SemanticError(_diag(filename, st.line, st.col, f"gpu kernel local `_` uses unsupported type {ty}"))
             _consume_if_move_name(st.expr, ty, borrow, move, filename, st.line, st.col)
             return
-        ty = _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
+        ty = _infer_stmt_expr(st.expr, allow_unit_if=False)
         if ty == NONE_LIT_TYPE and st.type_name is None:
             raise SemanticError(_diag(filename, st.line, st.col, f"`none` requires explicit nullable type for {st.name}"))
         if st.type_name is not None:
@@ -4059,7 +4107,14 @@ def _check_stmt(
             _require_shift_rhs_static_safe(filename, st.op, lhs, st.expr)
         return
     if isinstance(st, ReturnStmt):
-        expr_ty = "Void" if st.expr is None else _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
+        expr_ty = "Void"
+        if st.expr is not None:
+            allow_unit_if = (
+                isinstance(st.expr, IfExpression)
+                and st.expr.else_expr is None
+                and _canonical_type(fn_ret) == "Void"
+            )
+            expr_ty = _infer_stmt_expr(st.expr, allow_unit_if=allow_unit_if)
         _require_type(filename, st.line, st.col, fn_ret, expr_ty, "return")
         if _is_ref_type(fn_ret) and st.expr is not None:
             tied, note = _ref_return_tie_info(st.expr, ref_param_names, borrow)
@@ -4072,14 +4127,20 @@ def _check_stmt(
             owned.invalidate(st.expr.value)
         if st.expr is not None:
             _consume_if_move_name(st.expr, expr_ty, borrow, move, filename, st.line, st.col)
+        setattr(st, "_terminates", True)
         return
     if isinstance(st, BreakStmt):
         if loop_depth <= 0:
             raise SemanticError(_diag(filename, st.line, st.col, "break used outside loop"))
+        setattr(st, "_terminates", True)
         return
     if isinstance(st, ContinueStmt):
         if loop_depth <= 0:
             raise SemanticError(_diag(filename, st.line, st.col, "continue used outside loop"))
+        setattr(st, "_terminates", True)
+        return
+    if isinstance(st, UnreachableStmt):
+        setattr(st, "_terminates", True)
         return
     if isinstance(st, ComptimeStmt):
         comptime_const = const_state.copy()
@@ -4569,7 +4630,10 @@ def _check_stmt(
                 )
         return
     if isinstance(st, ExprStmt):
-        _infer(st.expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
+        allow_unit_if = isinstance(st.expr, IfExpression) and st.expr.else_expr is None
+        expr_ty = _infer_stmt_expr(st.expr, allow_unit_if=allow_unit_if)
+        if _canonical_type(expr_ty) == "Never":
+            setattr(st, "_terminates", True)
         return
     
     # Enhanced syntax semantic analysis
@@ -5211,6 +5275,18 @@ def _infer(
         
         # Infer then and else branches
         then_ty = _infer(e.then_expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
+        if e.else_expr is None:
+            if not getattr(e, "_allow_unit_context", False):
+                raise SemanticError(
+                    _diag(
+                        filename,
+                        e.line,
+                        e.col,
+                        "if expression without else is only valid when discarded or where Void is expected",
+                    )
+                )
+            return _typed(e, "Void")
+
         else_ty = _infer(e.else_expr, scopes, mut_scopes, fn_groups, structs, enums, owned, borrow, move, filename, fn_name, unsafe_ok, gpu_kernel)
         
         # Require branches to have same type

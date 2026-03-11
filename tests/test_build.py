@@ -449,6 +449,8 @@ def test_freestanding_hooks_source_includes_default_platform_hooks() -> None:
     text = build_mod._freestanding_hooks_source()
     assert "__fs_volatile_read8_impl" in text
     assert "__fs_volatile_write64_impl" in text
+    assert "volatile uint8_t" in text
+    assert "volatile uint64_t" in text
     assert "__fs_tick_now_impl" in text
     assert "__fs_panic_with_code_impl" in text
 
@@ -852,3 +854,18 @@ def test_build_cache_key_includes_profile_and_overflow(tmp_path: Path):
     assert st3 == "built"
     assert st4 == "cached"
     assert st5 == "built"
+
+
+def test_build_python_profile_controls_debug_assert_emission(tmp_path: Path):
+    src = tmp_path / "asserts.astra"
+    out_debug = tmp_path / "asserts_debug.py"
+    out_release = tmp_path / "asserts_release.py"
+    src.write_text("fn main() Int{ debug_assert(true); return 0; }")
+    assert build(str(src), str(out_debug), "py", profile="debug") in {"built", "cached"}
+    assert build(str(src), str(out_release), "py", profile="release") in {"built", "cached"}
+    debug_text = out_debug.read_text()
+    release_text = out_release.read_text()
+    assert "_ASTRA_PROFILE = 'debug'" in debug_text
+    assert "_ASTRA_PROFILE = 'release'" in release_text
+    assert "debug_assert_(True)" in debug_text
+    assert "debug_assert_(True)" not in release_text

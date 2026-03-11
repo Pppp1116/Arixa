@@ -83,8 +83,8 @@ class BasicBlock:
         """Check if control can fall through to next block."""
         if not self.terminator:
             return True
-        # ReturnStmt, BreakStmt, ContinueStmt don't fall through
-        if isinstance(self.terminator, (ReturnStmt, BreakStmt, ContinueStmt)):
+        # ReturnStmt, BreakStmt, ContinueStmt, UnreachableStmt don't fall through
+        if isinstance(self.terminator, (ReturnStmt, BreakStmt, ContinueStmt, UnreachableStmt)):
             return False
         # IfStmt without else might fall through
         if isinstance(self.terminator, IfStmt):
@@ -429,7 +429,7 @@ class CFGBuilder:
     
     def _is_terminator(self, stmt: Any) -> bool:
         """Check if a statement is a block terminator."""
-        return isinstance(stmt, (ReturnStmt, BreakStmt, ContinueStmt))
+        return isinstance(stmt, (ReturnStmt, BreakStmt, ContinueStmt, UnreachableStmt))
     
     def _handle_terminator(self, block: BasicBlock, terminator: Any) -> None:
         """Handle terminator statements."""

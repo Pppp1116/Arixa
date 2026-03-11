@@ -547,6 +547,8 @@ class _Evaluator:
             return _LoopSignal("break")
         if isinstance(st, ContinueStmt):
             return _LoopSignal("continue")
+        if isinstance(st, UnreachableStmt):
+            raise ComptimeError(_diag(self.filename, st.line, st.col, "entered unreachable in comptime execution"))
         if isinstance(st, IfStmt):
             branch = st.then_body if bool(self.eval_expr(st.cond, env, env_types)) else st.else_body
             for s in branch:

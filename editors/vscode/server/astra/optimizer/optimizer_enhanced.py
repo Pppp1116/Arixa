@@ -161,7 +161,7 @@ class SSAPromoter:
         
         for stmt in stmts:
             if isinstance(stmt, LetStmt) and stmt.name in promotable:
-                # Keep the let but mark for SSA promotion
+                # Keep the binding but mark for SSA promotion
                 setattr(stmt, "_ssa_promoted", True)
                 new_stmts.append(stmt)
             else:

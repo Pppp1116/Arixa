@@ -233,7 +233,7 @@ fn main() Int {
     
     cp = subprocess.run([sys.executable, str(out)], capture_output=True, text=True, timeout=5)
     # Expected: 5 + 0 + 5 + 5 + 5 + (-5) + 5 + 5 + 5 = 35
-    # But bitwise operations in ASTRA may have different behavior, let's check actual
+    # But bitwise operations in ASTRA may have different behavior, so check actual
     expected = 5 + 0 + 5 + 5 + 5 + (-5) + 5 + 5 + 5  # 35
     actual = cp.returncode
     print(f"Expected: {expected}, Actual: {actual}")

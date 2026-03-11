@@ -187,6 +187,25 @@ def test_none_allowed_with_explicit_option_type():
     analyze(parse(src))
 
 
+def test_if_expression_without_else_allowed_when_discarded():
+    src = "fn main() Void{ (if true { 1 }); return; }"
+    analyze(parse(src))
+
+
+def test_if_expression_without_else_rejected_in_value_context():
+    src = "fn main() Int{ x = if true { 1 }; return 0; }"
+    try:
+        analyze(parse(src))
+        assert False
+    except SemanticError as e:
+        assert "without else is only valid" in str(e)
+
+
+def test_if_expression_without_else_allowed_in_void_return_context():
+    src = "fn main() Void{ return if true { 1 }; }"
+    analyze(parse(src))
+
+
 def test_option_type_accepts_plain_inner_value_as_some():
     src = "fn main() Int{ x: Int? = 7; return x ?? 0; }"
     analyze(parse(src))
@@ -1490,6 +1509,25 @@ def test_static_assert_compile_time_true_and_false():
         assert "static assertion failed: math broke" in str(e)
 
 
+
+
+def test_assert_debug_assert_assume_require_bool_condition():
+    for name in ("assert", "debug_assert", "assume", "likely", "unlikely"):
+        src = f"fn main() Int{{ {name}(1); return 0; }}"
+        try:
+            analyze(parse(src))
+            assert False
+        except SemanticError as e:
+            assert "expected Bool" in str(e)
+
+
+def test_likely_unlikely_return_bool():
+    src = "fn main() Int{ if likely(true) { return 1; } if unlikely(false) { return 2; } return 0; }"
+    analyze(parse(src))
+
+
+def test_unreachable_satisfies_non_void_return_path():
+    analyze(parse("fn main() Int{ unreachable; }"))
 
 
 def test_static_assert_fails_for_constexpr_false_condition():

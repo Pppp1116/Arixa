@@ -35,8 +35,82 @@ def __astra_cast(v, t):
     if signed and out >= (1 << (bits - 1)):
         out -= (1 << bits)
     return out
-def print_(*args): print(*args); return None
-def format_(*args): return ' '.join(str(arg) for arg in args)
+def __astra_display(arg):
+    if isinstance(arg, bool):
+        return 'true' if arg else 'false'
+    if isinstance(arg, int):
+        return str(arg)
+    if isinstance(arg, float):
+        if arg != arg:
+            return 'nan'
+        if arg == float('inf'):
+            return 'inf'
+        if arg == float('-inf'):
+            return '-inf'
+        return format(arg, '.15g')
+    if isinstance(arg, str):
+        return arg
+    if arg is None:
+        return 'none'
+
+    def _normalize(value, seen):
+        if isinstance(value, (bool, int, float, str)) or value is None:
+            return __astra_display(value)
+        value_id = id(value)
+        if value_id in seen:
+            return "<cycle>"
+        if isinstance(value, list):
+            seen.add(value_id)
+            try:
+                return [_normalize(item, seen) for item in value]
+            finally:
+                seen.discard(value_id)
+        if isinstance(value, tuple):
+            seen.add(value_id)
+            try:
+                return [_normalize(item, seen) for item in value]
+            finally:
+                seen.discard(value_id)
+        if isinstance(value, set):
+            seen.add(value_id)
+            try:
+                return [_normalize(item, seen) for item in sorted(value, key=lambda x: str(x))]
+            finally:
+                seen.discard(value_id)
+        if isinstance(value, dict):
+            seen.add(value_id)
+            try:
+                out = {}
+                for key, val in value.items():
+                    key_norm = _normalize(key, seen)
+                    out[str(key_norm)] = _normalize(val, seen)
+                return out
+            finally:
+                seen.discard(value_id)
+        if hasattr(value, '__dict__'):
+            seen.add(value_id)
+            try:
+                return _normalize(value.__dict__, seen)
+            finally:
+                seen.discard(value_id)
+        return str(value)
+
+    if isinstance(arg, (list, tuple, set, dict)) or hasattr(arg, '__dict__'):
+        try:
+            return json.dumps(_normalize(arg, set()), sort_keys=True)
+        except Exception:
+            pass
+    try:
+        return json.dumps(_normalize(arg, set()), sort_keys=True)
+    except Exception:
+        return str(arg)
+def print_(*args):
+    if not args:
+        print()
+    else:
+        print(' '.join(__astra_display(arg) for arg in args))
+    return None
+def format_(*args): return ' '.join(__astra_display(arg) for arg in args)
 class _AstraTryNone(Exception):
     pass
 class _AstraTryResultErr(Exception):

@@ -223,7 +223,7 @@ class LocalValueNumbering(OptimizationPass):
     
     def _optimize_let_stmt(self, stmt: LetStmt, value_table: Dict[Any, str], 
                           context: PassContext, result: PassResult) -> Any:
-        """Optimize let statement with LVN."""
+        """Optimize binding statement with LVN."""
         # Check if expression is already available
         expr_key = context.expression_manager.get_expression_key(stmt.expr)
         
@@ -588,7 +588,7 @@ class ConstantPropagation(OptimizationPass):
         if isinstance(stmt, LetStmt):
             new_expr = self._propagate_constants_in_expression(stmt.expr, constants, context, result)
             if new_expr != stmt.expr:
-                result.add_change(ChangeType.EXPRESSION_MODIFIED, f"let {stmt.name}")
+                result.add_change(ChangeType.EXPRESSION_MODIFIED, f"binding {stmt.name}")
                 return LetStmt(
                     name=stmt.name,
                     expr=new_expr,

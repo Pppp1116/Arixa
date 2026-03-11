@@ -56,40 +56,37 @@ pub fn utf8_sequence_length(first_byte u8) Int {
 
 /// Validate UTF-8 byte sequence
 pub fn is_valid_utf8(data &Bytes) Bool {
+    data_len = vec_len(*data);
     mut i = 0;
-    mut data_len = vec_len(*data);
-    
     while i < data_len {
         first_byte_opt = vec_get(*data, i);
         if first_byte_opt == none {
             return false;
         }
-        
+        else {}
+
         first_byte = first_byte_opt as u8;
         seq_len = utf8_sequence_length(first_byte);
-        
+
         if seq_len == 0 {
-            return false;  // Invalid start byte
+            return false;
         }
-        
-        // Check we have enough bytes for the sequence
+
         if i + seq_len > data_len {
-            return false;  // Incomplete sequence
+            return false;
         }
-        
-        // Check continuation bytes
-        mut j = 1;
-        while j < seq_len {
+
+        for j in 1..seq_len {
             cont_byte_opt = vec_get(*data, i + j);
             if cont_byte_opt == none || !is_utf8_continuation(cont_byte_opt as u8) {
                 return false;
             }
-            j = j + 1;
+            else {}
         }
-        
+
         i = i + seq_len;
     }
-    
+
     return true;
 }
 
@@ -187,7 +184,7 @@ pub fn base64_decode(s String) Bytes | DecodeError {
     if out == none {
         return DecodeError("Invalid base64 string");
     }
-    else {}
+    
     return out as Bytes;
 }
 
@@ -214,7 +211,7 @@ pub fn url_decode(encoded String) String | DecodeError {
     if out == none {
         return DecodeError("Invalid URL escape");
     }
-    else {}
+    
     return out as String;
 }
 

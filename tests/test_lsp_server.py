@@ -246,7 +246,7 @@ def test_lsp_cancel_request_drops_response(tmp_path: Path):
 
 def test_lsp_hover_builtin_and_gpu_api_docs(tmp_path: Path):
     server = lsp.LSPServer(log=lsp.logging.getLogger("test-lsp"), debounce_ms=0)
-    src = 'fn main() Int{ static_assert(true); gpu.launch; return 0; }\n'
+    src = 'fn main() Int{ static_assert(true); assert(true); assume(true); if likely(true) { } else { } gpu.launch; return 0; }\n'
     uri = (tmp_path / "h.astra").as_uri()
     server.docs[uri] = lsp.TextDocument(uri=uri, text=src, version=1, language_id="astra")
 
@@ -254,6 +254,19 @@ def test_lsp_hover_builtin_and_gpu_api_docs(tmp_path: Path):
     hover_builtin = server._hover(uri, 0, src.index("static_assert"))
     assert hover_builtin is not None
     assert "Compile-time assertion" in hover_builtin["contents"]["value"]
+
+    assert_pos = src.index(" assert(true);") + 1
+    hover_assert = server._hover(uri, 0, assert_pos)
+    assert hover_assert is not None
+    assert "Runtime assertion" in hover_assert["contents"]["value"]
+
+    hover_assume = server._hover(uri, 0, src.index("assume"))
+    assert hover_assume is not None
+    assert "Optimization hint" in hover_assume["contents"]["value"]
+
+    hover_likely = server._hover(uri, 0, src.index("likely"))
+    assert hover_likely is not None
+    assert "Branch prediction hint" in hover_likely["contents"]["value"]
 
     # gpu API hover on launch token
     launch_col = src.index("launch")
@@ -333,3 +346,237 @@ def test_completion_context_match_detection_uses_word_boundary(tmp_path: Path):
     )
     ctx = server._get_completion_context(doc, 0, doc.text.index("rematch") + len("rematch"))
     assert ctx["in_match"] is False
+
+
+def test_lsp_code_action_create_match_for_union_on_binding(tmp_path: Path):
+    server = lsp.LSPServer(log=lsp.logging.getLogger("test-lsp"), debounce_ms=0)
+    src = """
+fn make(flag Bool) Int | String {
+  if flag {
+    return 1;
+  } else {
+    return "x";
+  }
+}
+fn main() Int {
+  result = make(true);
+  return 0;
+}
+"""
+    uri = (tmp_path / "union_create.astra").as_uri()
+    server.docs[uri] = lsp.TextDocument(uri=uri, text=src, version=1, language_id="astra")
+    line = next(i for i, row in enumerate(src.splitlines()) if "result = make(true);" in row)
+    char = src.splitlines()[line].index("result") + 1
+    actions = server._code_actions(
+        {
+            "textDocument": {"uri": uri},
+            "range": {"start": {"line": line, "character": char}, "end": {"line": line, "character": char}},
+            "context": {"diagnostics": []},
+        }
+    )
+    create = next(a for a in actions if a.get("title") == "Create match for union")
+    new_text = create["edit"]["changes"][uri][0]["newText"]
+    assert "match result {" in new_text
+    assert "is Int" in new_text
+    assert "is String" in new_text
+    assert "${1}" in new_text
+    assert "$0" in new_text
+
+
+def test_lsp_code_action_add_missing_union_arms(tmp_path: Path):
+    server = lsp.LSPServer(log=lsp.logging.getLogger("test-lsp"), debounce_ms=0)
+    src = """
+fn make(flag Bool) Int | String | none {
+  if flag {
+    return 1;
+  } else {
+    return none;
+  }
+}
+fn main() Int {
+  value = make(true);
+  match value {
+    v if v is Int => {
+    }
+  }
+  return 0;
+}
+"""
+    uri = (tmp_path / "union_missing.arixa").as_uri()
+    server.docs[uri] = lsp.TextDocument(uri=uri, text=src, version=1, language_id="astra")
+    lines = src.splitlines()
+    line = next(i for i, row in enumerate(lines) if row.strip().startswith("match value"))
+    char = lines[line].index("value") + 1
+    actions = server._code_actions(
+        {
+            "textDocument": {"uri": uri},
+            "range": {"start": {"line": line, "character": char}, "end": {"line": line, "character": char}},
+            "context": {"diagnostics": []},
+        }
+    )
+    add_missing = next(a for a in actions if a.get("title") == "Add missing union arms")
+    new_text = add_missing["edit"]["changes"][uri][0]["newText"]
+    assert "text if text is String => {" in new_text
+    assert "none => {" in new_text
+    assert "is Int" not in new_text
+
+
+def test_lsp_code_action_union_diagnostic_offers_create_and_wrap(tmp_path: Path):
+    server = lsp.LSPServer(log=lsp.logging.getLogger("test-lsp"), debounce_ms=0)
+    src = """
+fn make(flag Bool) Int | String {
+  if flag {
+    return 1;
+  } else {
+    return "x";
+  }
+}
+fn main() Int {
+  x: Int = make(true);
+  return 0;
+}
+"""
+    uri = (tmp_path / "union_diag.arixa").as_uri()
+    server.docs[uri] = lsp.TextDocument(uri=uri, text=src, version=1, language_id="astra")
+    diagnostics = lsp._parse_diagnostics(src, uri)
+    assert diagnostics
+    dstart = diagnostics[0]["range"]["start"]
+    actions = server._code_actions(
+        {
+            "textDocument": {"uri": uri},
+            "range": {"start": dstart, "end": dstart},
+            "context": {"diagnostics": diagnostics},
+        }
+    )
+    titles = {a.get("title") for a in actions}
+    assert "Create match for union" in titles
+    assert "Wrap in exhaustive match" in titles
+    wrap = next(a for a in actions if a.get("title") == "Wrap in exhaustive match")
+    assert "match make(true) {" in wrap["edit"]["changes"][uri][0]["newText"]
+
+
+def test_lsp_code_action_create_match_uses_narrowed_union_members(tmp_path: Path):
+    server = lsp.LSPServer(log=lsp.logging.getLogger("test-lsp"), debounce_ms=0)
+    src = """
+fn make(flag Bool) Int | String | none {
+  if flag {
+    return 1;
+  } else {
+    return none;
+  }
+}
+fn main() Int {
+  value = make(true);
+  if value is Int {
+    return 0;
+  } else {
+    value;
+  }
+  return 0;
+}
+"""
+    uri = (tmp_path / "union_narrow.arixa").as_uri()
+    server.docs[uri] = lsp.TextDocument(uri=uri, text=src, version=1, language_id="astra")
+    lines = src.splitlines()
+    line = next(i for i, row in enumerate(lines) if row.strip() == "value;")
+    char = lines[line].index("value") + 1
+    actions = server._code_actions(
+        {
+            "textDocument": {"uri": uri},
+            "range": {"start": {"line": line, "character": char}, "end": {"line": line, "character": char}},
+            "context": {"diagnostics": []},
+        }
+    )
+    create = next(a for a in actions if a.get("title") == "Create match for union")
+    new_text = create["edit"]["changes"][uri][0]["newText"]
+    assert "is String" in new_text
+    assert "none => {" in new_text
+    assert "is Int" not in new_text
+
+
+def test_lsp_code_action_add_explicit_variable_type(tmp_path: Path):
+    server = lsp.LSPServer(log=lsp.logging.getLogger("test-lsp"), debounce_ms=0)
+    src = """
+fn main() Int {
+  mut value = 1;
+  return 0;
+}
+"""
+    uri = (tmp_path / "explicit_type.arixa").as_uri()
+    server.docs[uri] = lsp.TextDocument(uri=uri, text=src, version=1, language_id="astra")
+    lines = src.splitlines()
+    line = next(i for i, row in enumerate(lines) if "mut value = 1;" in row)
+    char = lines[line].index("value") + 1
+    actions = server._code_actions(
+        {
+            "textDocument": {"uri": uri},
+            "range": {"start": {"line": line, "character": char}, "end": {"line": line, "character": char}},
+            "context": {"diagnostics": []},
+        }
+    )
+    explicit = next(a for a in actions if a.get("title") == "Add explicit variable type")
+    edit = explicit["edit"]["changes"][uri][0]
+    assert edit["newText"] == ": Int"
+    row = lines[line]
+    assert edit["range"]["start"]["character"] == row.index("value") + len("value")
+
+
+def test_lsp_type_completion_in_annotation_prefers_inferred_type(tmp_path: Path):
+    server = lsp.LSPServer(log=lsp.logging.getLogger("test-lsp"), debounce_ms=0)
+    src = """
+fn make() Int {
+  return 1;
+}
+fn main() Int {
+  value: Int = make();
+  return 0;
+}
+"""
+    uri = (tmp_path / "type_completion.arixa").as_uri()
+    server.docs[uri] = lsp.TextDocument(uri=uri, text=src, version=1, language_id="astra")
+    lines = src.splitlines()
+    line = next(i for i, row in enumerate(lines) if "value: Int = make();" in row)
+    char = lines[line].index(":") + 2
+    items = server._completion(uri, line, char)
+    by_label = {item["label"]: item for item in items}
+    assert "Int" in by_label
+    assert by_label["Int"]["detail"] == "inferred type"
+    assert by_label["Int"]["sortText"].startswith("001")
+    labels = {item["label"] for item in items}
+    assert "Vec<$1>" in labels
+    assert "&$1" in labels
+
+
+def test_lsp_code_action_bulk_add_explicit_types(tmp_path: Path):
+    server = lsp.LSPServer(log=lsp.logging.getLogger("test-lsp"), debounce_ms=0)
+    src = """
+fn make() Int {
+  return 1;
+}
+fn main() Int {
+  a = 1;
+  b = make();
+  return 0;
+}
+"""
+    uri = (tmp_path / "bulk_types.arixa").as_uri()
+    server.docs[uri] = lsp.TextDocument(uri=uri, text=src, version=1, language_id="astra")
+    lines = src.splitlines()
+    start = next(i for i, row in enumerate(lines) if "a = 1;" in row)
+    end = next(i for i, row in enumerate(lines) if "b = make();" in row)
+    actions = server._code_actions(
+        {
+            "textDocument": {"uri": uri},
+            "range": {"start": {"line": start, "character": 0}, "end": {"line": end, "character": 12}},
+            "context": {"diagnostics": []},
+        }
+    )
+    all_types = next(a for a in actions if a.get("title") == "Add explicit types to variable declarations")
+    non_trivial = next(a for a in actions if a.get("title") == "Add explicit types where inference is non-trivial")
+    all_changes = all_types["edit"]["changes"][uri]
+    non_trivial_changes = non_trivial["edit"]["changes"][uri]
+    assert len(all_changes) == 2
+    assert len(non_trivial_changes) == 1
+    assert all_changes[0]["newText"] == ": Int"
+    assert all_changes[1]["newText"] == ": Int"
+    assert non_trivial_changes[0]["newText"] == ": Int"

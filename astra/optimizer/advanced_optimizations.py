@@ -122,7 +122,7 @@ class LoopInvariantCodeMotion(OptimizationPass):
     def _is_statement_invariant(self, stmt: Any, loop_body: Set[int],
                                 cfg: ControlFlowGraph, context: PassContext) -> bool:
         """Check if a statement is loop-invariant."""
-        # Only consider let statements for now
+        # Only consider binding statements for now
         if not isinstance(stmt, LetStmt):
             return False
         
@@ -498,7 +498,7 @@ class StrengthReduction(OptimizationPass):
         if isinstance(stmt, LetStmt):
             new_expr = self._optimize_expression(stmt.expr, context, result)
             if new_expr != stmt.expr:
-                result.add_change(ChangeType.EXPRESSION_MODIFIED, f"let {stmt.name}")
+                result.add_change(ChangeType.EXPRESSION_MODIFIED, f"binding {stmt.name}")
                 return LetStmt(
                     name=stmt.name,
                     expr=new_expr,

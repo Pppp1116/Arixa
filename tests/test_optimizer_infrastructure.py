@@ -19,7 +19,7 @@ class TestCFGConstruction:
     
     def test_simple_function_cfg(self) -> None:
         """Test CFG construction for a simple function."""
-        # Build AST: fn test() { let x = 1; return x; }
+        # Build AST: fn test() { x = 1; return x; }
         body = [
             LetStmt(name="x", expr=Literal(value=1), mut=False),
             ReturnStmt(expr=Name(value="x"))
@@ -33,7 +33,7 @@ class TestCFGConstruction:
         entry_block = cfg.get_block(cfg.entry_block)
         assert entry_block is not None
         assert entry_block.block_type == BlockType.ENTRY
-        assert len(entry_block.statements) == 1  # let x = 1
+        assert len(entry_block.statements) == 1  # x = 1
         assert isinstance(entry_block.terminator, ReturnStmt)
         
         # Check exit block

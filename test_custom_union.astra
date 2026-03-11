@@ -1,0 +1,13 @@
+// Test custom union types after removing Result/Option
+
+type MyResult = String | Int | Bool;
+
+fn test_union() MyResult {
+    return "hello";
+}
+
+fn main() Int {
+    result = test_union();
+    print(result);
+    return 0;
+}

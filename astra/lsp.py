@@ -12,23 +12,34 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 from astra.ast import (
+    Binary,
+    BoolLit,
+    Call,
     ComptimeStmt,
     EnumDecl,
+    ExprStmt,
+    FieldExpr,
     ExternFnDecl,
     FnDecl,
+    GuardedPattern,
     IteratorForStmt,
     IfStmt,
     ImportDecl,
     LetStmt,
+    Literal,
     MatchStmt,
     Name,
+    NilLit,
+    OrPattern,
     StructDecl,
     TypeAliasDecl,
+    WildcardPattern,
     WhileStmt,
 )
 from astra.check import _parse_diag_lines, run_check_source
 from astra.formatter import fmt, resolve_format_config
 from astra.module_resolver import ModuleResolutionError, resolve_import_path
+from astra.lexer import lex
 from astra.parser import ParseError, parse
 from astra.semantic import BUILTIN_DOCS, BUILTIN_SIGS, GPU_API_DOCS, SemanticError, analyze
 
@@ -44,6 +55,7 @@ KEYWORDS = [
     "return",
     "break",
     "continue",
+    "unreachable",
     "unsafe",
     "struct",
     "enum",
@@ -70,6 +82,7 @@ SNIPPETS = {
     "while": "while ${1:cond} {\n    ${0}\n}",
     "if": "if ${1:cond} {\n    ${0}\n}",
     "return": "return ${0};",
+    "unreachable": "unreachable;",
     "mut": "mut ${1:name} = ${0};",
 }
 _NO_MSG = object()
@@ -262,6 +275,996 @@ def _first_paragraph(doc: str) -> str:
         return ""
     parts = doc.strip().split("\n\n", 1)
     return parts[0].strip()
+
+
+_UNION_BINDING_PREFS = {
+    "Error": "err",
+    "File": "file",
+    "Config": "cfg",
+    "Vec<u8>": "bytes",
+    "String": "text",
+}
+_UNRESOLVED_UNION_TYPES = {"<error>", "<unknown>", "<unresolved>", "<?>"}
+
+
+def _canonical_type_name(typ: str) -> str:
+    t = str(typ).strip()
+    if not t:
+        return t
+    if t.endswith("?"):
+        return f"{_canonical_type_name(t[:-1])} | none"
+    if t.startswith("Option<") and t.endswith(">"):
+        inner = t[len("Option<") : -1].strip()
+        return f"{_canonical_type_name(inner)} | none"
+    if t.startswith("&mut "):
+        return f"&mut {_canonical_type_name(t[5:])}"
+    if t.startswith("&"):
+        return f"&{_canonical_type_name(t[1:])}"
+    if t.startswith("Vec<") and t.endswith(">"):
+        return f"Vec<{_canonical_type_name(t[4:-1])}>"
+    return t
+
+
+def _split_top_level_type(text: str, sep: str) -> list[str]:
+    out: list[str] = []
+    cur: list[str] = []
+    depth_angle = 0
+    depth_paren = 0
+    depth_bracket = 0
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "<":
+            depth_angle += 1
+        elif ch == ">" and depth_angle > 0:
+            depth_angle -= 1
+        elif ch == "(":
+            depth_paren += 1
+        elif ch == ")" and depth_paren > 0:
+            depth_paren -= 1
+        elif ch == "[":
+            depth_bracket += 1
+        elif ch == "]" and depth_bracket > 0:
+            depth_bracket -= 1
+        if (
+            text.startswith(sep, i)
+            and depth_angle == 0
+            and depth_paren == 0
+            and depth_bracket == 0
+        ):
+            out.append("".join(cur).strip())
+            cur = []
+            i += len(sep)
+            continue
+        cur.append(ch)
+        i += 1
+    out.append("".join(cur).strip())
+    return out
+
+
+def _normalized_union_members(typ: Any) -> list[str]:
+    raw = str(typ).strip()
+    if not raw:
+        return []
+    parts = _split_top_level_type(raw, "|")
+    members = [p.strip() for p in parts if p.strip()]
+    out: list[str] = []
+    seen: set[str] = set()
+    for member in members:
+        canon = _canonical_type_name(member)
+        if canon in seen:
+            continue
+        seen.add(canon)
+        out.append(canon)
+    return out
+
+
+def _is_supported_union_members(members: list[str]) -> bool:
+    if len(members) <= 1:
+        return False
+    for member in members:
+        if not member:
+            return False
+        if member in _UNRESOLVED_UNION_TYPES:
+            return False
+        low = member.lower()
+        if "unsafe union" in low or "raw union" in low:
+            return False
+    return True
+
+
+def _word_bounds(text: str, line: int, character: int) -> tuple[str, int, int]:
+    lines = text.splitlines()
+    if line < 0 or line >= len(lines):
+        return "", 0, 0
+    row = lines[line]
+    if not row:
+        return "", 0, 0
+    pos = min(max(0, character), len(row) - 1)
+    if not (row[pos].isalnum() or row[pos] == "_"):
+        return "", 0, 0
+    s = pos
+    e = pos
+    while s > 0 and (row[s - 1].isalnum() or row[s - 1] == "_"):
+        s -= 1
+    while e + 1 < len(row) and (row[e + 1].isalnum() or row[e + 1] == "_"):
+        e += 1
+    return row[s : e + 1], s, e + 1
+
+
+def _iter_ast_with_parents(node: Any, parent: Any | None = None):
+    if is_dataclass(node):
+        yield node, parent
+        for field in node.__dataclass_fields__.keys():
+            child = getattr(node, field)
+            yield from _iter_ast_with_parents(child, node)
+        return
+    if isinstance(node, list):
+        for item in node:
+            yield from _iter_ast_with_parents(item, parent)
+        return
+    if isinstance(node, tuple):
+        for item in node:
+            yield from _iter_ast_with_parents(item, parent)
+
+
+def _is_expression_node(node: Any) -> bool:
+    return isinstance(
+        node,
+        (
+            Name,
+            Call,
+            FieldExpr,
+            Binary,
+            BoolLit,
+            NilLit,
+        ),
+    )
+
+
+def _is_statement_node(node: Any) -> bool:
+    return isinstance(node, (LetStmt, ExprStmt, MatchStmt, IfStmt, WhileStmt, IteratorForStmt, ComptimeStmt))
+
+
+def _parent_map(prog: Any) -> dict[int, Any]:
+    parents: dict[int, Any] = {}
+    for node, parent in _iter_ast_with_parents(prog):
+        if parent is not None:
+            parents[id(node)] = parent
+    return parents
+
+
+def _nearest_statement(node: Any, parents: dict[int, Any]) -> Any | None:
+    cur = node
+    while cur is not None:
+        if _is_statement_node(cur):
+            return cur
+        cur = parents.get(id(cur))
+    return None
+
+
+def _line_text(text: str, line: int) -> str:
+    lines = text.splitlines()
+    if line < 0 or line >= len(lines):
+        return ""
+    return lines[line]
+
+
+def _line_indent(text: str, line: int) -> str:
+    row = _line_text(text, line)
+    if not row:
+        return ""
+    return row[: len(row) - len(row.lstrip(" \t"))]
+
+
+def _line_start_offset(text: str, line: int) -> int:
+    return _position_to_offset(text, max(0, line), 0)
+
+
+def _line_end_offset(text: str, line: int) -> int:
+    lines = text.splitlines(keepends=True)
+    if line < 0:
+        return 0
+    if line >= len(lines):
+        return len(text)
+    off = 0
+    for i in range(line + 1):
+        off += len(lines[i])
+    return min(off, len(text))
+
+
+def _offset_range(text: str, start: int, end: int) -> dict[str, dict[str, int]]:
+    s_line, s_char = _offset_to_position(text, start)
+    e_line, e_char = _offset_to_position(text, end)
+    return {
+        "start": {"line": s_line, "character": s_char},
+        "end": {"line": e_line, "character": e_char},
+    }
+
+
+def _collect_declared_names(text: str) -> set[str]:
+    out = set(KEYWORDS)
+    for m in re.finditer(r"\b(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=;]+)?=", text):
+        out.add(m.group(1))
+    return out
+
+
+def _binding_base_for_union_member(member: str) -> str:
+    preferred = _UNION_BINDING_PREFS.get(member)
+    if preferred:
+        return preferred
+    base = member.strip()
+    if base.startswith("&mut "):
+        base = base[5:]
+    elif base.startswith("&"):
+        base = base[1:]
+    if base.startswith("[") and base.endswith("]"):
+        return "vec"
+    if "<" in base:
+        base = base.split("<", 1)[0].strip()
+    base = re.sub(r"[^A-Za-z0-9_]", "", base).lower()
+    if not base:
+        return "value"
+    return base
+
+
+def _unique_binding_name(base: str, used: set[str]) -> str:
+    cand = base
+    idx = 2
+    while cand in used or cand in KEYWORDS:
+        cand = f"{base}{idx}"
+        idx += 1
+    used.add(cand)
+    return cand
+
+
+def _union_member_pattern(member: str, used: set[str]) -> str:
+    if member == "none":
+        return "none"
+    bind = _unique_binding_name(_binding_base_for_union_member(member), used)
+    return f"{bind} if {bind} is {member}"
+
+
+def _union_match_snippet(
+    subject: str,
+    members: list[str],
+    base_indent: str,
+    indent_unit: str,
+    used: set[str],
+    *,
+    tab_index: int = 1,
+    include_final_cursor: bool = True,
+) -> tuple[str, int]:
+    out: list[str] = [f"{base_indent}match {subject} {{"]
+    tab = tab_index
+    for member in members:
+        pat = _union_member_pattern(member, used)
+        out.append(f"{base_indent}{indent_unit}{pat} => {{")
+        out.append(f"{base_indent}{indent_unit}{indent_unit}${{{tab}}}")
+        out.append(f"{base_indent}{indent_unit}}}")
+        tab += 1
+    out.append(f"{base_indent}}}")
+    if include_final_cursor:
+        out.append(f"{base_indent}$0")
+    return "\n".join(out) + "\n", tab
+
+
+def _union_arms_snippet(
+    members: list[str],
+    base_indent: str,
+    indent_unit: str,
+    used: set[str],
+    *,
+    tab_index: int = 1,
+) -> tuple[str, int]:
+    out: list[str] = []
+    tab = tab_index
+    for member in members:
+        pat = _union_member_pattern(member, used)
+        out.append(f"{base_indent}{indent_unit}{pat} => {{")
+        out.append(f"{base_indent}{indent_unit}{indent_unit}${{{tab}}}")
+        out.append(f"{base_indent}{indent_unit}}}")
+        tab += 1
+    return ("\n".join(out) + ("\n" if out else "")), tab
+
+
+def _literal_text(val: Any) -> str:
+    if isinstance(val, str):
+        return json.dumps(val)
+    return str(val)
+
+
+def _simple_atom_text(expr: Any) -> str | None:
+    if isinstance(expr, Name):
+        return expr.value
+    if isinstance(expr, FieldExpr):
+        obj = _simple_atom_text(expr.obj)
+        if obj is None:
+            return None
+        return f"{obj}.{expr.field}"
+    if isinstance(expr, BoolLit):
+        return "true" if expr.value else "false"
+    if isinstance(expr, NilLit):
+        return "none"
+    if hasattr(expr, "value"):
+        return _literal_text(getattr(expr, "value"))
+    return None
+
+
+def _expr_text(expr: Any) -> str | None:
+    if isinstance(expr, Call):
+        fn_text = _simple_atom_text(expr.fn)
+        if fn_text is None:
+            return None
+        arg_texts: list[str] = []
+        for arg in expr.args:
+            at = _simple_atom_text(arg)
+            if at is None:
+                return None
+            arg_texts.append(at)
+        return f"{fn_text}({', '.join(arg_texts)})"
+    return _simple_atom_text(expr)
+
+
+def _is_simple_match_subject(expr: Any) -> bool:
+    if isinstance(expr, Name):
+        return True
+    if isinstance(expr, FieldExpr):
+        return _simple_atom_text(expr) is not None
+    if isinstance(expr, Call):
+        return _expr_text(expr) is not None
+    return False
+
+
+def _subject_from_expr(expr: Any, used_names: set[str]) -> tuple[str, str] | None:
+    expr_text = _expr_text(expr)
+    if expr_text is None:
+        return None
+    if _is_simple_match_subject(expr):
+        return "", expr_text
+    tmp = _unique_binding_name("value", used_names)
+    return f"{tmp} = {expr_text};\n", tmp
+
+
+def _find_matching_brace(text: str, open_idx: int) -> int | None:
+    depth = 0
+    i = open_idx
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            i += 1
+            while i < n:
+                if text[i] == "\\":
+                    i += 1
+                    if i < n:
+                        i += 1
+                    continue
+                if text[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n:
+            nxt = text[i + 1]
+            if nxt == "/":
+                i += 2
+                while i < n and text[i] != "\n":
+                    i += 1
+                continue
+            if nxt == "*":
+                i += 2
+                while i < n:
+                    if text[i] == "*" and i + 1 < n and text[i + 1] == "/":
+                        i += 2
+                        break
+                    i += 1
+                continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return None
+
+
+def _match_stmt_offsets(text: str, st: MatchStmt) -> tuple[int, int, int] | None:
+    start = int(getattr(st, "pos", -1))
+    if start < 0 or start >= len(text):
+        return None
+    open_idx = text.find("{", start)
+    if open_idx < 0:
+        return None
+    close_idx = _find_matching_brace(text, open_idx)
+    if close_idx is None:
+        return None
+    return start, open_idx, close_idx
+
+
+def _member_by_canonical(members: list[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for member in members:
+        out[_canonical_type_name(member)] = member
+    return out
+
+
+def _covered_union_members_from_pattern(pat: Any, members: list[str]) -> set[str] | None:
+    member_map = _member_by_canonical(members)
+    if isinstance(pat, OrPattern):
+        covered: set[str] = set()
+        for sub in pat.patterns:
+            sub_cov = _covered_union_members_from_pattern(sub, members)
+            if sub_cov is None:
+                return None
+            covered.update(sub_cov)
+        return covered
+    if isinstance(pat, GuardedPattern):
+        if isinstance(pat.guard, Binary) and pat.guard.op == "is":
+            right = getattr(pat.guard, "right", None)
+            if isinstance(right, Name):
+                key = _canonical_type_name(right.value)
+                if key in member_map:
+                    return {member_map[key]}
+        return set()
+    if isinstance(pat, WildcardPattern):
+        return None
+    if isinstance(pat, Name):
+        if pat.value == "_":
+            return None
+        # Unconditional name patterns are catch-all in Astra match semantics.
+        return None
+    if isinstance(pat, NilLit):
+        if "none" in member_map:
+            return {"none"}
+    return set()
+
+
+def _range_start(params: dict[str, Any]) -> tuple[int, int]:
+    rng = params.get("range", {})
+    start = rng.get("start", {})
+    return int(start.get("line", 0)), int(start.get("character", 0))
+
+
+def _find_union_binding_on_line(prog: Any, line: int) -> LetStmt | None:
+    for node in _iter_ast(prog):
+        if not isinstance(node, LetStmt):
+            continue
+        if int(getattr(node, "line", 0)) != line + 1:
+            continue
+        inferred = getattr(node.expr, "inferred_type", None)
+        if not isinstance(inferred, str):
+            continue
+        members = _normalized_union_members(inferred)
+        if _is_supported_union_members(members):
+            return node
+    return None
+
+
+def _find_union_expr_at_position(prog: Any, text: str, line: int, character: int) -> Any | None:
+    offset = _position_to_offset(text, line, character)
+    word, word_start, _ = _word_bounds(text, line, character)
+    line_word_off = _position_to_offset(text, line, word_start) if word else offset
+    name_candidates: list[tuple[int, Any]] = []
+    candidates: list[tuple[int, Any]] = []
+    same_line_candidates: list[tuple[int, Any]] = []
+    for node in _iter_ast(prog):
+        if not _is_expression_node(node):
+            continue
+        inferred = getattr(node, "inferred_type", None)
+        if not isinstance(inferred, str):
+            continue
+        members = _normalized_union_members(inferred)
+        if not _is_supported_union_members(members):
+            continue
+        pos = int(getattr(node, "pos", -1))
+        if pos < 0:
+            continue
+        candidates.append((pos, node))
+        if int(getattr(node, "line", 0)) == line + 1:
+            same_line_candidates.append((pos, node))
+        if (
+            word
+            and isinstance(node, Name)
+            and node.value == word
+            and int(getattr(node, "line", 0)) == line + 1
+        ):
+            name_candidates.append((abs(pos - line_word_off), node))
+    if name_candidates:
+        name_candidates.sort(key=lambda item: item[0])
+        return name_candidates[0][1]
+    target = same_line_candidates or candidates
+    if not target:
+        return None
+    before = [item for item in target if item[0] <= offset]
+    if before:
+        before.sort(key=lambda item: item[0], reverse=True)
+        return before[0][1]
+    target.sort(key=lambda item: abs(item[0] - offset))
+    return target[0][1]
+
+
+def _code_action_key(title: str, rng: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    return (
+        title,
+        str(rng.get("start", {}).get("line", "")),
+        str(rng.get("start", {}).get("character", "")),
+        str(rng.get("end", {}).get("line", "")),
+        str(rng.get("end", {}).get("character", "")),
+    )
+
+
+def _indent_unit_for_uri(uri: str) -> str:
+    path = Path(_uri_to_filename(uri)) if uri.startswith("file://") else None
+    cfg = resolve_format_config(path) if path is not None else resolve_format_config(None)
+    return " " * max(1, int(getattr(cfg, "indent_width", 4)))
+
+
+def _build_create_union_match_action(
+    *,
+    uri: str,
+    doc: TextDocument,
+    prog: Any,
+    line: int,
+    character: int,
+    title: str,
+    kind: str,
+    diagnostic: dict[str, Any] | None = None,
+    wrap: bool = False,
+) -> tuple[dict[str, Any], tuple[str, str, str, str, str]] | None:
+    line = max(0, line)
+    indent_unit = _indent_unit_for_uri(uri)
+    used_names = _collect_declared_names(doc.text)
+    word = _word_at(doc.text, line, character)
+    binding_on_line = _find_union_binding_on_line(prog, line)
+    parents = _parent_map(prog)
+    expr = _find_union_expr_at_position(prog, doc.text, line, character)
+
+    members: list[str] = []
+    base_indent = _line_indent(doc.text, line)
+    edit_start = _line_start_offset(doc.text, line)
+    edit_end = edit_start
+    subject = ""
+    prelude = ""
+
+    # Cursor on variable declaration line where inferred initializer is a union.
+    if binding_on_line is not None and (word == binding_on_line.name or expr is None):
+        inferred = getattr(binding_on_line.expr, "inferred_type", None)
+        if isinstance(inferred, str):
+            cand_members = _normalized_union_members(inferred)
+            if _is_supported_union_members(cand_members):
+                members = cand_members
+                base_line = max(0, int(getattr(binding_on_line, "line", 1)) - 1)
+                base_indent = _line_indent(doc.text, base_line)
+                if wrap and binding_on_line.type_name is not None:
+                    subject_parts = _subject_from_expr(binding_on_line.expr, used_names)
+                    if subject_parts is None:
+                        return None
+                    prelude, subject = subject_parts
+                    edit_start = _line_start_offset(doc.text, base_line)
+                    edit_end = _line_end_offset(doc.text, base_line)
+                else:
+                    subject = binding_on_line.name
+                    used_names.add(subject)
+                    edit_start = _line_end_offset(doc.text, base_line)
+                    edit_end = edit_start
+
+    if not members and expr is not None:
+        inferred = getattr(expr, "inferred_type", None)
+        if not isinstance(inferred, str):
+            return None
+        cand_members = _normalized_union_members(inferred)
+        if not _is_supported_union_members(cand_members):
+            return None
+        members = cand_members
+        stmt = _nearest_statement(expr, parents)
+        if isinstance(stmt, LetStmt):
+            base_line = max(0, int(getattr(stmt, "line", 1)) - 1)
+            base_indent = _line_indent(doc.text, base_line)
+            if wrap and stmt.type_name is not None:
+                subject_parts = _subject_from_expr(stmt.expr, used_names)
+                if subject_parts is None:
+                    return None
+                prelude, subject = subject_parts
+                edit_start = _line_start_offset(doc.text, base_line)
+                edit_end = _line_end_offset(doc.text, base_line)
+            else:
+                subject = stmt.name
+                used_names.add(subject)
+                edit_start = _line_end_offset(doc.text, base_line)
+                edit_end = edit_start
+        elif isinstance(stmt, ExprStmt) and stmt.expr is expr:
+            base_line = max(0, int(getattr(stmt, "line", 1)) - 1)
+            base_indent = _line_indent(doc.text, base_line)
+            subject_parts = _subject_from_expr(expr, used_names)
+            if subject_parts is None:
+                return None
+            prelude, subject = subject_parts
+            edit_start = _line_start_offset(doc.text, base_line)
+            edit_end = _line_end_offset(doc.text, base_line)
+        else:
+            subject_parts = _subject_from_expr(expr, used_names)
+            if subject_parts is None:
+                return None
+            prelude, subject = subject_parts
+            edit_start = _line_end_offset(doc.text, line)
+            edit_end = edit_start
+
+    if not members or not subject:
+        return None
+
+    snippet, _ = _union_match_snippet(
+        subject,
+        members,
+        base_indent,
+        indent_unit,
+        used_names,
+        tab_index=1,
+        include_final_cursor=True,
+    )
+    if prelude:
+        prelude_text = "".join(f"{base_indent}{row}\n" for row in prelude.rstrip("\n").splitlines())
+        new_text = prelude_text + snippet
+    else:
+        new_text = snippet
+
+    rng = _offset_range(doc.text, edit_start, edit_end)
+    action: dict[str, Any] = {
+        "title": title,
+        "kind": kind,
+        "edit": {"changes": {uri: [{"range": rng, "newText": new_text}]}},
+    }
+    if diagnostic is not None:
+        action["diagnostics"] = [diagnostic]
+        action["isPreferred"] = bool(wrap)
+    return action, _code_action_key(title, rng)
+
+
+def _find_match_stmt_at_offset(prog: Any, text: str, offset: int) -> tuple[MatchStmt, tuple[int, int, int]] | None:
+    hits: list[tuple[int, MatchStmt, tuple[int, int, int]]] = []
+    for node in _iter_ast(prog):
+        if not isinstance(node, MatchStmt):
+            continue
+        offs = _match_stmt_offsets(text, node)
+        if offs is None:
+            continue
+        start, _, end = offs
+        if start <= offset <= end:
+            hits.append((end - start, node, offs))
+    if not hits:
+        return None
+    hits.sort(key=lambda item: item[0])
+    _, stmt, offs = hits[0]
+    return stmt, offs
+
+
+def _build_add_missing_union_arms_action(
+    *,
+    uri: str,
+    doc: TextDocument,
+    prog: Any,
+    line: int,
+    character: int,
+    title: str,
+    kind: str,
+    diagnostic: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], tuple[str, str, str, str, str]] | None:
+    offset = _position_to_offset(doc.text, line, character)
+    match_hit = _find_match_stmt_at_offset(prog, doc.text, offset)
+    if match_hit is None:
+        return None
+    stmt, offs = match_hit
+    inferred = getattr(stmt.expr, "inferred_type", None)
+    if not isinstance(inferred, str):
+        return None
+    members = _normalized_union_members(inferred)
+    if not _is_supported_union_members(members):
+        return None
+
+    covered: set[str] = set()
+    for pat, _ in stmt.arms:
+        arm_cov = _covered_union_members_from_pattern(pat, members)
+        if arm_cov is None:
+            return None
+        covered.update(arm_cov)
+    missing = [m for m in members if m not in covered]
+    if not missing:
+        return None
+
+    indent_unit = _indent_unit_for_uri(uri)
+    base_line = max(0, int(getattr(stmt, "line", 1)) - 1)
+    base_indent = _line_indent(doc.text, base_line)
+    used_names = _collect_declared_names(doc.text)
+    arm_text, _ = _union_arms_snippet(missing, base_indent, indent_unit, used_names, tab_index=1)
+    if not arm_text:
+        return None
+
+    _, _, close_idx = offs
+    close_line, _ = _offset_to_position(doc.text, close_idx)
+    # Insert on the closing-brace line to preserve user-written arm order.
+    insert_offset = _line_start_offset(doc.text, close_line)
+    if close_line == base_line:
+        insert_offset = close_idx
+        new_text = "\n" + arm_text + base_indent
+    else:
+        new_text = arm_text
+
+    rng = _offset_range(doc.text, insert_offset, insert_offset)
+    action: dict[str, Any] = {
+        "title": title,
+        "kind": kind,
+        "edit": {"changes": {uri: [{"range": rng, "newText": new_text}]}},
+    }
+    if diagnostic is not None:
+        action["diagnostics"] = [diagnostic]
+    return action, _code_action_key(title, rng)
+
+
+def _is_stable_user_facing_type(typ: str) -> bool:
+    t = _canonical_type_name(typ)
+    if not t:
+        return False
+    if t in {"<none>", "none"}:
+        return False
+    if t in {"Any", "Never"}:
+        return False
+    lower = t.lower()
+    if "<error>" in lower or "<unknown>" in lower or "unresolved" in lower:
+        return False
+    if lower.startswith("<") and lower.endswith(">"):
+        return False
+    return True
+
+
+def _pretty_type_text(typ: str) -> str:
+    return _canonical_type_name(typ).strip()
+
+
+def _tokenize_source(text: str, filename: str) -> list[Any]:
+    try:
+        return [tok for tok in lex(text, filename=filename) if tok.kind != "EOF"]
+    except Exception:
+        return []
+
+
+def _binding_decl_token_info(tokens: list[Any], st: LetStmt) -> dict[str, Any] | None:
+    start = int(getattr(st, "pos", -1))
+    if start < 0:
+        return None
+    start_idx = -1
+    for i, tok in enumerate(tokens):
+        if tok.pos < start:
+            continue
+        if tok.line != st.line:
+            if tok.line > st.line:
+                break
+            continue
+        if tok.kind in {"mut", "IDENT"}:
+            start_idx = i
+            break
+    if start_idx < 0:
+        return None
+    i = start_idx
+    if tokens[i].kind == "mut":
+        i += 1
+    if i >= len(tokens) or tokens[i].kind != "IDENT":
+        return None
+    name_tok = tokens[i]
+    if name_tok.text != st.name:
+        # Fallback: find matching identifier token on declaration line.
+        found = None
+        for j in range(start_idx, len(tokens)):
+            tok = tokens[j]
+            if tok.line != st.line:
+                if tok.line > st.line:
+                    break
+                continue
+            if tok.kind == "IDENT" and tok.text == st.name:
+                found = j
+                break
+        if found is None:
+            return None
+        i = found
+        name_tok = tokens[i]
+    colon_tok = None
+    eq_tok = None
+    j = i + 1
+    while j < len(tokens):
+        tok = tokens[j]
+        if tok.line != st.line:
+            if tok.line > st.line:
+                break
+            j += 1
+            continue
+        if tok.kind == ":" and colon_tok is None:
+            colon_tok = tok
+        if tok.kind == "=":
+            eq_tok = tok
+            break
+        if tok.kind == ";" and eq_tok is None:
+            break
+        j += 1
+    return {"name": name_tok, "colon": colon_tok, "eq": eq_tok}
+
+
+def _find_untyped_binding_at_position(
+    prog: Any,
+    text: str,
+    filename: str,
+    line: int,
+    character: int,
+) -> tuple[LetStmt, dict[str, Any], str] | None:
+    tokens = _tokenize_source(text, filename)
+    if not tokens:
+        return None
+    word = _word_at(text, line, character)
+    for node in _iter_ast(prog):
+        if not isinstance(node, LetStmt):
+            continue
+        if node.type_name is not None:
+            continue
+        inferred = getattr(node.expr, "inferred_type", None)
+        if not isinstance(inferred, str):
+            continue
+        typ = _pretty_type_text(inferred)
+        if not _is_stable_user_facing_type(typ):
+            continue
+        stmt_line = max(0, int(getattr(node, "line", 1)) - 1)
+        if stmt_line != line:
+            continue
+        if word and word != node.name:
+            continue
+        info = _binding_decl_token_info(tokens, node)
+        if info is None or info.get("colon") is not None:
+            continue
+        return node, info, typ
+    return None
+
+
+def _build_add_explicit_type_action(
+    *,
+    uri: str,
+    doc: TextDocument,
+    prog: Any,
+    line: int,
+    character: int,
+    title: str,
+    kind: str,
+    diagnostic: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], tuple[str, str, str, str, str]] | None:
+    filename = _uri_to_filename(uri)
+    hit = _find_untyped_binding_at_position(prog, doc.text, filename, line, character)
+    if hit is None:
+        return None
+    _, info, typ = hit
+    name_tok = info["name"]
+    insert_off = int(name_tok.pos) + len(str(name_tok.text))
+    rng = _offset_range(doc.text, insert_off, insert_off)
+    action: dict[str, Any] = {
+        "title": title,
+        "kind": kind,
+        "edit": {"changes": {uri: [{"range": rng, "newText": f": {typ}"}]}},
+    }
+    if diagnostic is not None:
+        action["diagnostics"] = [diagnostic]
+    return action, _code_action_key(title, rng)
+
+
+def _binding_annotation_context(
+    prog: Any,
+    text: str,
+    filename: str,
+    line: int,
+    character: int,
+) -> dict[str, Any] | None:
+    tokens = _tokenize_source(text, filename)
+    if not tokens:
+        return None
+    offset = _position_to_offset(text, line, character)
+    for node in _iter_ast(prog):
+        if not isinstance(node, LetStmt):
+            continue
+        info = _binding_decl_token_info(tokens, node)
+        if info is None:
+            continue
+        colon = info.get("colon")
+        if colon is None:
+            continue
+        eq_tok = info.get("eq")
+        start_off = int(colon.pos) + 1
+        end_off = int(eq_tok.pos) if eq_tok is not None else _line_end_offset(text, max(0, node.line - 1))
+        if start_off <= offset <= end_off:
+            inferred = getattr(node.expr, "inferred_type", None)
+            inferred_text = _pretty_type_text(inferred) if isinstance(inferred, str) else ""
+            typed_prefix = text[start_off:offset].strip()
+            return {
+                "name": node.name,
+                "prefix": typed_prefix,
+                "inferred_type": inferred_text if _is_stable_user_facing_type(inferred_text) else "",
+            }
+    # Fallback for partially-typed declarations in syntactically incomplete code.
+    row = _line_text(text, line)
+    if not row:
+        return None
+    col = min(max(0, character), len(row))
+    prefix = row[:col]
+    m = re.search(r"\b(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z0-9_<>&\[\], |]*)$", prefix)
+    if m is None:
+        return None
+    return {"name": m.group(1), "prefix": m.group(2).strip(), "inferred_type": ""}
+
+
+def _is_trivial_decl_for_bulk(st: LetStmt, typ: str) -> bool:
+    canon = _canonical_type_name(typ)
+    expr = st.expr
+    if isinstance(expr, BoolLit) and canon == "Bool":
+        return True
+    if isinstance(expr, NilLit):
+        return True
+    if isinstance(expr, Literal):
+        val = expr.value
+        if isinstance(val, bool) and canon == "Bool":
+            return True
+        if isinstance(val, int) and (canon == "Int" or re.fullmatch(r"[iu]\d+", canon) is not None):
+            return True
+        if isinstance(val, float) and canon in {"Float", "f16", "f32", "f64", "f80", "f128"}:
+            return True
+        if isinstance(val, str) and canon in {"String", "str"}:
+            return True
+    return False
+
+
+def _build_bulk_add_explicit_types_action(
+    *,
+    uri: str,
+    doc: TextDocument,
+    prog: Any,
+    start_line: int,
+    end_line: int,
+    title: str,
+    kind: str,
+    non_trivial_only: bool,
+) -> tuple[dict[str, Any], tuple[str, str, str, str, str]] | None:
+    filename = _uri_to_filename(uri)
+    tokens = _tokenize_source(doc.text, filename)
+    if not tokens:
+        return None
+    changes: list[dict[str, Any]] = []
+    for node in _iter_ast(prog):
+        if not isinstance(node, LetStmt):
+            continue
+        if node.type_name is not None:
+            continue
+        ln0 = max(0, int(getattr(node, "line", 1)) - 1)
+        if ln0 < start_line or ln0 > end_line:
+            continue
+        inferred = getattr(node.expr, "inferred_type", None)
+        if not isinstance(inferred, str):
+            continue
+        typ = _pretty_type_text(inferred)
+        if not _is_stable_user_facing_type(typ):
+            continue
+        if non_trivial_only and _is_trivial_decl_for_bulk(node, typ):
+            continue
+        info = _binding_decl_token_info(tokens, node)
+        if info is None or info.get("colon") is not None:
+            continue
+        name_tok = info["name"]
+        insert_off = int(name_tok.pos) + len(str(name_tok.text))
+        rng = _offset_range(doc.text, insert_off, insert_off)
+        changes.append({"range": rng, "newText": f": {typ}"})
+    if not changes:
+        return None
+    if not non_trivial_only and len(changes) < 2:
+        return None
+    action: dict[str, Any] = {
+        "title": title,
+        "kind": kind,
+        "edit": {"changes": {uri: changes}},
+    }
+    key_rng = changes[0]["range"]
+    return action, _code_action_key(title, key_rng)
 
 
 def _balanced_text_fallback(text: str) -> str:
@@ -521,7 +1524,7 @@ class LSPServer:
             else:
                 del self._symbol_cache[cache_key]
         
-        prog = self._parse_prog(doc)
+        prog = self._parse_and_analyze(doc)
         if prog is None:
             self.symbol_index[uri] = []
             return
@@ -566,7 +1569,7 @@ class LSPServer:
             for dep in old:
                 self.reverse_deps.get(dep, set()).discard(uri)
             return
-        prog = self._parse_prog(doc)
+        prog = self._parse_and_analyze(doc)
         new: set[str] = set()
         if prog is not None:
             for item in getattr(prog, "items", []):
@@ -935,10 +1938,22 @@ class LSPServer:
             "current_token": "",
             "function_name": "",
             "type_base": "",
+            "type_prefix": "",
+            "inferred_type": "",
             "object_type": None,
             "line": line,
             "col": col
         }
+
+        prog = self._parse_and_analyze(doc)
+        if prog is not None:
+            ann = _binding_annotation_context(prog, doc.text, _uri_to_filename(doc.uri), line, col)
+            if ann is not None:
+                context["in_type_annotation"] = True
+                context["type_prefix"] = ann.get("prefix", "")
+                context["inferred_type"] = ann.get("inferred_type", "")
+                if context["type_prefix"]:
+                    context["current_token"] = context["type_prefix"]
         
         # Function call context
         if '(' in prefix and not prefix.rstrip().endswith(')'):
@@ -949,11 +1964,12 @@ class LSPServer:
                 context["function_name"] = func_match.group(1)
         
         # Type annotation context  
-        if ':' in prefix and ('fn' in prefix or 'mut' in prefix):
+        if not context["in_type_annotation"] and ':' in prefix and ('fn' in prefix or 'mut' in prefix):
             context["in_type_annotation"] = True
             type_match = re.search(r':\s*(\w*)$', prefix)
             if type_match:
                 context["type_base"] = type_match.group(1)
+                context["type_prefix"] = type_match.group(1)
         
         # Import context
         if 'import' in prefix:
@@ -1024,26 +2040,68 @@ class LSPServer:
     
     def _add_type_completions(self, doc: TextDocument, context: dict[str, Any], add) -> None:
         """Add type-specific completions."""
-        # Basic types
-        basic_types = ["Int", "Float", "Bool", "String", "Char", "Void"]
-        for t in basic_types:
-            add(t, 5, f"primitive type {t}", priority=90)
-        
-        # Generic types
-        generic_types = ["Vec", "Option", "Result", "HashMap", "HashSet"]
-        for t in generic_types:
-            add(t, 5, f"generic type {t}", insert_text=f"{t}<$1>", insert_format=2, priority=85)
-        
-        # Pointer and reference types
-        pointer_types = ["Ptr", "Ref"]
-        for t in pointer_types:
-            add(t, 5, f"pointer/reference type {t}", insert_text=f"{t}<$1>", insert_format=2, priority=80)
-        
-        # User-defined types from workspace
+        prefix = str(context.get("type_prefix", "") or "").strip()
+        prefix_l = prefix.lower()
+
+        def allow(label: str) -> bool:
+            if not prefix_l:
+                return True
+            return label.lower().startswith(prefix_l)
+
+        inferred = _pretty_type_text(str(context.get("inferred_type", "") or ""))
+        if inferred and _is_stable_user_facing_type(inferred) and allow(inferred):
+            add(inferred, 5, "inferred type", priority=1)
+            if "|" in inferred:
+                for member in _normalized_union_members(inferred):
+                    if allow(member):
+                        add(member, 5, "union member type", priority=2)
+
+        builtin_types = [
+            "Int",
+            "isize",
+            "usize",
+            "Float",
+            "f16",
+            "f32",
+            "f64",
+            "f80",
+            "f128",
+            "Bool",
+            "String",
+            "str",
+            "Bytes",
+            "Void",
+            "none",
+        ]
+        for t in builtin_types:
+            if allow(t):
+                add(t, 5, f"builtin type {t}", priority=40)
+
+        # Container and pointer/reference spellings supported by parser/semantic.
+        shaped = [
+            ("Vec<$1>", "generic vec type"),
+            ("Map<$1, $2>", "generic map type"),
+            ("Set<$1>", "generic set type"),
+            ("[$1]", "slice/array type"),
+            ("&$1", "reference type"),
+            ("&mut $1", "mutable reference type"),
+            ("*$1", "pointer type"),
+        ]
+        for label, detail in shaped:
+            if allow(label):
+                add(label, 5, detail, insert_text=label, insert_format=2, priority=50)
+
+        # User-defined types from current program and workspace index.
+        prog = self._parse_and_analyze(doc)
+        if prog is not None:
+            for sym in _decl_symbols(prog, doc.uri):
+                if sym.kind in {23, 10, 5} and allow(sym.name):  # struct/enum/type alias
+                    add(sym.name, 5, sym.detail, priority=30)
+
         for syms in self.symbol_index.values():
             for s in syms:
-                if s.kind in [23, 10]:  # Struct, Enum
-                    add(s.name, 5, s.detail, priority=75)
+                if s.kind in {23, 10, 5} and allow(s.name):
+                    add(s.name, 5, s.detail, priority=60)
     
     def _add_import_completions(self, doc: TextDocument, context: dict[str, Any], add) -> None:
         """Add import-specific completions."""
@@ -1376,6 +2434,124 @@ class LSPServer:
                                 }
                             },
                         })
+            prog = self._parse_and_analyze(doc)
+            if prog is not None:
+                req_line, req_char = _range_start(params)
+                for title in ["Add explicit variable type", "Insert inferred type annotation"]:
+                    explicit = _build_add_explicit_type_action(
+                        uri=uri,
+                        doc=doc,
+                        prog=prog,
+                        line=req_line,
+                        character=req_char,
+                        title=title,
+                        kind="refactor.rewrite",
+                    )
+                    if explicit is not None:
+                        action, key = explicit
+                        if key not in seen:
+                            seen.add(key)
+                            actions.append(action)
+
+                req_rng = params.get("range", {})
+                req_start = req_rng.get("start", {})
+                req_end = req_rng.get("end", {})
+                start_line = int(req_start.get("line", req_line))
+                end_line = int(req_end.get("line", req_line))
+                if end_line < start_line:
+                    start_line, end_line = end_line, start_line
+                for title, non_trivial in [
+                    ("Add explicit types to variable declarations", False),
+                    ("Add explicit types where inference is non-trivial", True),
+                ]:
+                    bulk = _build_bulk_add_explicit_types_action(
+                        uri=uri,
+                        doc=doc,
+                        prog=prog,
+                        start_line=start_line,
+                        end_line=end_line,
+                        title=title,
+                        kind="refactor.rewrite",
+                        non_trivial_only=non_trivial,
+                    )
+                    if bulk is not None:
+                        action, key = bulk
+                        if key not in seen:
+                            seen.add(key)
+                            actions.append(action)
+
+                create_refactor = _build_create_union_match_action(
+                    uri=uri,
+                    doc=doc,
+                    prog=prog,
+                    line=req_line,
+                    character=req_char,
+                    title="Create match for union",
+                    kind="refactor.rewrite",
+                    wrap=False,
+                )
+                if create_refactor is not None:
+                    action, key = create_refactor
+                    if key not in seen:
+                        seen.add(key)
+                        actions.append(action)
+                add_missing = _build_add_missing_union_arms_action(
+                    uri=uri,
+                    doc=doc,
+                    prog=prog,
+                    line=req_line,
+                    character=req_char,
+                    title="Add missing union arms",
+                    kind="refactor.rewrite",
+                )
+                if add_missing is not None:
+                    action, key = add_missing
+                    if key not in seen:
+                        seen.add(key)
+                        actions.append(action)
+
+                for diag in diagnostics:
+                    drng = diag.get("range", {})
+                    dstart = drng.get("start", {})
+                    dline = int(dstart.get("line", req_line))
+                    dchar = int(dstart.get("character", req_char))
+                    explicit_quickfix = _build_add_explicit_type_action(
+                        uri=uri,
+                        doc=doc,
+                        prog=prog,
+                        line=dline,
+                        character=dchar,
+                        title="Add explicit variable type",
+                        kind="quickfix",
+                        diagnostic=diag,
+                    )
+                    if explicit_quickfix is not None:
+                        action, key = explicit_quickfix
+                        if key not in seen:
+                            seen.add(key)
+                            actions.append(action)
+                    for title, wrap in [
+                        ("Create match for union", False),
+                        ("Wrap in exhaustive match", True),
+                    ]:
+                        quickfix = _build_create_union_match_action(
+                            uri=uri,
+                            doc=doc,
+                            prog=prog,
+                            line=dline,
+                            character=dchar,
+                            title=title,
+                            kind="quickfix",
+                            diagnostic=diag,
+                            wrap=wrap,
+                        )
+                        if quickfix is None:
+                            continue
+                        action, key = quickfix
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        actions.append(action)
         return actions[:50]
     def _scan_workspace(self) -> None:
         for root in self.workspace_folders:

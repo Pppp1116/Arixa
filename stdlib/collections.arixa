@@ -197,3 +197,24 @@ fn get(m Map<K, V>, key K) V | none {
     else {}
     return map_get(m.raw, key) as V;
 }
+
+
+fn bubble_sort<T>(arr &mut [T]) Void {
+    n = len(*arr);
+    if n <= 1 {
+        return;
+    }
+    else {}
+
+    for i in 0..n - 1 {
+        limit = n - i - 1;
+        for j in 0..limit {
+            if (*arr)[j] > (*arr)[j + 1] {
+                tmp = (*arr)[j];
+                (*arr)[j] = (*arr)[j + 1];
+                (*arr)[j + 1] = tmp;
+            }
+            else {}
+        }
+    }
+}

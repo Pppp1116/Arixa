@@ -379,7 +379,7 @@ def test_external_integration():
 
 #### Coverage Areas:
 - **Expression Parsing**: Literals, identifiers, binary/unary operations
-- **Statement Parsing**: Let, assign, return, if, while, for, match
+- **Statement Parsing**: binding, assign, return, if, while, for, match
 - **Declaration Parsing**: Functions, structs, enums, traits, imports
 - **Error Handling**: Syntax errors, error recovery
 - **Complex Constructs**: Nested expressions, generics, lambdas

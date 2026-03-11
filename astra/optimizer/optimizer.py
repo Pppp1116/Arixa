@@ -794,7 +794,7 @@ def _fold_ast_expr(expr: Any, env: dict[str, Any], mutable_names: set[str]) -> t
         # - No side effects
         # 
         # Example where env invalidation matters:
-        # let x = 3;
+        # x = 3;
         # foo(&mut x);  // may modify x
         # print(x);     // constant propagation after call may be invalid
         expr.fn, fn_changed = _fold_ast_expr(expr.fn, env, mutable_names)

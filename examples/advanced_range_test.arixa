@@ -254,7 +254,7 @@ fn test_range_optimization() Int {
 
 // Test 12: Range expressions with type inference
 fn test_range_inference() Int {
-    // Let the compiler infer types
+    // Allow the compiler to infer types
     range1 = 1..10;        // Should infer Int
     range2 = 1i8..10i8;    // Explicit Int8
     range3 = 1i64..100i64; // Explicit Int64

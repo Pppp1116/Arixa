@@ -89,14 +89,18 @@ def canonical_type(typ: str) -> str:
     t = type_text(typ).strip()
     if t == "Bytes":
         return "Vec<u8>"
+    if t.endswith("?"):
+        base = t[:-1].strip()
+        if base:
+            return f"{canonical_type(base)} | none"
+    if t.startswith("Option<") and t.endswith(">"):
+        inner = t[7:-1].strip()
+        if inner:
+            return f"{canonical_type(inner)} | none"
     if t.startswith("&mut "):
         return f"&mut {canonical_type(t[5:])}"
     if t.startswith("&"):
         return f"&{canonical_type(t[1:])}"
-    if t.endswith("?"):
-        return f"Option<{canonical_type(t[:-1])}>"
-    if t.startswith("Option<") and t.endswith(">"):
-        return f"Option<{canonical_type(t[7:-1])}>"
     if t.startswith("Vec<") and t.endswith(">"):
         return f"Vec<{canonical_type(t[4:-1])}>"
     if t.startswith("[") and t.endswith("]"):
@@ -104,8 +108,6 @@ def canonical_type(typ: str) -> str:
     return t
 
 
-def _is_option_type(typ: str) -> bool:
-    return typ.startswith("Option<") and typ.endswith(">")
 
 
 def _is_vec_type(typ: str) -> bool:
@@ -118,6 +120,10 @@ def _is_slice_type(typ: str) -> bool:
 
 def _is_fn_type(typ: str) -> bool:
     return typ.startswith("fn(")
+
+
+def _is_union_type(typ: str) -> bool:
+    return "|" in typ
 
 
 def _is_unsized_value_type(typ: str) -> bool:
@@ -160,8 +166,11 @@ def layout_of_type(
         if mode == "query":
             raise LayoutError(f"unsized type {c} is not queryable by value")
         return TypeLayout(8, 8, "ptr", False, 64, False, opaque=True)
-    if c in {"Any", "String"} or _is_option_type(c) or _is_vec_type(c):
+    if c in {"Any", "String"} or _is_vec_type(c) or _is_union_type(c):
         if mode == "query":
+            if _is_union_type(c):
+                # Backend-erased tagged unions are pointer-backed in query mode.
+                return TypeLayout(8, 8, "ptr", False, 64, False, opaque=True)
             raise LayoutError(f"opaque type {c} is not queryable")
         return TypeLayout(8, 8, "ptr", False, 64, False, opaque=True)
     if c in structs:

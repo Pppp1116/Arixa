@@ -20,8 +20,8 @@ def test_whitespace_only_emits_only_eof() -> None:
 
 
 def test_keywords_identifiers_and_symbols() -> None:
-    ks = _kinds("fn main() Int{ mut x = 1; if x > 0 { return x; } }")
-    for required in ["fn", "IDENT", "(", ")", "{", "mut", "if", "return", "}", "EOF"]:
+    ks = _kinds("fn main() Int{ mut x = 1; if x > 0 { unreachable; } return x; }")
+    for required in ["fn", "IDENT", "(", ")", "{", "mut", "if", "unreachable", "return", "}", "EOF"]:
         assert required in ks
 
 
@@ -71,6 +71,12 @@ def test_boolean_literals_are_bool_tokens() -> None:
 
 
 def test_removed_keywords_lex_as_identifiers() -> None:
-    toks = lex("let defer drop")
+    toks = lex("alpha defer drop")
     idents = [t.text for t in toks if t.kind == "IDENT"]
-    assert idents == ["let", "defer", "drop"]
+    assert idents == ["alpha", "defer", "drop"]
+
+
+def test_volatile_lexes_as_identifier_not_language_qualifier() -> None:
+    toks = lex("volatile x = 1;")
+    assert toks[0].kind == "IDENT"
+    assert toks[0].text == "volatile"

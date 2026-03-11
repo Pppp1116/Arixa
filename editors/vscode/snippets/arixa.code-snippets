@@ -34,7 +34,7 @@
     "description": "Declare an external function"
   },
   "Immutable Binding": {
-    "prefix": "let",
+    "prefix": "bind",
     "body": [
       "${1:name} = ${2:value};"
     ],
@@ -48,7 +48,7 @@
     "description": "Mutable binding (modern syntax)"
   },
   "Typed Immutable Binding": {
-    "prefix": "let:",
+    "prefix": "bind:",
     "body": [
       "${1:name}: ${2:Type} = ${3:value};"
     ],

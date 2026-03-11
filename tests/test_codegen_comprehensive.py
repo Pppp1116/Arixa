@@ -48,6 +48,36 @@ def test_python_codegen_if_expression_emits_ternary() -> None:
     assert "if True else" in py
 
 
+def test_python_codegen_if_expression_without_else_returns_none() -> None:
+    src = "fn main() Void{ (if true { 1 }); return; }"
+    py = to_python(_analyzed(src))
+    assert "if True else None" in py
+
+
+def test_python_codegen_assertions_and_assume_follow_profile() -> None:
+    src = "fn main() Int{ assert(true); debug_assert(true); assume(true); x = likely(true); y = unlikely(false); if x && !y { return 0; } return 1; }"
+    py_debug = to_python(_analyzed(src), profile="debug")
+    assert "_ASTRA_PROFILE = 'debug'" in py_debug
+    assert "assert_(True)" in py_debug
+    assert "debug_assert_(True)" in py_debug
+    assert "assume_(True)" in py_debug
+    assert "likely_(True)" in py_debug
+    assert "unlikely_(False)" in py_debug
+
+    py_release = to_python(_analyzed(src), profile="release")
+    assert "_ASTRA_PROFILE = 'release'" in py_release
+    assert "assert_(True)" in py_release
+    assert "debug_assert_(True)" not in py_release
+    assert "assume_(True)" in py_release
+    assert "likely_(True)" in py_release
+    assert "unlikely_(False)" in py_release
+
+
+def test_python_codegen_unreachable_statement() -> None:
+    py = to_python(_analyzed("fn main() Int{ unreachable; }"), profile="debug")
+    assert "__astra_unreachable()" in py
+
+
 def test_python_codegen_for_range_loop() -> None:
     src = "fn main() Int{ mut s = 0; for i in 1..=3 { s += i; } return s; }"
     py = to_python(_analyzed(src))
@@ -107,6 +137,60 @@ fn main() Int{
 """
     ir = to_llvm_ir(_analyzed(src))
     assert "call i64 @astra_alloc(" not in ir
+
+
+def test_llvm_codegen_assume_uses_intrinsic_in_release() -> None:
+    src = "fn main() Int{ x = 1; assume(x > 0); return x; }"
+    ir_debug = to_llvm_ir(_analyzed(src), profile="debug")
+    ir_release = to_llvm_ir(_analyzed(src), profile="release")
+    assert "llvm.assume" not in ir_debug
+    assert "call void @llvm.assume(i1" in ir_release
+
+
+def test_llvm_codegen_assert_and_unreachable_emit_traps_in_debug() -> None:
+    assert_ir = to_llvm_ir(_analyzed("fn main() Int{ assert(true); return 0; }"), profile="debug")
+    unreachable_ir = to_llvm_ir(_analyzed("fn main() Int{ unreachable; }"), profile="debug")
+    assert "call void @llvm.trap()" in assert_ir
+    assert "call void @llvm.trap()" in unreachable_ir
+    assert "unreachable" in unreachable_ir
+
+
+def test_llvm_codegen_debug_assert_removed_in_release() -> None:
+    src = "fn main() Int{ debug_assert(true); return 0; }"
+    ir_debug = to_llvm_ir(_analyzed(src), profile="debug")
+    ir_release = to_llvm_ir(_analyzed(src), profile="release")
+    assert "call void @llvm.trap()" in ir_debug
+    assert "call void @llvm.trap()" not in ir_release
+
+
+def test_llvm_codegen_likely_unlikely_attach_branch_weights() -> None:
+    src = """
+fn main() Int{
+  x = 1;
+  if likely(x > 0) {
+    return 1;
+  } else {
+    return 0;
+  }
+}
+"""
+    ir_likely = to_llvm_ir(_analyzed(src), profile="release")
+    assert "branch_weights" in ir_likely
+    assert "i32 2000, i32 1" in ir_likely
+
+    src_unlikely = """
+fn main() Int{
+  x = 1;
+  if unlikely(x > 0) {
+    return 1;
+  } else {
+    return 0;
+  }
+}
+"""
+    ir_unlikely = to_llvm_ir(_analyzed(src_unlikely), profile="release")
+    assert "branch_weights" in ir_unlikely
+    assert "i32 1, i32 2000" in ir_unlikely
 
 
 def test_llvm_codegen_string_interpolation_uses_concat_not_format_runtime() -> None:

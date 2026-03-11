@@ -293,7 +293,7 @@ class FunctionInliner:
             if isinstance(stmt.expr, Call):
                 inlined_call = self._inline_call(stmt.expr, functions)
                 if inlined_call is not None:
-                    # Create let statement with inlined result
+                    # Create binding statement with inlined result
                     stmt.expr = inlined_call[-1] if inlined_call else stmt.expr
                     return stmt
             else:

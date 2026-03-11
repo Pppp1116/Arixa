@@ -32,6 +32,7 @@ Implementation anchors:
 Current keywords (from lexer):
 - `fn`, `mut`, `if`, `else`, `while`, `for`, `match`
 - `return`, `break`, `continue`
+- `unreachable`
 - `unsafe`, `struct`, `enum`, `trait`, `type`
 - `import`, `extern`, `comptime`
 - `none`, `set`, `in`, `as`
@@ -220,6 +221,7 @@ Supported statement forms:
 - Explicit assignment marker: `set x = y;`
 - `return [expr];`
 - `break;`, `continue;`
+- `unreachable;`
 - `if cond { ... } else { ... }`
 - `while cond { ... }`
 - Enhanced while with inline mutable binding form exists in parser (`EnhancedWhileStmt`)
@@ -329,6 +331,7 @@ Builtins are defined in `semantic.BUILTIN_SIGS`.
 Core examples:
 - I/O and formatting: `print(...)`, `format(...)`
 - Length: `len(x)`
+- Assertions/hints: `assert(cond)`, `debug_assert(cond)`, `assume(cond)`, `likely(cond)`, `unlikely(cond)`, `static_assert(cond[, msg])`
 - Files/args/process/time/network/crypto/json APIs
 - Atomics and concurrency primitives
 - Vector and dynamic container primitives
@@ -337,6 +340,29 @@ Core examples:
 Builtin aliasing:
 - Most builtins also expose `__name` alias variants.
 - Exceptions are intentionally excluded for some hosted-only/runtime entry operations.
+
+### 9.1 Assertion and Hint Semantics
+
+- `assert(cond)`:
+  - `cond` must type-check as `Bool`.
+  - Active in debug and release builds.
+  - Lowered as a runtime check; false condition traps/fails.
+- `debug_assert(cond)`:
+  - `cond` must type-check as `Bool`.
+  - Active in debug builds.
+  - Lowered away in release builds.
+- `assume(cond)`:
+  - `cond` must type-check as `Bool`.
+  - Debug builds: checked and traps/fails on false.
+  - Release builds: lowered to optimizer assumption (`llvm.assume` on LLVM backend).
+- `likely(cond)` / `unlikely(cond)`:
+  - `cond` must type-check as `Bool`.
+  - Returns `Bool` (same logical value as `cond`).
+  - Treated as branch prediction hints only; they do not imply impossibility and are not `assume`.
+- `unreachable`:
+  - Statement form (not a library call).
+  - Debug builds trap then terminate.
+  - Release builds lower to backend unreachable termination.
 
 ## 10. Hosted vs Freestanding
 
@@ -366,6 +392,10 @@ Current hooks used by stdlib low-level modules:
   - `__fs_panic_set_handler_impl`
   - `__fs_panic_get_handler_impl`
   - `__fs_panic_with_code_impl`
+
+Important implementation status:
+- `volatile` is currently provided through runtime hooks/stdlib wrappers (`std.hardware` and `__fs_volatile_*` symbols).
+- There is no dedicated language-level `volatile` type qualifier in parser/semantic/codegen at this time.
 
 Build defaults:
 - Native freestanding builds now compile default hook implementations (`_freestanding_hooks_source` in `astra/build.py`).
