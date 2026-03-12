@@ -45,14 +45,19 @@ from astra.ast import (
 )
 from astra.check import _parse_diag_lines, run_check_source
 from astra.formatter import fmt, resolve_format_config
-from astra.module_resolver import ModuleResolutionError, resolve_import_path, stdlib_root_path
-from astra.lexer import KEYWORDS as LEXER_KEYWORDS, lex
+from astra.module_resolver import (
+    ModuleResolutionError,
+    discover_stdlib_modules,
+    resolve_import_path,
+    stdlib_latest_mtime,
+)
+from astra.lexer import lex
 from astra.parser import ParseError, parse
 from astra.semantic import BUILTIN_DOCS, BUILTIN_SIGS, GPU_API_DOCS, SemanticError, analyze
+from astra import tooling
 
 _LOG = logging.getLogger("astlsp")
-KEYWORDS = sorted(LEXER_KEYWORDS)
-GPU_MODIFIERS = ["gpu", "kernel", "global", "shared", "device"]
+KEYWORDS = tooling.compiler_keywords()
 SNIPPETS = {
     "fn": "fn ${1:name}(${2}) ${3:Int} {\n    ${0}\n}",
     "async": "async fn ${1:name}(${2}) ${3:Int} {\n    ${0}\n}",
@@ -1291,45 +1296,23 @@ def _try_parse_tolerant(text: str, filename: str):
 
 def _decl_symbols(prog: Any, uri: str) -> list[SymbolInfo]:
     out: list[SymbolInfo] = []
-    for item in getattr(prog, "items", []):
-        if isinstance(item, FnDecl):
-            sig = ", ".join(f"{n}: {t}" for n, t in item.params)
-            out.append(
-                SymbolInfo(
-                    name=item.name,
-                    kind=12,
-                    line=item.line,
-                    col=item.col,
-                    detail=f"fn {item.name}({sig}) {item.ret}",
-                    uri=uri,
-                    doc=item.doc,
-                )
+    for sym in tooling.decl_symbols_from_program(prog, uri):
+        out.append(
+            SymbolInfo(
+                name=sym.name,
+                kind=int(sym.kind),
+                line=int(sym.line),
+                col=int(sym.col),
+                detail=str(sym.detail),
+                uri=str(sym.uri),
+                doc=str(sym.doc),
             )
-        elif isinstance(item, StructDecl):
-            out.append(SymbolInfo(name=item.name, kind=23, line=item.line, col=item.col, detail=f"struct {item.name}", uri=uri, doc=item.doc))
-            for fname, _ in item.fields:
-                out.append(SymbolInfo(name=fname, kind=8, line=item.line, col=item.col, detail=f"field {fname}", uri=uri, doc=""))
-        elif isinstance(item, EnumDecl):
-            out.append(SymbolInfo(name=item.name, kind=10, line=item.line, col=item.col, detail=f"enum {item.name}", uri=uri, doc=item.doc))
-            for vname, _ in item.variants:
-                out.append(SymbolInfo(name=vname, kind=22, line=item.line, col=item.col, detail=f"variant {vname}", uri=uri, doc=""))
-        elif isinstance(item, TypeAliasDecl):
-            out.append(SymbolInfo(name=item.name, kind=5, line=item.line, col=item.col, detail=f"type {item.name}", uri=uri, doc=""))
-        elif isinstance(item, ImportDecl):
-            if item.alias:
-                out.append(SymbolInfo(name=item.alias, kind=2, line=item.line, col=item.col, detail="import alias", uri=uri, doc=""))
+        )
     return out
+
+
 def _decl_map(prog: Any) -> dict[str, dict[str, Any]]:
-    out: dict[str, dict[str, Any]] = {}
-    for sym in _decl_symbols(prog, ""):
-        out[sym.name] = {
-            "line": sym.line,
-            "col": sym.col,
-            "detail": sym.detail,
-            "doc": sym.doc,
-            "kind": sym.kind,
-        }
-    return out
+    return tooling.decl_map_from_symbols(tooling.decl_symbols_from_program(prog, ""))
 def _diag_to_lsp(diag, primary_uri: str, primary_filename: str) -> dict[str, Any]:
     start_line = max(0, diag.span.line - 1)
     start_col = max(0, diag.span.col - 1)
@@ -1418,6 +1401,8 @@ class LSPServer:
         self._stdlib_modules: list[str] = []
         self._stdlib_module_to_uri: dict[str, str] = {}
         self._stdlib_indexed = False
+        self._stdlib_root_mtime = 0.0
+        self._stdlib_last_probe = 0.0
         self.canceled: set[Any] = set()
         self.shutting_down = False
         self.exit_code = 0
@@ -1430,6 +1415,7 @@ class LSPServer:
         # Performance optimization: caching
         self._ast_cache: dict[str, tuple[Any, float]] = {}  # uri -> (ast, timestamp)
         self._symbol_cache: dict[str, tuple[list[SymbolInfo], float]] = {}  # uri -> (symbols, timestamp)
+        self._semantic_index_cache: dict[str, tuple[tooling.DocumentSemanticIndex, float]] = {}
         self._completion_cache: dict[str, tuple[list[dict[str, Any]], float]] = {}  # context_key -> (completions, timestamp)
         self._cache_ttl = 30.0  # Cache entries expire after 30 seconds
         
@@ -1490,12 +1476,43 @@ class LSPServer:
             return prog
         except ParseError:
             return None
+
+    def _semantic_index_for_doc(self, doc: TextDocument) -> tooling.DocumentSemanticIndex | None:
+        cache_key = f"{doc.uri}:{doc.version}"
+        hit = self._semantic_index_cache.get(cache_key)
+        if hit is not None:
+            idx, ts = hit
+            if time.time() - ts < self._cache_ttl:
+                return idx
+            self._semantic_index_cache.pop(cache_key, None)
+        prog = self._parse_and_analyze(doc)
+        if prog is None:
+            return None
+        idx = tooling.build_document_semantic_index(prog, doc.uri)
+        self._semantic_index_cache[cache_key] = (idx, time.time())
+        return idx
+
+    def _semantic_index_for_uri(self, uri: str) -> tooling.DocumentSemanticIndex | None:
+        doc = self.docs.get(uri)
+        if doc is not None:
+            return self._semantic_index_for_doc(doc)
+        if not uri.startswith("file://"):
+            return None
+        try:
+            path = Path(_uri_to_filename(uri))
+            text = path.read_text()
+        except Exception:
+            return None
+        fake_doc = TextDocument(uri=uri, text=text, version=0, language_id="astra")
+        return self._semantic_index_for_doc(fake_doc)
     
     def _update_symbol_index(self, uri: str) -> None:
         """Update symbol index with caching."""
         doc = self.docs.get(uri)
         if doc is None:
             self.symbol_index.pop(uri, None)
+            for key in [k for k in self._semantic_index_cache if k.startswith(f"{uri}:")]:
+                self._semantic_index_cache.pop(key, None)
             return
         
         # Check cache first
@@ -1538,6 +1555,14 @@ class LSPServer:
         ]
         for key in expired_keys:
             del self._symbol_cache[key]
+
+        # Clean semantic index cache
+        expired_keys = [
+            key for key, (_, timestamp) in self._semantic_index_cache.items()
+            if current_time - timestamp > self._cache_ttl
+        ]
+        for key in expired_keys:
+            del self._semantic_index_cache[key]
         
         # Clean completion cache
         expired_keys = [
@@ -1548,22 +1573,11 @@ class LSPServer:
             del self._completion_cache[key]
 
     def _scan_stdlib(self) -> None:
-        root = stdlib_root_path()
         self._stdlib_modules = []
         self._stdlib_module_to_uri = {}
-        if root is None:
-            self._stdlib_indexed = True
-            return
-        modules: list[str] = []
-        for path in root.rglob("*.arixa"):
-            if not path.is_file():
-                continue
-            rel = path.relative_to(root).with_suffix("")
-            module = ".".join(rel.parts)
-            if not module:
-                continue
-            modules.append(module)
-            uri = path.resolve().as_uri()
+        modules = discover_stdlib_modules()
+        for module, path in modules.items():
+            uri = path.as_uri()
             self._stdlib_module_to_uri[module] = uri
             if uri in self.docs:
                 continue
@@ -1574,13 +1588,22 @@ class LSPServer:
             fake_doc = TextDocument(uri=uri, text=text, version=0, language_id="astra")
             prog = self._parse_prog(fake_doc)
             self.symbol_index[uri] = _decl_symbols(prog, uri) if prog is not None else []
-        self._stdlib_modules = sorted(set(modules))
+        self._stdlib_modules = sorted(modules.keys())
         self._stdlib_indexed = True
+        self._stdlib_root_mtime = stdlib_latest_mtime()
+        self._stdlib_last_probe = time.monotonic()
 
     def _ensure_stdlib_index(self) -> None:
-        if self._stdlib_indexed:
+        if not self._stdlib_indexed:
+            self._scan_stdlib()
             return
-        self._scan_stdlib()
+        now = time.monotonic()
+        if now - self._stdlib_last_probe < 1.0:
+            return
+        self._stdlib_last_probe = now
+        latest_mtime = stdlib_latest_mtime()
+        if latest_mtime > self._stdlib_root_mtime:
+            self._scan_stdlib()
 
     def _stdlib_member_lookup(self, doc: TextDocument, line0: int, col0: int, symbol: str) -> SymbolInfo | None:
         self._ensure_stdlib_index()
@@ -1728,7 +1751,7 @@ class LSPServer:
         self.dependencies[uri] = new
     def _parse_and_analyze(self, doc: TextDocument):
         filename = _uri_to_filename(doc.uri)
-        prog = _try_parse_tolerant(doc.text, filename)
+        prog = self._parse_prog(doc)
         if prog is None:
             return None
         try:
@@ -1868,48 +1891,72 @@ class LSPServer:
         doc = self.docs.get(uri)
         if doc is None:
             return []
-        
+
         symbol = _word_at(doc.text, line0, col0)
         if not symbol:
             return []
-        
+
+        results: list[dict[str, Any]] = []
+        self._ensure_stdlib_index()
+
+        # Semantic/scope-aware resolution first.
+        sem_idx = self._semantic_index_for_doc(doc)
+        if sem_idx is not None:
+            occ = sem_idx.symbol_at(line0, col0)
+            if occ is not None:
+                target = sem_idx.symbols.get(occ.symbol_key)
+                if target is not None:
+                    return [
+                        {
+                            "uri": target.uri,
+                            "range": {
+                                "start": {"line": max(0, target.line - 1), "character": max(0, target.col - 1)},
+                                "end": {
+                                    "line": max(0, target.line - 1),
+                                    "character": max(0, target.col - 1 + len(target.name)),
+                                },
+                            },
+                            "origin": "semantic",
+                            "kind": int(target.kind),
+                            "detail": str(target.detail),
+                        }
+                    ]
+
         line = line0 + 1
         col = col0 + 1
-        results = []
-        self._ensure_stdlib_index()
-        
-        # First check local scope (highest priority)
+
+        # Fallback for unresolved/incomplete code.
         prog = self._parse_and_analyze(doc)
         if prog is not None:
             locals_map = self._local_decls(prog, line, col)
             if symbol in locals_map:
                 dl, dc = locals_map[symbol]
-                results.append({
-                    "uri": uri,
-                    "range": {
-                        "start": {"line": max(0, dl - 1), "character": max(0, dc - 1)},
-                        "end": {"line": max(0, dl - 1), "character": max(0, dc - 1 + len(symbol))},
-                    },
-                    "origin": "local"
-                })
-                
-                # If we found a local definition, return it immediately
-                return results
-            
-            # Check document-level declarations
+                return [
+                    {
+                        "uri": uri,
+                        "range": {
+                            "start": {"line": max(0, dl - 1), "character": max(0, dc - 1)},
+                            "end": {"line": max(0, dl - 1), "character": max(0, dc - 1 + len(symbol))},
+                        },
+                        "origin": "local",
+                    }
+                ]
+
             dmap = _decl_map(prog)
             if symbol in dmap:
                 d = dmap[symbol]
-                results.append({
-                    "uri": uri,
-                    "range": {
-                        "start": {"line": max(0, d["line"] - 1), "character": max(0, d["col"] - 1)},
-                        "end": {"line": max(0, d["line"] - 1), "character": max(0, d["col"] - 1 + len(symbol))},
-                    },
-                    "origin": "document",
-                    "kind": d.get("kind", 6),
-                    "detail": d.get("detail", "")
-                })
+                results.append(
+                    {
+                        "uri": uri,
+                        "range": {
+                            "start": {"line": max(0, d["line"] - 1), "character": max(0, d["col"] - 1)},
+                            "end": {"line": max(0, d["line"] - 1), "character": max(0, d["col"] - 1 + len(symbol))},
+                        },
+                        "origin": "document",
+                        "kind": d.get("kind", 6),
+                        "detail": d.get("detail", ""),
+                    }
+                )
 
         std_member = self._stdlib_member_lookup(doc, line0, col0, symbol)
         if std_member is not None:
@@ -2114,6 +2161,7 @@ class LSPServer:
 
         legend = self._semantic_tokens_legend()["tokenTypes"]
         type_idx = {name: i for i, name in enumerate(legend)}
+        primitive_types = set(tooling.compiler_primitive_types()) | {"none"}
 
         out: list[tuple[int, int, int, int, int]] = []
         prev_kind = ""
@@ -2125,8 +2173,15 @@ class LSPServer:
             if tok.kind == "IDENT":
                 nxt = tokens[i + 1].kind if i + 1 < len(tokens) else ""
                 prv = tokens[i - 1].kind if i > 0 else ""
-                if tok.text in GPU_MODIFIERS:
-                    token_type = "modifier"
+                if tok.text == "gpu":
+                    token_type = "namespace"
+                    mods |= 0b100  # defaultLibrary
+                elif tok.text in primitive_types:
+                    token_type = "type"
+                    mods |= 0b100
+                elif tok.text in BUILTIN_SIGS:
+                    token_type = "function"
+                    mods |= 0b100
                 elif prev_kind in {"fn", "extern"}:
                     token_type = "function"
                     mods |= 1  # declaration
@@ -2717,6 +2772,7 @@ class LSPServer:
             return {"contents": {"kind": "markdown", "value": "Astra source"}}
         if symbol in KEYWORDS:
             return {"contents": {"kind": "markdown", "value": f"`{symbol}` keyword"}}
+
         prog = self._parse_and_analyze(doc)
         inferred_text = ""
         if prog is not None:
@@ -2726,6 +2782,21 @@ class LSPServer:
                         inferred = getattr(node, "inferred_type", None)
                         if inferred:
                             inferred_text = str(inferred)
+
+            sem_idx = self._semantic_index_for_doc(doc)
+            if sem_idx is not None:
+                occ = sem_idx.symbol_at(line0, col0)
+                if occ is not None:
+                    sem_sym = sem_idx.symbols.get(occ.symbol_key)
+                    if sem_sym is not None:
+                        content = f"```astra\n{sem_sym.detail}\n```"
+                        docp = _first_paragraph(sem_sym.doc)
+                        if docp:
+                            content += f"\n\n{docp}"
+                        if inferred_text and inferred_text not in sem_sym.detail:
+                            content += f"\n\n`type`: `{inferred_text}`"
+                        return {"contents": {"kind": "markdown", "value": content}}
+
             dmap = _decl_map(prog)
             decl = dmap.get(symbol)
             if decl is not None:
@@ -2926,8 +2997,6 @@ class LSPServer:
                 add(k, 15, "snippet", insert_text=snippet, insert_format=2, priority=100)
             else:
                 add(k, 14, "keyword", priority=90)
-        for k in GPU_MODIFIERS:
-            add(k, 14, "gpu modifier", priority=89)
         
         # GPU namespace and APIs
         add("gpu", 9, "GPU runtime namespace", priority=92)
@@ -2935,7 +3004,7 @@ class LSPServer:
             add(f"gpu.{api}", 3, doc_text, priority=88)
 
         # Built-in functions
-        for b in BUILTIN_SIGS:
+        for b in tooling.compiler_builtin_signatures():
             if not b.startswith("__"):
                 sig = BUILTIN_SIGS[b]
                 args = ", ".join(sig.args or ["..."])
@@ -2981,36 +3050,32 @@ class LSPServer:
                     if allow(member):
                         add(member, 5, "union member type", priority=2)
 
-        builtin_types = [
-            "Int",
-            "isize",
-            "usize",
-            "i8",
-            "i16",
-            "i32",
-            "i64",
-            "i128",
-            "u8",
-            "u16",
-            "u32",
-            "u64",
-            "u128",
-            "Float",
-            "f16",
-            "f32",
-            "f64",
-            "f80",
-            "f128",
-            "Bool",
-            "String",
-            "str",
-            "Bytes",
-            "Void",
-            "none",
-        ]
+        builtin_types = tooling.compiler_primitive_types()
+        if "none" not in builtin_types:
+            builtin_types = builtin_types + ["none"]
         for t in builtin_types:
             if allow(t):
                 add(t, 5, f"builtin type {t}", priority=40)
+
+        for width in tooling.compiler_common_int_widths():
+            for signed_prefix in ("i", "u"):
+                label = f"{signed_prefix}$1"
+                if allow(f"{signed_prefix}{width}"):
+                    add(
+                        f"{signed_prefix}{width}",
+                        5,
+                        "fixed-width integer type",
+                        priority=38,
+                    )
+                if allow(label.replace("$1", "")):
+                    add(
+                        label,
+                        5,
+                        "arbitrary-width integer type",
+                        insert_text=label,
+                        insert_format=2,
+                        priority=55,
+                    )
 
         # Container and pointer/reference spellings supported by parser/semantic.
         shaped = [
@@ -3032,6 +3097,12 @@ class LSPServer:
             for sym in _decl_symbols(prog, doc.uri):
                 if sym.kind in {23, 10, 5} and allow(sym.name):  # struct/enum/type alias
                     add(sym.name, 5, sym.detail, priority=30)
+
+        self._ensure_stdlib_index()
+        for module in self._stdlib_modules:
+            for s in self._stdlib_symbols_for_module(module):
+                if s.kind in {23, 10, 5} and allow(s.name):
+                    add(s.name, 5, f"{s.detail} (std.{module})", priority=45)
 
         for syms in self.symbol_index.values():
             for s in syms:
@@ -3180,13 +3251,17 @@ class LSPServer:
                             add(fname, 8, f"field {fname}: {fty}", priority=96)
                     return
 
-        common_methods = ["len", "push", "pop", "get", "set", "clear", "is_empty", "clone"]
-        for method in common_methods:
-            add(method, 3, f"method {method}", insert_text=f"{method}($1)", insert_format=2, priority=85)
-
-        common_fields = ["data", "size", "capacity", "length", "count"]
-        for field in common_fields:
-            add(field, 8, f"field {field}", priority=80)
+        # Dynamic fallback from compiler builtin families (vec_*, list_*, map_*, etc.).
+        member_names: set[str] = set()
+        for b in tooling.compiler_builtin_signatures():
+            if b.startswith("__") or "_" not in b:
+                continue
+            _, suffix = b.split("_", 1)
+            if not suffix or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", suffix):
+                continue
+            member_names.add(suffix)
+        for method in sorted(member_names):
+            add(method, 3, f"builtin member candidate {method}", insert_text=f"{method}($1)", insert_format=2, priority=82)
     
     def _signature_help(self, uri: str, line0: int, col0: int) -> dict[str, Any] | None:
         doc = self.docs.get(uri)
@@ -3218,6 +3293,18 @@ class LSPServer:
             return None
         sig_label = None
         params: list[str] = []
+        prog = self._parse_and_analyze(doc)
+        if prog is not None:
+            for sym in _decl_symbols(prog, uri):
+                if sym.name != fn_name or sym.kind != 12:
+                    continue
+                sig_label = sym.detail
+                m = re.search(r"\((.*)\)", sym.detail)
+                if m:
+                    raw = m.group(1).strip()
+                    params = [p.strip() for p in raw.split(",")] if raw else []
+                break
+
         for syms in self.symbol_index.values():
             for s in syms:
                 if s.name == fn_name and s.kind == 12:
@@ -3229,6 +3316,20 @@ class LSPServer:
                     break
             if sig_label:
                 break
+        if sig_label is None:
+            self._ensure_stdlib_index()
+            for module in self._stdlib_modules:
+                for s in self._stdlib_symbols_for_module(module):
+                    if s.name != fn_name or s.kind != 12:
+                        continue
+                    sig_label = s.detail
+                    m = re.search(r"\((.*)\)", s.detail)
+                    if m:
+                        raw = m.group(1).strip()
+                        params = [p.strip() for p in raw.split(",")] if raw else []
+                    break
+                if sig_label is not None:
+                    break
         if sig_label is None and fn_name in BUILTIN_SIGS:
             bs = BUILTIN_SIGS[fn_name]
             params = bs.args or []
@@ -3240,14 +3341,14 @@ class LSPServer:
             "activeSignature": 0,
             "activeParameter": min(arg_index, max(0, len(params) - 1)) if params else 0,
         }
-    def _find_word_refs(self, uri: str, name: str, include_decl: bool) -> list[dict[str, Any]]:
+    def _find_text_refs(self, name: str, include_decl: bool) -> list[dict[str, Any]]:
         locs: list[dict[str, Any]] = []
         rex = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])")
-        def scan_uri(u: str, txt: str):
-            for m in rex.finditer(txt):
+        for u, d in self.docs.items():
+            for m in rex.finditer(d.text):
                 s_off, e_off = m.span()
-                s_line, s_col = _offset_to_position(txt, s_off)
-                e_line, e_col = _offset_to_position(txt, e_off)
+                s_line, s_col = _offset_to_position(d.text, s_off)
+                e_line, e_col = _offset_to_position(d.text, e_off)
                 locs.append(
                     {
                         "uri": u,
@@ -3257,14 +3358,42 @@ class LSPServer:
                         },
                     }
                 )
-        for u, d in self.docs.items():
-            scan_uri(u, d.text)
-        if include_decl:
-            defs = self._definition_target(uri, 0, 0)
-            for d in defs:
-                if d not in locs:
-                    locs.append(d)
+        if not include_decl:
+            return locs
         return locs
+
+    def _find_references(self, uri: str, line0: int, col0: int, *, include_decl: bool) -> list[dict[str, Any]]:
+        doc = self.docs.get(uri)
+        if doc is None:
+            return []
+        symbol = _word_at(doc.text, line0, col0)
+        if not symbol:
+            return []
+
+        idx = self._semantic_index_for_doc(doc)
+        if idx is not None:
+            occ = idx.symbol_at(line0, col0)
+            if occ is not None:
+                symbol_key = occ.symbol_key
+                out: list[dict[str, Any]] = []
+                seen: set[tuple[str, int, int]] = set()
+                uris = set(self.docs.keys()) | set(self.symbol_index.keys())
+                for target_uri in uris:
+                    tidx = self._semantic_index_for_uri(target_uri)
+                    if tidx is None:
+                        continue
+                    for loc in tidx.locations_for(symbol_key, include_decl=include_decl):
+                        start = loc["range"]["start"]
+                        key = (loc["uri"], int(start["line"]), int(start["character"]))
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        out.append(loc)
+                if out:
+                    return out
+
+        # Fallback when semantic resolution is unavailable for incomplete code.
+        return self._find_text_refs(symbol, include_decl=include_decl)
     def _document_symbols(self, uri: str) -> list[dict[str, Any]]:
         out = []
         for s in self.symbol_index.get(uri, []):
@@ -3617,6 +3746,8 @@ class LSPServer:
         self.pending.pop(uri, None)
         self._update_module_graph(uri)
         self.symbol_index.pop(uri, None)
+        for key in [k for k in self._semantic_index_cache if k.startswith(f"{uri}:")]:
+            self._semantic_index_cache.pop(key, None)
         send({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"uri": uri, "diagnostics": []}})
     def _on_config_change(self, params: dict[str, Any]) -> None:
         settings = params.get("settings", {})
@@ -3787,10 +3918,16 @@ class LSPServer:
                 p = msg.get("params", {})
                 uri = p.get("textDocument", {}).get("uri", "")
                 pos = p.get("position", {})
-                doc = self.docs.get(uri)
-                name = _word_at(doc.text, int(pos.get("line", 0)), int(pos.get("character", 0))) if doc else ""
                 include_decl = bool(p.get("context", {}).get("includeDeclaration", True))
-                self._respond(msg_id, self._find_word_refs(uri, name, include_decl) if name else [])
+                self._respond(
+                    msg_id,
+                    self._find_references(
+                        uri,
+                        int(pos.get("line", 0)),
+                        int(pos.get("character", 0)),
+                        include_decl=include_decl,
+                    ),
+                )
                 return True
             if method == "textDocument/rename":
                 p = msg.get("params", {})
@@ -3815,7 +3952,12 @@ class LSPServer:
                 if conflict:
                     self._error(msg_id, -32602, conflict)
                     return True
-                refs = self._find_word_refs(uri, old_name, include_decl=True)
+                refs = self._find_references(
+                    uri,
+                    int(pos.get("line", 0)),
+                    int(pos.get("character", 0)),
+                    include_decl=True,
+                )
                 changes: dict[str, list[dict[str, Any]]] = {}
                 for r in refs:
                     changes.setdefault(r["uri"], []).append({"range": r["range"], "newText": new_name})

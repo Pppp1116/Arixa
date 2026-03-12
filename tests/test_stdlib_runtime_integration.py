@@ -19,7 +19,7 @@ def _get_arixa_command() -> str:
     pytest.skip("arixa CLI binary not available in .venv/bin or PATH")
 
 
-def _compile_and_run(source: str) -> tuple[int, str, str]:
+def _compile_and_run(source: str, stdin_data: str | None = None) -> tuple[int, str, str]:
     with tempfile.NamedTemporaryFile(mode="w", suffix=".arixa", delete=False) as f:
         f.write(source)
         src = f.name
@@ -38,6 +38,7 @@ def _compile_and_run(source: str) -> tuple[int, str, str]:
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
+            input=stdin_data,
         )
         return run.returncode, run.stdout, run.stderr
     finally:
@@ -182,4 +183,26 @@ fn main() Int {
 }
 """
     code, out, err = _compile_and_run(src)
+    assert code == 0, f"stdout={out}\nstderr={err}"
+
+
+def test_stdlib_runtime_str_new_helpers_and_stdin_input() -> None:
+    src = """
+import std.str;
+import std.io;
+
+fn main() Int {
+  assert str.strip("  hello  ") == "hello";
+  assert str.lstrip("  hello  ") == "hello  ";
+  assert str.rstrip("  hello  ") == "  hello";
+  assert str.repeat("ab", 3) == "ababab";
+  assert str.strip_prefix("prefix-value", "prefix-") == "value";
+  assert str.strip_suffix("value.txt", ".txt") == "value";
+
+  line = io.read_stdin_line_trimmed();
+  assert line == "name";
+  return 0;
+}
+"""
+    code, out, err = _compile_and_run(src, stdin_data="  name  \n")
     assert code == 0, f"stdout={out}\nstderr={err}"

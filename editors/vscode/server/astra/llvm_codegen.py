@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from astra.ast import *
+from astra import builtin_metadata as builtins
 from astra.codegen import CodegenError
 from astra.for_lowering import lower_for_loops
 from astra.int_types import parse_int_type_name
@@ -1230,43 +1231,22 @@ def _expr_type(state: _FnState, e: Any) -> str:
     if isinstance(e, Call):
         if isinstance(e.fn, Name):
             name = e.resolved_name or e.fn.value
-            if name in {
-                "print",
-                "__print",
-                "assert",
-                "__assert",
-                "debug_assert",
-                "__debug_assert",
-                "assume",
-                "__assume",
-            }:
+            base_name = builtins.normalize_builtin_name(name)
+            if base_name in {"print", "assert", "debug_assert", "assume"}:
                 return "Void"
-            if name in {"likely", "__likely", "unlikely", "__unlikely"}:
+            if base_name in {"likely", "unlikely"}:
                 return "Bool"
-            if name in {"panic", "__panic", "proc_exit", "__proc_exit"}:
+            if base_name in {"panic", "proc_exit"}:
                 return "Never"
-            if name in {
-                "countOnes",
-                "leadingZeros",
-                "trailingZeros",
-                "popcnt",
-                "clz",
-                "ctz",
-                "__countOnes",
-                "__leadingZeros",
-                "__trailingZeros",
-                "__popcnt",
-                "__clz",
-                "__ctz",
-            }:
+            if base_name in builtins.COUNT_LIKE_BUILTIN_BASES:
                 return "Int"
-            if name in {"rotl", "rotr", "__rotl", "__rotr"} and e.args:
+            if base_name in builtins.ROTATE_BUILTIN_BASES and e.args:
                 return _expr_type(state, e.args[0])
-            if name in {"vec_new", "__vec_new", "vec_from", "__vec_from"}:
+            if base_name in {"vec_new", "vec_from"}:
                 return "Any"
-            if name in {"vec_len", "__vec_len", "vec_set", "__vec_set", "vec_push", "__vec_push"}:
+            if base_name in {"vec_len", "vec_set", "vec_push"}:
                 return "Int"
-            if name in {"vec_get", "__vec_get"}:
+            if base_name == "vec_get":
                 if e.args:
                     vec_ty = _canonical_type(_expr_type(state, e.args[0]))
                     if _is_vec_type(vec_ty):
@@ -3013,7 +2993,7 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
         b.unreachable()
         return _Value(ir.Constant(i64, 0), "Never")
 
-    if base in {"countOnes", "leadingZeros", "trailingZeros", "popcnt", "clz", "ctz"}:
+    if base in builtins.COUNT_LIKE_BUILTIN_BASES:
         op = {
             "countOnes": "countOnes",
             "popcnt": "countOnes",
@@ -3024,7 +3004,7 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
         }[base]
         return _lower_count_like(ctx, state, call, op)
 
-    if base in {"rotl", "rotr"}:
+    if base in builtins.ROTATE_BUILTIN_BASES:
         return _lower_rotate(ctx, state, call, left=(base == "rotl"), overflow_mode=overflow_mode)
 
     if base == "await_result":
@@ -3151,143 +3131,7 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
             fields = {fname: arg for (fname, _), arg in zip(sinfo.decl.fields, call.args)}
             return _compile_struct_init(ctx, state, name, fields, call, overflow_mode)
 
-        if resolved not in ctx.fn_map and resolved in {
-            "print",
-            "len",
-            "read_file",
-            "write_file",
-            "args",
-            "arg",
-            "spawn",
-            "join",
-            "await_result",
-            "list_new",
-            "list_push",
-            "list_get",
-            "list_set",
-            "list_len",
-            "map_new",
-            "map_has",
-            "map_get",
-            "map_set",
-            "file_exists",
-            "file_remove",
-            "tcp_connect",
-            "tcp_send",
-            "tcp_recv",
-            "tcp_close",
-            "to_json",
-            "from_json",
-            "sha256",
-            "hmac_sha256",
-            "rand_bytes",
-            "mutex_new",
-            "mutex_lock",
-            "mutex_unlock",
-            "chan_new",
-            "chan_send",
-            "chan_recv_try",
-            "chan_recv_blocking",
-            "chan_close",
-            "proc_exit",
-            "env_get",
-            "cwd",
-            "proc_run",
-            "now_unix",
-            "monotonic_ms",
-            "sleep_ms",
-            "countOnes",
-            "leadingZeros",
-            "trailingZeros",
-            "popcnt",
-            "clz",
-            "ctz",
-            "rotl",
-            "rotr",
-            "vec_new",
-            "vec_from",
-            "vec_len",
-            "vec_get",
-            "vec_set",
-            "vec_push",
-            "assert",
-            "debug_assert",
-            "assume",
-            "likely",
-            "unlikely",
-            "format",
-            "__format",
-            "__print",
-            "__len",
-            "__read_file",
-            "__write_file",
-            "__args",
-            "__arg",
-            "__spawn",
-            "__join",
-            "__await_result",
-            "__atomic_int_new",
-            "__atomic_load",
-            "__atomic_store",
-            "__atomic_fetch_add",
-            "__atomic_compare_exchange",
-            "__list_new",
-            "__list_push",
-            "__list_get",
-            "__list_set",
-            "__list_len",
-            "__map_new",
-            "__map_has",
-            "__map_get",
-            "__map_set",
-            "__file_exists",
-            "__file_remove",
-            "__tcp_connect",
-            "__tcp_send",
-            "__tcp_recv",
-            "__tcp_close",
-            "__to_json",
-            "__from_json",
-            "__sha256",
-            "__hmac_sha256",
-            "__rand_bytes",
-            "__mutex_new",
-            "__mutex_lock",
-            "__mutex_unlock",
-            "__chan_new",
-            "__chan_send",
-            "__chan_recv_try",
-            "__chan_recv_blocking",
-            "__chan_close",
-            "__proc_exit",
-            "__env_get",
-            "__cwd",
-            "__proc_run",
-            "__now_unix",
-            "__monotonic_ms",
-            "__sleep_ms",
-            "__countOnes",
-            "__leadingZeros",
-            "__trailingZeros",
-            "__popcnt",
-            "__clz",
-            "__ctz",
-            "__rotl",
-            "__rotr",
-            "__vec_new",
-            "__vec_from",
-            "__vec_len",
-            "__vec_get",
-            "__vec_set",
-            "__vec_push",
-            "__assert",
-            "__debug_assert",
-            "__assume",
-            "__likely",
-            "__unlikely",
-            "panic",
-            "__panic",
-        }:
+        if resolved not in ctx.fn_map and builtins.is_builtin_name(resolved):
             return _compile_builtin_call(ctx, state, call, resolved, overflow_mode)
 
         sig = ctx.fn_sigs.get(resolved)

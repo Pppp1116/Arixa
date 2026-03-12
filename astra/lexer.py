@@ -3,46 +3,9 @@
 from dataclasses import dataclass
 
 from astra.int_types import INT_WIDTH_MAX, INT_WIDTH_MIN, parse_prefixed_int_type, prefixed_int_width_error
+from astra.token_metadata import LEXER_KEYWORDS
 
-KEYWORDS = {
-    "fn",
-    "mut",
-    "if",
-    "else",
-    "while",
-    "for",
-    "match",
-    "return",
-    "break",
-    "continue",
-    "unreachable",
-    "unsafe",
-    "struct",
-    "enum",
-    "trait",
-    "type",
-    "import",
-    "extern",
-    "comptime",
-    "none",
-    "set",
-    "in",
-    "is",
-    "as",
-    "sizeof",
-    "alignof",
-    "f16",
-    "f80",
-    "f128",
-    "pub",
-    "const",
-    "true",
-    "false",
-    "where",
-    "for",
-    "async",
-    "await",
-}
+KEYWORDS = set(LEXER_KEYWORDS)
 
 MULTI_TOKENS = [
     "...",

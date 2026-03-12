@@ -6,6 +6,7 @@ from astra.ast import *
 from astra.int_types import parse_int_type_name
 from astra.lexer import Token, lex
 from astra.error_reporting import ErrorReporter, EnhancedError
+from astra.token_metadata import is_float_type_keyword, is_type_atom_token, is_type_start_token
 
 
 class ParseError(SyntaxError):
@@ -627,7 +628,7 @@ class Parser:
         return name, typ, is_mut
 
     def _starts_type(self) -> bool:
-        return self.cur().kind in {"IDENT", "INT_TYPE", "ARBITRARY_INT_TYPE", "none", "*", "&", "[", "fn", "f16", "f80", "f128"}
+        return is_type_start_token(self.cur().kind)
 
     def parse_extern_fn(
         self,
@@ -877,7 +878,7 @@ class Parser:
                 self.eat(")")
                 typ = f"fn({', '.join(args)}) {type_text(self.parse_type())}"
             else:
-                if self.cur().kind in {"IDENT", "ARBITRARY_INT_TYPE", "INT_TYPE", "none", "f16", "f80", "f128"}:
+                if is_type_atom_token(self.cur().kind):
                     tok_kind = self.cur().kind
                     name = self.eat(tok_kind).text
                     if tok_kind == "ARBITRARY_INT_TYPE":
@@ -892,7 +893,7 @@ class Parser:
                     elif tok_kind == "INT_TYPE":
                         # Handle built-in integer types
                         typ = name
-                    elif tok_kind in {"f16", "f80", "f128"}:
+                    elif is_float_type_keyword(tok_kind):
                         typ = name
                     else:
                         int_info = parse_int_type_name(name)

@@ -1374,6 +1374,39 @@ uintptr_t astra_write_file(uintptr_t path_ptr, uintptr_t data_ptr) {
   return (uintptr_t)wr;
 }
 
+uintptr_t __stdin_read_line_impl(void) {
+  size_t cap = 128;
+  char *buf = (char *)malloc(cap);
+  if (buf == NULL) {
+    return (uintptr_t)astra_strdup_s("");
+  }
+  if (fgets(buf, (int)cap, stdin) == NULL) {
+    free(buf);
+    return (uintptr_t)astra_strdup_s("");
+  }
+  size_t len = strlen(buf);
+  while (len > 0 && buf[len - 1] != '\n' && !feof(stdin)) {
+    size_t next_cap = cap * 2;
+    char *grown = (char *)realloc(buf, next_cap);
+    if (grown == NULL) {
+      break;
+    }
+    buf = grown;
+    cap = next_cap;
+    if (fgets(buf + len, (int)(cap - len), stdin) == NULL) {
+      break;
+    }
+    len = strlen(buf);
+  }
+  len = strlen(buf);
+  if (len > 0 && buf[len - 1] == '\n') {
+    buf[len - 1] = '\0';
+  }
+  char *out = astra_strdup_s(buf);
+  free(buf);
+  return (uintptr_t)out;
+}
+
 static char **g_cli_argv = NULL;
 static size_t g_cli_argc = 0;
 static bool g_cli_loaded = false;

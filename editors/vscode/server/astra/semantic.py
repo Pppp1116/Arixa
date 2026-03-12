@@ -9,10 +9,12 @@ from pathlib import Path
 from itertools import product
 
 from astra.ast import *
+from astra import builtin_metadata as builtins
 from astra.int_types import is_int_type_name, parse_int_type_name
 from astra.layout import LayoutError, canonical_type as _layout_canonical_type, layout_of_type
 from astra.module_resolver import resolve_import_path
 from astra.parser import parse
+from astra.type_metadata import COPY_SCALAR_TYPES, FLOAT_TYPES, PRIMITIVES
 from astra.error_reporting import ErrorReporter, EnhancedError
 
 
@@ -252,9 +254,6 @@ def _diag(filename: str, line: int, col: int, msg: str) -> str:
     return f"SEM {filename}:{line}:{col}: {msg}"
 
 
-FLOAT_TYPES = {"f16", "f32", "f64", "f80", "f128"}
-PRIMITIVES = {"Int", "isize", "usize", "Float", "f16", "f32", "f64", "f80", "f128", "String", "str", "Bool", "Any", "Void", "Never", "Bytes"}
-COPY_SCALAR_TYPES = {"Float", "f16", "f32", "f64", "f80", "f128", "Bool"}
 NONE_LIT_TYPE = "<none>"
 _TRAIT_IMPLS_STACK: list[dict[str, set[str]]] = [{}]
 _KNOWN_TRAITS_STACK: list[set[str]] = [set()]
@@ -750,52 +749,7 @@ for _name, _sig in list(BUILTIN_SIGS.items()):
     BUILTIN_SIGS[f"__{_name}"] = _sig
 
 
-_FREESTANDING_FORBIDDEN_BUILTINS: set[str] = {
-    "print",
-    "len",
-    "read_file",
-    "write_file",
-    "args",
-    "arg",
-    "spawn",
-    "join",
-    "list_new",
-    "list_push",
-    "list_get",
-    "list_set",
-    "list_len",
-    "map_new",
-    "map_has",
-    "map_get",
-    "map_set",
-    "file_exists",
-    "file_remove",
-    "tcp_connect",
-    "tcp_send",
-    "tcp_recv",
-    "tcp_close",
-    "to_json",
-    "from_json",
-    "sha256",
-    "hmac_sha256",
-    "rand_bytes",
-    "mutex_new",
-    "mutex_lock",
-    "mutex_unlock",
-    "chan_new",
-    "chan_send",
-    "chan_recv_try",
-    "chan_recv_blocking",
-    "chan_close",
-    "env_get",
-    "cwd",
-    "proc_run",
-    "now_unix",
-    "monotonic_ms",
-    "sleep_ms",
-    "panic",
-    "proc_exit",
-}
+_FREESTANDING_FORBIDDEN_BUILTINS: set[str] = set(builtins.FREESTANDING_FORBIDDEN_BUILTIN_BASES)
 _FREESTANDING_MODE_STACK: list[bool] = []
 
 
@@ -843,26 +797,15 @@ GPU_HOST_APIS: set[str] = {
     "read",
     "launch",
 }
-GPU_ALLOWED_IN_KERNEL_BUILTINS: set[str] = {
-    "countOnes",
-    "leadingZeros",
-    "trailingZeros",
-    "popcnt",
-    "clz",
-    "ctz",
-    "rotl",
-    "rotr",
-    "vec_new",
-    "vec_from",
-    "vec_len",
-    "vec_get",
-    "vec_set",
-    "vec_push",
-}
+GPU_ALLOWED_IN_KERNEL_BUILTINS: set[str] = set(
+    builtins.COUNT_LIKE_BUILTIN_BASES
+    | builtins.ROTATE_BUILTIN_BASES
+    | builtins.VECTOR_BUILTIN_BASES
+)
 
 
 def _builtin_base_name(name: str) -> str:
-    return name[2:] if name.startswith("__") else name
+    return builtins.normalize_builtin_name(name)
 
 
 def _freestanding_mode_enabled() -> bool:
@@ -5528,7 +5471,7 @@ def _infer_call(
 
     if isinstance(e.fn, Name):
         name = e.fn.value
-        builtin_base = name[2:] if name.startswith("__") else name
+        builtin_base = _builtin_base_name(name)
         if gpu_kernel and builtin_base in BUILTIN_SIGS and builtin_base not in GPU_ALLOWED_IN_KERNEL_BUILTINS:
             raise SemanticError(_diag(filename, e.line, e.col, f"builtin {builtin_base} is not available in gpu kernels"))
         if builtin_base == "spawn":
@@ -5618,14 +5561,14 @@ def _infer_call(
                     detail = f": {e.args[1].value}"
                 raise SemanticError(_diag(filename, e.args[0].line, e.args[0].col, f"static assertion failed{detail}"))
             return "Void"
-        if builtin_base in {"countOnes", "leadingZeros", "trailingZeros", "popcnt", "clz", "ctz"}:
+        if builtin_base in builtins.COUNT_LIKE_BUILTIN_BASES:
             if len(e.args) != 1:
                 raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects 1 args, got {len(e.args)}"))
             aty = arg_types[0]
             if not _is_int_type(aty):
                 raise SemanticError(_diag(filename, e.args[0].line, e.args[0].col, f"{name} expects an integer argument, got {aty}"))
             return "Int"
-        if builtin_base in {"rotl", "rotr"}:
+        if builtin_base in builtins.ROTATE_BUILTIN_BASES:
             if len(e.args) != 2:
                 raise SemanticError(_diag(filename, e.line, e.col, f"{name} expects 2 args, got {len(e.args)}"))
             vty = arg_types[0]

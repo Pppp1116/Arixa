@@ -73,6 +73,30 @@ fn append_line(path String, line String) Int {
     return append(path, line + "\n");
 }
 
+/// Read one line from stdin.
+///
+/// Returns an empty string on EOF.
+fn read_stdin_line() String {
+    return __stdin_read_line_impl();
+}
+
+/// Read one line from stdin and trim surrounding whitespace.
+fn read_stdin_line_trimmed() String {
+    return __str_trim_impl(read_stdin_line());
+}
+
+/// Print a prompt and read one line from stdin.
+fn prompt(prompt_text String) String {
+    print(prompt_text);
+    return read_stdin_line();
+}
+
+/// Print a prompt and read a trimmed line from stdin.
+fn prompt_trimmed(prompt_text String) String {
+    print(prompt_text);
+    return read_stdin_line_trimmed();
+}
+
 /// Print any value using display formatting rules.
 fn print(v Any) {
     __print(v);
@@ -82,3 +106,5 @@ fn print(v Any) {
 
 extern fn __str_split_impl(s String, delimiter String) Vec<String>;
 extern fn __str_join_impl(parts Vec<String>, delimiter String) String;
+extern fn __str_trim_impl(s String) String;
+extern fn __stdin_read_line_impl() String;

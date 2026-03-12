@@ -1,9 +1,15 @@
 from pathlib import Path
+import time
 
 import pytest
 
 from astra.ast import ImportDecl
-from astra.module_resolver import ModuleResolutionError, resolve_import_path
+from astra.module_resolver import (
+    ModuleResolutionError,
+    discover_stdlib_modules,
+    resolve_import_path,
+    stdlib_latest_mtime,
+)
 
 
 def test_module_import_resolves_from_package_root(tmp_path: Path):
@@ -64,3 +70,33 @@ def test_package_submodule_import_resolves_from_cache(monkeypatch, tmp_path: Pat
 
     resolved = resolve_import_path(ImportDecl(path=[], source="sdl2/video"), str(importer))
     assert resolved == (pkg_dir / "video.arixa").resolve()
+
+
+def test_stdlib_module_discovery_is_filesystem_driven(monkeypatch, tmp_path: Path):
+    stdlib = tmp_path / "stdlib"
+    (stdlib / "io").mkdir(parents=True)
+    (stdlib / "io" / "fs.arixa").write_text("fn noop() Int { return 0; }\n")
+    (stdlib / "core.arixa").write_text("fn base() Int { return 0; }\n")
+    (stdlib / "bindings").mkdir()
+    (stdlib / "bindings" / "ffi.arixa").write_text("fn ext() Int { return 0; }\n")
+    monkeypatch.setenv("ASTRA_STDLIB_PATH", str(stdlib))
+
+    with_bindings = discover_stdlib_modules(include_bindings=True)
+    without_bindings = discover_stdlib_modules(include_bindings=False)
+    assert "core" in with_bindings
+    assert "io.fs" in with_bindings
+    assert "bindings.ffi" in with_bindings
+    assert "bindings.ffi" not in without_bindings
+
+
+def test_stdlib_latest_mtime_updates_when_stdlib_changes(monkeypatch, tmp_path: Path):
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir(parents=True)
+    (stdlib / "core.arixa").write_text("fn base() Int { return 0; }\n")
+    monkeypatch.setenv("ASTRA_STDLIB_PATH", str(stdlib))
+    before = stdlib_latest_mtime()
+
+    time.sleep(1.05)
+    (stdlib / "future.arixa").write_text("fn add() Int { return 1; }\n")
+    after = stdlib_latest_mtime()
+    assert after > before

@@ -83,6 +83,55 @@ def stdlib_root_path() -> Path | None:
     return None
 
 
+def discover_stdlib_modules(*, include_bindings: bool = True) -> dict[str, Path]:
+    """Discover stdlib modules from filesystem layout.
+
+    Returns a mapping from dotted module path (e.g. ``io.fs``) to absolute
+    file path. Discovery is entirely source-driven, so new stdlib files become
+    visible without updating hardcoded inventories.
+    """
+    root = stdlib_root_path()
+    if root is None:
+        return {}
+    modules: dict[str, Path] = {}
+    try:
+        for path in root.rglob("*.arixa"):
+            if not path.is_file():
+                continue
+            try:
+                rel = path.relative_to(root).with_suffix("")
+            except Exception:
+                continue
+            if not include_bindings and rel.parts and rel.parts[0] == "bindings":
+                continue
+            module = ".".join(rel.parts)
+            if not module:
+                continue
+            modules[module] = path.resolve()
+    except Exception:
+        return {}
+    return dict(sorted(modules.items(), key=lambda item: item[0]))
+
+
+def stdlib_latest_mtime() -> float:
+    """Return latest mtime across stdlib source files."""
+    root = stdlib_root_path()
+    if root is None:
+        return 0.0
+    latest = 0.0
+    try:
+        for path in root.rglob("*.arixa"):
+            if not path.is_file():
+                continue
+            try:
+                latest = max(latest, float(path.stat().st_mtime))
+            except Exception:
+                continue
+    except Exception:
+        return 0.0
+    return latest
+
+
 def runtime_source_path() -> Path | None:
     """Execute the `runtime_source_path` routine.
     

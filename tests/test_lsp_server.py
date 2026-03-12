@@ -802,3 +802,85 @@ fn main() Int {
     assert all_changes[0]["newText"] == ": Int"
     assert all_changes[1]["newText"] == ": Int"
     assert non_trivial_changes[0]["newText"] == ": Int"
+
+
+def test_lsp_references_are_scope_aware_for_shadowed_locals(tmp_path: Path):
+    server = lsp.LSPServer(log=lsp.logging.getLogger("test-lsp"), debounce_ms=0)
+    src = (
+        "fn main() Int {\n"
+        "  x = 1;\n"
+        "  y = x + 1;\n"
+        "  if true {\n"
+        "    x = 2;\n"
+        "    z = x + 1;\n"
+        "  }\n"
+        "  return x;\n"
+        "}\n"
+    )
+    uri = (tmp_path / "shadow_refs.arixa").as_uri()
+    server.docs[uri] = lsp.TextDocument(uri=uri, text=src, version=1, language_id="astra")
+
+    lines = src.splitlines()
+    col = lines[2].index("x")
+    refs = server._find_references(uri, 2, col, include_decl=True)
+    ref_lines = {int(r["range"]["start"]["line"]) for r in refs}
+
+    assert {1, 2, 7}.issubset(ref_lines)
+    assert 4 not in ref_lines
+    assert 5 not in ref_lines
+
+
+def test_lsp_dynamic_stdlib_refresh_picks_new_modules_and_symbols(tmp_path: Path, monkeypatch):
+    std_root = tmp_path / "stdlib"
+    std_root.mkdir()
+    (std_root / "core.arixa").write_text("fn base() Int { return 0; }\n")
+    monkeypatch.setenv("ASTRA_STDLIB_PATH", str(std_root))
+
+    server = lsp.LSPServer(log=lsp.logging.getLogger("test-lsp"), debounce_ms=0)
+    src = "import std.\nfn main() Int { return 0; }\n"
+    uri = (tmp_path / "main.arixa").as_uri()
+    server.docs[uri] = lsp.TextDocument(uri=uri, text=src, version=1, language_id="astra")
+    col = src.splitlines()[0].index("std.") + len("std.")
+
+    initial = server._completion(uri, 0, col)
+    initial_labels = {it["label"] for it in initial}
+    assert "core" in initial_labels
+    assert "future" not in initial_labels
+
+    (std_root / "future.arixa").write_text("fn new_fn() Int { return 1; }\n")
+    time.sleep(1.05)
+    server.docs[uri] = lsp.TextDocument(uri=uri, text=src, version=2, language_id="astra")
+
+    refreshed = server._completion(uri, 0, col)
+    refreshed_labels = {it["label"] for it in refreshed}
+    assert "future" in refreshed_labels
+
+    src_hover = "fn main() Int { value = std.future.new_fn(); return value; }\n"
+    server.docs[uri] = lsp.TextDocument(uri=uri, text=src_hover, version=3, language_id="astra")
+    hover = server._hover(uri, 0, src_hover.index("new_fn"))
+    assert hover is not None
+    assert "fn new_fn" in hover["contents"]["value"]
+
+
+def test_lsp_type_completion_tracks_compiler_primitives(tmp_path: Path):
+    server = lsp.LSPServer(log=lsp.logging.getLogger("test-lsp"), debounce_ms=0)
+    sema.PRIMITIVES.add("Quat")
+    try:
+        src = (
+            "fn make() Int {\n"
+            "  return 1;\n"
+            "}\n"
+            "fn main() Int {\n"
+            "  value: Q = make();\n"
+            "  return 0;\n"
+            "}\n"
+        )
+        uri = (tmp_path / "primitive_completion.arixa").as_uri()
+        server.docs[uri] = lsp.TextDocument(uri=uri, text=src, version=1, language_id="astra")
+        line = 4
+        col = src.splitlines()[line].index("Q") + 1
+        items = server._completion(uri, line, col)
+        labels = {it["label"] for it in items}
+        assert "Quat" in labels
+    finally:
+        sema.PRIMITIVES.discard("Quat")

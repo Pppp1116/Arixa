@@ -13,6 +13,7 @@ _astra_sockets = {}
 _astra_next_sock = 1
 _astra_registry_lock = threading.Lock()
 _astra_libs = {}
+_ASTRA_PROFILE = 'release'
 def __astra_cast(v, t):
     if t in ('Float', 'f16', 'f32', 'f64', 'f80', 'f128'):
         return float(v)
@@ -52,56 +53,13 @@ def __astra_display(arg):
         return arg
     if arg is None:
         return 'none'
-
-    def _normalize(value, seen):
-        if isinstance(value, (bool, int, float, str)) or value is None:
-            return __astra_display(value)
-        value_id = id(value)
-        if value_id in seen:
-            return "<cycle>"
-        if isinstance(value, list):
-            seen.add(value_id)
-            try:
-                return [_normalize(item, seen) for item in value]
-            finally:
-                seen.discard(value_id)
-        if isinstance(value, tuple):
-            seen.add(value_id)
-            try:
-                return [_normalize(item, seen) for item in value]
-            finally:
-                seen.discard(value_id)
-        if isinstance(value, set):
-            seen.add(value_id)
-            try:
-                return [_normalize(item, seen) for item in sorted(value, key=lambda x: str(x))]
-            finally:
-                seen.discard(value_id)
-        if isinstance(value, dict):
-            seen.add(value_id)
-            try:
-                out = {}
-                for key, val in value.items():
-                    key_norm = _normalize(key, seen)
-                    out[str(key_norm)] = _normalize(val, seen)
-                return out
-            finally:
-                seen.discard(value_id)
-        if hasattr(value, '__dict__'):
-            seen.add(value_id)
-            try:
-                return _normalize(value.__dict__, seen)
-            finally:
-                seen.discard(value_id)
-        return str(value)
-
-    if isinstance(arg, (list, tuple, set, dict)) or hasattr(arg, '__dict__'):
+    if hasattr(arg, '__dict__'):
         try:
-            return json.dumps(_normalize(arg, set()), sort_keys=True)
+            return json.dumps(arg.__dict__, sort_keys=True)
         except Exception:
             pass
     try:
-        return json.dumps(_normalize(arg, set()), sort_keys=True)
+        return json.dumps(arg, sort_keys=True)
     except Exception:
         return str(arg)
 def print_(*args):
@@ -137,6 +95,11 @@ def __astra_try_unwrap_result(v):
 def len_(x): return len(x)
 def read_file(p): return pathlib.Path(p).read_text()
 def write_file(p,s): pathlib.Path(p).write_text(str(s)); return 0
+def __stdin_read_line_impl():
+    try:
+        return input()
+    except EOFError:
+        return ''
 def args(): return sys.argv
 def arg(i): return sys.argv[i] if 0 <= int(i) < len(sys.argv) else ''
 def spawn(fn, *a):
@@ -341,6 +304,26 @@ def rand_bytes(n):
     return list(os.urandom(n))
 def proc_exit(code): raise SystemExit(int(code))
 def panic(msg): import sys; print(f'panic: {msg}', file=sys.stderr); sys.exit(101)
+def assert_(cond):
+    if not bool(cond):
+        panic('assert failed')
+    return None
+def debug_assert_(cond):
+    if _ASTRA_PROFILE == 'debug' and not bool(cond):
+        panic('debug_assert failed')
+    return None
+def assume_(cond):
+    if _ASTRA_PROFILE == 'debug' and not bool(cond):
+        panic('assume failed')
+    return None
+def likely_(cond):
+    return bool(cond)
+def unlikely_(cond):
+    return bool(cond)
+def __astra_unreachable():
+    if _ASTRA_PROFILE == 'debug':
+        panic('entered unreachable')
+    raise RuntimeError('entered unreachable')
 def env_get(k): return os.environ.get(str(k), '')
 def cwd(): return os.getcwd()
 def proc_run(cmd):

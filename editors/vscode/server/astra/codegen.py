@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from astra.ast import *
+from astra import builtin_metadata as builtins
 from astra.for_lowering import lower_for_loops
 from astra.gpu.kernel_lowering import lower_gpu_kernels
 from astra.int_types import parse_int_type_name
@@ -367,6 +368,11 @@ def to_python(
         "def len_(x): return len(x)",
         "def read_file(p): return pathlib.Path(p).read_text()",
         "def write_file(p,s): pathlib.Path(p).write_text(str(s)); return 0",
+        "def __stdin_read_line_impl():",
+        "    try:",
+        "        return input()",
+        "    except EOFError:",
+        "        return ''",
         "def args(): return sys.argv",
         "def arg(i): return sys.argv[i] if 0 <= int(i) < len(sys.argv) else ''",
         "def spawn(fn, *a):",
@@ -1247,55 +1253,39 @@ def _expr(e: Any) -> str:
         return f"range({start}, {end})"
     if isinstance(e, Call):
         name = e.resolved_name or _call_name(e.fn)
+        base_name = builtins.normalize_builtin_name(name)
         args = list(e.args)
         ufcs_receiver = getattr(e, "ufcs_receiver", None)
         if ufcs_receiver is not None:
             args = [ufcs_receiver] + args
-        if name == "panic" and len(args) == 1:
+        if base_name == "panic" and len(args) == 1:
             return f"panic({_expr(args[0])})"
-        if name in {"static_assert", "__static_assert"}:
+        if base_name == "static_assert":
             return "None"
-        if name in {"assert", "__assert"}:
+        if base_name == "assert":
             return f"assert_({_expr(args[0])})" if args else "assert_(False)"
-        if name in {"debug_assert", "__debug_assert"}:
+        if base_name == "debug_assert":
             if _PY_PROFILE == "release":
                 return "None"
             return f"debug_assert_({_expr(args[0])})" if args else "debug_assert_(False)"
-        if name in {"assume", "__assume"}:
+        if base_name == "assume":
             return f"assume_({_expr(args[0])})" if args else "assume_(False)"
-        if name in {"likely", "__likely"}:
+        if base_name == "likely":
             return f"likely_({_expr(args[0])})" if args else "likely_(False)"
-        if name in {"unlikely", "__unlikely"}:
+        if base_name == "unlikely":
             return f"unlikely_({_expr(args[0])})" if args else "unlikely_(False)"
-        if name in {"format", "__format"}:
+        if base_name == "format":
             if len(args) == 1 and isinstance(args[0], StringInterpolation):
                 return _expr(args[0])
             return f"format_({', '.join(_expr(a) for a in args)})"
-        if name in {
-            "countOnes",
-            "__countOnes",
-            "leadingZeros",
-            "__leadingZeros",
-            "trailingZeros",
-            "popcnt",
-            "__popcnt",
-            "clz",
-            "__clz",
-            "ctz",
-            "__ctz",
-        } and len(args) == 1:
+        if base_name in builtins.COUNT_LIKE_BUILTIN_BASES and len(args) == 1:
             bits = _known_py_int_bits(args[0])
             return f"{name}({_expr(args[0])}, {bits})"
-        if name in {"rotl", "__rotl", "rotr", "__rotr"} and len(args) == 2:
+        if base_name in builtins.ROTATE_BUILTIN_BASES and len(args) == 2:
             bits = _known_py_int_bits(args[0])
             return f"{name}({_expr(args[0])}, {_expr(args[1])}, {bits})"
-        name = {
-            "print": "print_",
-            "__print": "print_",
-            "format": "format_",
-            "__format": "format_",
-            "len": "len_",
-        }.get(name, name)
+        if base_name in {"print", "format", "len"}:
+            name = f"{base_name}_"
         return f"{name}({', '.join(_expr(a) for a in args)})"
     if isinstance(e, IndexExpr):
         return f"({_expr(e.obj)})[{_expr(e.index)}]"

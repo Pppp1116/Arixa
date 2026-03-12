@@ -6,6 +6,7 @@ from typing import Any, Optional, Dict, Set
 from dataclasses import dataclass, field
 
 from astra.ast import *
+from astra import builtin_metadata as builtins
 from astra.for_lowering import lower_for_loops
 from astra.int_types import parse_int_type_name
 
@@ -963,9 +964,10 @@ def _fold_pure_call_const(call: Call) -> Any | None:
     name = _call_name(call)
     if name is None:
         return None
+    base_name = builtins.normalize_builtin_name(name)
 
     # Builtin `len` on literal containers.
-    if name in {"len", "__len"} and getattr(call, "resolved_name", None) is None and len(call.args) == 1:
+    if base_name == "len" and getattr(call, "resolved_name", None) is None and len(call.args) == 1:
         arg = call.args[0]
         if isinstance(arg, ArrayLit):
             out = _literal_node(len(arg.elements), call)

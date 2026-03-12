@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 
 from astra.ast import *
+from astra import builtin_metadata as builtins
 
 
 class EffectType(Enum):
@@ -132,19 +133,19 @@ class EffectAnalyzer:
             # Type operations
             'sizeof', 'alignof', 'bitsof',
             # Utility functions
-            'len', 'capacity', 'is_empty', 'is_some', 'is_none',
+            'capacity', 'is_empty', 'is_some', 'is_none',
         }
         
         # Known impure functions
         self.impure_functions = {
             # I/O
-            'print', 'println', 'read', 'write', 'open', 'close',
+            'println', 'read', 'write', 'open', 'close',
             # Memory
             'malloc', 'free', 'realloc', 'calloc',
             # System
-            'exit', 'abort', 'panic',
+            'exit', 'abort',
             # Threading
-            'spawn', 'join', 'lock', 'unlock',
+            'lock', 'unlock',
         }
         
         # Global variables (can be extended via analysis)
@@ -309,7 +310,28 @@ class EffectAnalyzer:
             fn_name = call.resolved_name
         
         if fn_name:
-            if fn_name in self.pure_functions:
+            profile = builtins.builtin_effect_profile(fn_name)
+            if profile["is_builtin"]:
+                base = str(profile["base"])
+                result.is_pure = bool(profile["is_pure"])
+                if result.is_pure:
+                    result.calls_pure_functions = True
+                else:
+                    result.calls_impure_functions = True
+                    result.effects.add(EffectType.CALLS_FUNCTION)
+                if bool(profile["has_io"]):
+                    result.effects.add(EffectType.HAS_IO)
+                if bool(profile["can_trap"]):
+                    result.can_trap = True
+                    result.effects.add(EffectType.CAN_TRAP)
+                if bool(profile["allocates"]):
+                    result.allocated_memory = True
+                    result.effects.add(EffectType.ALLOCATES_MEMORY)
+                if base in builtins.MUTATING_CONTAINER_BUILTIN_BASES:
+                    result.is_pure = False
+                    result.writes_memory = True
+                    result.effects.add(EffectType.WRITES_MEMORY)
+            elif fn_name in self.pure_functions:
                 # Known pure function
                 result.is_pure = True
                 result.calls_pure_functions = True

@@ -160,6 +160,11 @@ fn trim(s String) String {
     return __str_trim_impl(s);
 }
 
+/// Alias for trim.
+fn strip(s String) String {
+    return trim(s);
+}
+
 /// Find first occurrence of substring.
 /// 
 /// Returns index of first occurrence, or -1 if not found.
@@ -187,14 +192,62 @@ fn trim_start(s String) String {
     return __str_trim_start_impl(s);
 }
 
+/// Alias for trim_start.
+fn lstrip(s String) String {
+    return trim_start(s);
+}
+
 /// Trim whitespace from end of string.
 fn trim_end(s String) String {
     return __str_trim_end_impl(s);
 }
 
+/// Alias for trim_end.
+fn rstrip(s String) String {
+    return trim_end(s);
+}
+
 /// Join vector of strings with delimiter.
 fn join(parts Vec<String>, delimiter String) String {
     return __str_join_impl(parts, delimiter);
+}
+
+/// Repeat `s` exactly `count` times.
+fn repeat(s String, count Int) String {
+    if count <= 0 {
+        return "";
+    }
+    else {}
+    s_ref = &s;
+    mut out = "";
+    mut i = 0;
+    while i < count {
+        out = out + *s_ref;
+        i += 1;
+    }
+    return out;
+}
+
+/// Remove `prefix` from `s` when present.
+fn strip_prefix(s String, prefix String) String {
+    s_ref = &s;
+    prefix_ref = &prefix;
+    if starts_with(*s_ref, *prefix_ref) {
+        return substring(*s_ref, length(*prefix_ref), length(*s_ref) - length(*prefix_ref));
+    }
+    else {}
+    return *s_ref;
+}
+
+/// Remove `suffix` from `s` when present.
+fn strip_suffix(s String, suffix String) String {
+    s_ref = &s;
+    suffix_ref = &suffix;
+    if ends_with(*s_ref, *suffix_ref) {
+        return substring(*s_ref, 0, length(*s_ref) - length(*suffix_ref));
+    }
+    else {}
+    return *s_ref;
 }
 
 /// Parse a decimal float from a String.
