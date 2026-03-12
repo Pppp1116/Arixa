@@ -118,7 +118,14 @@ def test_lsp_initialize_open_change_and_features(tmp_path: Path):
         caps = init["result"]["capabilities"]
         assert caps["definitionProvider"] is True
         assert caps["referencesProvider"] is True
-        assert caps["renameProvider"] is True
+        assert caps["renameProvider"]["prepareProvider"] is True
+        assert caps["implementationProvider"] is True
+        assert caps["semanticTokensProvider"]["full"] is True
+        assert caps["inlayHintProvider"] is True
+        assert caps["foldingRangeProvider"] is True
+        assert caps["callHierarchyProvider"] is True
+        assert caps["typeHierarchyProvider"] is True
+        assert caps["linkedEditingRangeProvider"] is True
 
         src = "fn add(x Int) Int{ return x; }\nfn main() Int{ y = add(1); return y; }\n"
         uri = (tmp_path / "a.astra").as_uri()
@@ -208,6 +215,145 @@ def test_lsp_initialize_open_change_and_features(tmp_path: Path):
                 got_semantic_diag = True
                 break
         assert got_semantic_diag
+    finally:
+        proc.close()
+
+
+def test_lsp_enhanced_requests_and_rename_conflicts(tmp_path: Path):
+    proc = LspProc()
+    try:
+        proc.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"workspaceFolders": [{"uri": tmp_path.as_uri(), "name": "ws"}]},
+            }
+        )
+        init = proc.recv(1.5)
+        assert init["id"] == 1
+
+        src = (
+            "trait Display { fn render(x Int) Int; }\n"
+            "fn add(x Int, y Int) Int { return x; }\n"
+            "fn main() Int {\n"
+            "    left = 1;\n"
+            "    right = 2;\n"
+            "    out = add(left, right);\n"
+            "    return out;\n"
+            "}\n"
+        )
+        uri = (tmp_path / "enhanced.astra").as_uri()
+        proc.send(
+            {
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {"textDocument": {"uri": uri, "languageId": "astra", "version": 1, "text": src}},
+            }
+        )
+        diag = proc.recv(2.0)
+        assert diag and diag.get("method") == "textDocument/publishDiagnostics"
+
+        # implementation
+        proc.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/implementation",
+                "params": {"textDocument": {"uri": uri}, "position": {"line": 5, "character": 10}},
+            }
+        )
+        impl = proc.recv(1.5)
+        assert impl["id"] == 2
+        assert impl["result"] is not None
+
+        # semantic tokens
+        proc.send({"jsonrpc": "2.0", "id": 3, "method": "textDocument/semanticTokens/full", "params": {"textDocument": {"uri": uri}}})
+        sem = proc.recv(1.5)
+        assert sem["id"] == 3
+        assert isinstance(sem["result"]["data"], list)
+        assert len(sem["result"]["data"]) > 0
+
+        # inlay hints
+        proc.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "textDocument/inlayHint",
+                "params": {
+                    "textDocument": {"uri": uri},
+                    "range": {"start": {"line": 0, "character": 0}, "end": {"line": 20, "character": 0}},
+                },
+            }
+        )
+        hints = proc.recv(1.5)
+        assert hints["id"] == 4
+        assert isinstance(hints["result"], list)
+
+        # folding range
+        proc.send({"jsonrpc": "2.0", "id": 5, "method": "textDocument/foldingRange", "params": {"textDocument": {"uri": uri}}})
+        folds = proc.recv(1.5)
+        assert folds["id"] == 5
+        assert isinstance(folds["result"], list)
+
+        # call hierarchy
+        proc.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "textDocument/prepareCallHierarchy",
+                "params": {"textDocument": {"uri": uri}, "position": {"line": 1, "character": 4}},
+            }
+        )
+        prep_call = proc.recv(1.5)
+        assert prep_call["id"] == 6
+        assert isinstance(prep_call["result"], list)
+
+        # type hierarchy
+        proc.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "textDocument/prepareTypeHierarchy",
+                "params": {"textDocument": {"uri": uri}, "position": {"line": 0, "character": 6}},
+            }
+        )
+        prep_type = proc.recv(1.5)
+        assert prep_type["id"] == 7
+        assert isinstance(prep_type["result"], list)
+
+        # linked editing on braces
+        open_brace = src.splitlines()[2].index("{")
+        proc.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 8,
+                "method": "textDocument/linkedEditingRange",
+                "params": {"textDocument": {"uri": uri}, "position": {"line": 2, "character": open_brace}},
+            }
+        )
+        linked = proc.recv(1.5)
+        assert linked["id"] == 8
+        assert linked["result"] is not None
+        assert len(linked["result"]["ranges"]) >= 2
+
+        # rename conflict (parameter x -> y in same signature scope)
+        proc.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 9,
+                "method": "textDocument/rename",
+                "params": {
+                    "textDocument": {"uri": uri},
+                    "position": {"line": 1, "character": 7},
+                    "newName": "y",
+                },
+            }
+        )
+        rename = proc.recv(1.5)
+        assert rename["id"] == 9
+        assert "error" in rename
+        assert rename["error"]["code"] == -32602
     finally:
         proc.close()
 

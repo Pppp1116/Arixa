@@ -117,7 +117,7 @@ def test_lsp_initialize_open_change_and_features(tmp_path: Path):
         caps = init["result"]["capabilities"]
         assert caps["definitionProvider"] is True
         assert caps["referencesProvider"] is True
-        assert caps["renameProvider"] is True
+        assert caps["renameProvider"]["prepareProvider"] is True
 
         src = "fn add(x Int) Int{ return x; }\nfn main() Int{ y = add(1); return y; }\n"
         uri = (tmp_path / "a.astra").as_uri()

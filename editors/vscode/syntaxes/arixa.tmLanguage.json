@@ -111,7 +111,7 @@
         },
         {
           "name": "keyword.other.arixa",
-          "match": "\\b(alignof|as|async|await|comptime|const|extern|f128|f16|f80|false|import|in|match|mut|none|pub|set|sizeof|true|unsafe|where)\\b"
+          "match": "\\b(alignof|as|async|await|comptime|const|extern|f128|f16|f80|false|import|in|is|match|mut|none|pub|set|sizeof|true|unreachable|unsafe|where)\\b"
         }
       ]
     },
