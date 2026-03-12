@@ -359,6 +359,9 @@ fn lcm_int(a Int, b Int) Int {
     return abs_int((a / gcd_int(a, b)) * b);
 }
 
+
+fn 
+
 extern fn __sqrt_impl(x Float) Float;
 
 extern fn __pow_impl(x Float, y Float) Float;

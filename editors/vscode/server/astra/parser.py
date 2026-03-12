@@ -1020,6 +1020,10 @@ class Parser:
             if not allow_no_semicolon:
                 self.eat(";")
             return ContinueStmt(tok.pos, tok.line, tok.col)
+        if self.opt("unreachable"):
+            if not allow_no_semicolon:
+                self.eat(";")
+            return UnreachableStmt(tok.pos, tok.line, tok.col)
         if self.opt("comptime"):
             body = self.parse_block()
             return ComptimeStmt(body, tok.pos, tok.line, tok.col)
@@ -1707,13 +1711,14 @@ class Parser:
         self.eat("{")
         then_expr = self.parse_expr()
         self.eat("}")
-        self.eat("else")
-        if self.cur().kind == "{":
-            self.eat("{")
-            else_expr = self.parse_expr()
-            self.eat("}")
-        else:
-            else_expr = self.parse_unary()  # Parse a single expression
+        else_expr = None
+        if self.opt("else"):
+            if self.cur().kind == "{":
+                self.eat("{")
+                else_expr = self.parse_expr()
+                self.eat("}")
+            else:
+                else_expr = self.parse_unary()  # Parse a single expression
         return IfExpression(cond, then_expr, else_expr, cond.pos, cond.line, cond.col)
 
     def parse_string_interpolation(self, tok: Token) -> StringInterpolation:

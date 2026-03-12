@@ -2,7 +2,7 @@
   "name": "arixa-language",
   "displayName": "Arixa Language",
   "description": "Complete VS Code support for Arixa with enhanced syntax highlighting, IntelliSense, package management, and GPU development tools.",
-  "version": "0.6.2",
+  "version": "0.6.5",
   "icon": "images/arixa.png",
   "publisher": "arixa-lang",
   "engines": {

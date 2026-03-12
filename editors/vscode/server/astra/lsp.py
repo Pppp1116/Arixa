@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import select
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, is_dataclass
@@ -12,57 +13,49 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 from astra.ast import (
+    AssignStmt,
+    Binary,
+    BoolLit,
+    Call,
     ComptimeStmt,
+    ConstDecl,
     EnumDecl,
+    ExprStmt,
+    FieldExpr,
     ExternFnDecl,
     FnDecl,
+    GuardedPattern,
     IteratorForStmt,
     IfStmt,
     ImportDecl,
     LetStmt,
+    Literal,
     MatchStmt,
+    MethodCall,
     Name,
+    NilLit,
+    OrPattern,
+    ReturnStmt,
     StructDecl,
+    TraitDecl,
     TypeAliasDecl,
+    UnsafeStmt,
+    WildcardPattern,
     WhileStmt,
 )
 from astra.check import _parse_diag_lines, run_check_source
 from astra.formatter import fmt, resolve_format_config
-from astra.module_resolver import ModuleResolutionError, resolve_import_path
+from astra.module_resolver import ModuleResolutionError, resolve_import_path, stdlib_root_path
+from astra.lexer import KEYWORDS as LEXER_KEYWORDS, lex
 from astra.parser import ParseError, parse
 from astra.semantic import BUILTIN_DOCS, BUILTIN_SIGS, GPU_API_DOCS, SemanticError, analyze
 
 _LOG = logging.getLogger("astlsp")
-KEYWORDS = [
-    "fn",
-    "mut",
-    "if",
-    "else",
-    "while",
-    "for",
-    "match",
-    "return",
-    "break",
-    "continue",
-    "unsafe",
-    "struct",
-    "enum",
-    "type",
-    "import",
-    "mut",
-    "pub",
-    "extern",
-    "async",
-    "await",
-    "unsafe",
-    "match",
-    "none",
-    "f16",
-    "f80",
-    "f128",
-]
+KEYWORDS = sorted(LEXER_KEYWORDS)
+GPU_MODIFIERS = ["gpu", "kernel", "global", "shared", "device"]
 SNIPPETS = {
     "fn": "fn ${1:name}(${2}) ${3:Int} {\n    ${0}\n}",
+    "async": "async fn ${1:name}(${2}) ${3:Int} {\n    ${0}\n}",
     "struct": "struct ${1:Name} {\n    ${2:field} ${3:Int},\n}",
     "enum": "enum ${1:Name} {\n    ${2:Variant},\n}",
     "match": "match ${1:value} {\n    ${2:pattern} => {\n        ${0}\n    },\n}",
@@ -70,6 +63,7 @@ SNIPPETS = {
     "while": "while ${1:cond} {\n    ${0}\n}",
     "if": "if ${1:cond} {\n    ${0}\n}",
     "return": "return ${0};",
+    "unreachable": "unreachable;",
     "mut": "mut ${1:name} = ${0};",
 }
 _NO_MSG = object()
@@ -264,6 +258,996 @@ def _first_paragraph(doc: str) -> str:
     return parts[0].strip()
 
 
+_UNION_BINDING_PREFS = {
+    "Error": "err",
+    "File": "file",
+    "Config": "cfg",
+    "Vec<u8>": "bytes",
+    "String": "text",
+}
+_UNRESOLVED_UNION_TYPES = {"<error>", "<unknown>", "<unresolved>", "<?>"}
+
+
+def _canonical_type_name(typ: str) -> str:
+    t = str(typ).strip()
+    if not t:
+        return t
+    if t.endswith("?"):
+        return f"{_canonical_type_name(t[:-1])} | none"
+    if t.startswith("Option<") and t.endswith(">"):
+        inner = t[len("Option<") : -1].strip()
+        return f"{_canonical_type_name(inner)} | none"
+    if t.startswith("&mut "):
+        return f"&mut {_canonical_type_name(t[5:])}"
+    if t.startswith("&"):
+        return f"&{_canonical_type_name(t[1:])}"
+    if t.startswith("Vec<") and t.endswith(">"):
+        return f"Vec<{_canonical_type_name(t[4:-1])}>"
+    return t
+
+
+def _split_top_level_type(text: str, sep: str) -> list[str]:
+    out: list[str] = []
+    cur: list[str] = []
+    depth_angle = 0
+    depth_paren = 0
+    depth_bracket = 0
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "<":
+            depth_angle += 1
+        elif ch == ">" and depth_angle > 0:
+            depth_angle -= 1
+        elif ch == "(":
+            depth_paren += 1
+        elif ch == ")" and depth_paren > 0:
+            depth_paren -= 1
+        elif ch == "[":
+            depth_bracket += 1
+        elif ch == "]" and depth_bracket > 0:
+            depth_bracket -= 1
+        if (
+            text.startswith(sep, i)
+            and depth_angle == 0
+            and depth_paren == 0
+            and depth_bracket == 0
+        ):
+            out.append("".join(cur).strip())
+            cur = []
+            i += len(sep)
+            continue
+        cur.append(ch)
+        i += 1
+    out.append("".join(cur).strip())
+    return out
+
+
+def _normalized_union_members(typ: Any) -> list[str]:
+    raw = str(typ).strip()
+    if not raw:
+        return []
+    parts = _split_top_level_type(raw, "|")
+    members = [p.strip() for p in parts if p.strip()]
+    out: list[str] = []
+    seen: set[str] = set()
+    for member in members:
+        canon = _canonical_type_name(member)
+        if canon in seen:
+            continue
+        seen.add(canon)
+        out.append(canon)
+    return out
+
+
+def _is_supported_union_members(members: list[str]) -> bool:
+    if len(members) <= 1:
+        return False
+    for member in members:
+        if not member:
+            return False
+        if member in _UNRESOLVED_UNION_TYPES:
+            return False
+        low = member.lower()
+        if "unsafe union" in low or "raw union" in low:
+            return False
+    return True
+
+
+def _word_bounds(text: str, line: int, character: int) -> tuple[str, int, int]:
+    lines = text.splitlines()
+    if line < 0 or line >= len(lines):
+        return "", 0, 0
+    row = lines[line]
+    if not row:
+        return "", 0, 0
+    pos = min(max(0, character), len(row) - 1)
+    if not (row[pos].isalnum() or row[pos] == "_"):
+        return "", 0, 0
+    s = pos
+    e = pos
+    while s > 0 and (row[s - 1].isalnum() or row[s - 1] == "_"):
+        s -= 1
+    while e + 1 < len(row) and (row[e + 1].isalnum() or row[e + 1] == "_"):
+        e += 1
+    return row[s : e + 1], s, e + 1
+
+
+def _iter_ast_with_parents(node: Any, parent: Any | None = None):
+    if is_dataclass(node):
+        yield node, parent
+        for field in node.__dataclass_fields__.keys():
+            child = getattr(node, field)
+            yield from _iter_ast_with_parents(child, node)
+        return
+    if isinstance(node, list):
+        for item in node:
+            yield from _iter_ast_with_parents(item, parent)
+        return
+    if isinstance(node, tuple):
+        for item in node:
+            yield from _iter_ast_with_parents(item, parent)
+
+
+def _is_expression_node(node: Any) -> bool:
+    return isinstance(
+        node,
+        (
+            Name,
+            Call,
+            FieldExpr,
+            Binary,
+            BoolLit,
+            NilLit,
+        ),
+    )
+
+
+def _is_statement_node(node: Any) -> bool:
+    return isinstance(node, (LetStmt, ExprStmt, MatchStmt, IfStmt, WhileStmt, IteratorForStmt, ComptimeStmt))
+
+
+def _parent_map(prog: Any) -> dict[int, Any]:
+    parents: dict[int, Any] = {}
+    for node, parent in _iter_ast_with_parents(prog):
+        if parent is not None:
+            parents[id(node)] = parent
+    return parents
+
+
+def _nearest_statement(node: Any, parents: dict[int, Any]) -> Any | None:
+    cur = node
+    while cur is not None:
+        if _is_statement_node(cur):
+            return cur
+        cur = parents.get(id(cur))
+    return None
+
+
+def _line_text(text: str, line: int) -> str:
+    lines = text.splitlines()
+    if line < 0 or line >= len(lines):
+        return ""
+    return lines[line]
+
+
+def _line_indent(text: str, line: int) -> str:
+    row = _line_text(text, line)
+    if not row:
+        return ""
+    return row[: len(row) - len(row.lstrip(" \t"))]
+
+
+def _line_start_offset(text: str, line: int) -> int:
+    return _position_to_offset(text, max(0, line), 0)
+
+
+def _line_end_offset(text: str, line: int) -> int:
+    lines = text.splitlines(keepends=True)
+    if line < 0:
+        return 0
+    if line >= len(lines):
+        return len(text)
+    off = 0
+    for i in range(line + 1):
+        off += len(lines[i])
+    return min(off, len(text))
+
+
+def _offset_range(text: str, start: int, end: int) -> dict[str, dict[str, int]]:
+    s_line, s_char = _offset_to_position(text, start)
+    e_line, e_char = _offset_to_position(text, end)
+    return {
+        "start": {"line": s_line, "character": s_char},
+        "end": {"line": e_line, "character": e_char},
+    }
+
+
+def _collect_declared_names(text: str) -> set[str]:
+    out = set(KEYWORDS)
+    for m in re.finditer(r"\b(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=;]+)?=", text):
+        out.add(m.group(1))
+    return out
+
+
+def _binding_base_for_union_member(member: str) -> str:
+    preferred = _UNION_BINDING_PREFS.get(member)
+    if preferred:
+        return preferred
+    base = member.strip()
+    if base.startswith("&mut "):
+        base = base[5:]
+    elif base.startswith("&"):
+        base = base[1:]
+    if base.startswith("[") and base.endswith("]"):
+        return "vec"
+    if "<" in base:
+        base = base.split("<", 1)[0].strip()
+    base = re.sub(r"[^A-Za-z0-9_]", "", base).lower()
+    if not base:
+        return "value"
+    return base
+
+
+def _unique_binding_name(base: str, used: set[str]) -> str:
+    cand = base
+    idx = 2
+    while cand in used or cand in KEYWORDS:
+        cand = f"{base}{idx}"
+        idx += 1
+    used.add(cand)
+    return cand
+
+
+def _union_member_pattern(member: str, used: set[str]) -> str:
+    if member == "none":
+        return "none"
+    bind = _unique_binding_name(_binding_base_for_union_member(member), used)
+    return f"{bind} if {bind} is {member}"
+
+
+def _union_match_snippet(
+    subject: str,
+    members: list[str],
+    base_indent: str,
+    indent_unit: str,
+    used: set[str],
+    *,
+    tab_index: int = 1,
+    include_final_cursor: bool = True,
+) -> tuple[str, int]:
+    out: list[str] = [f"{base_indent}match {subject} {{"]
+    tab = tab_index
+    for member in members:
+        pat = _union_member_pattern(member, used)
+        out.append(f"{base_indent}{indent_unit}{pat} => {{")
+        out.append(f"{base_indent}{indent_unit}{indent_unit}${{{tab}}}")
+        out.append(f"{base_indent}{indent_unit}}}")
+        tab += 1
+    out.append(f"{base_indent}}}")
+    if include_final_cursor:
+        out.append(f"{base_indent}$0")
+    return "\n".join(out) + "\n", tab
+
+
+def _union_arms_snippet(
+    members: list[str],
+    base_indent: str,
+    indent_unit: str,
+    used: set[str],
+    *,
+    tab_index: int = 1,
+) -> tuple[str, int]:
+    out: list[str] = []
+    tab = tab_index
+    for member in members:
+        pat = _union_member_pattern(member, used)
+        out.append(f"{base_indent}{indent_unit}{pat} => {{")
+        out.append(f"{base_indent}{indent_unit}{indent_unit}${{{tab}}}")
+        out.append(f"{base_indent}{indent_unit}}}")
+        tab += 1
+    return ("\n".join(out) + ("\n" if out else "")), tab
+
+
+def _literal_text(val: Any) -> str:
+    if isinstance(val, str):
+        return json.dumps(val)
+    return str(val)
+
+
+def _simple_atom_text(expr: Any) -> str | None:
+    if isinstance(expr, Name):
+        return expr.value
+    if isinstance(expr, FieldExpr):
+        obj = _simple_atom_text(expr.obj)
+        if obj is None:
+            return None
+        return f"{obj}.{expr.field}"
+    if isinstance(expr, BoolLit):
+        return "true" if expr.value else "false"
+    if isinstance(expr, NilLit):
+        return "none"
+    if hasattr(expr, "value"):
+        return _literal_text(getattr(expr, "value"))
+    return None
+
+
+def _expr_text(expr: Any) -> str | None:
+    if isinstance(expr, Call):
+        fn_text = _simple_atom_text(expr.fn)
+        if fn_text is None:
+            return None
+        arg_texts: list[str] = []
+        for arg in expr.args:
+            at = _simple_atom_text(arg)
+            if at is None:
+                return None
+            arg_texts.append(at)
+        return f"{fn_text}({', '.join(arg_texts)})"
+    return _simple_atom_text(expr)
+
+
+def _is_simple_match_subject(expr: Any) -> bool:
+    if isinstance(expr, Name):
+        return True
+    if isinstance(expr, FieldExpr):
+        return _simple_atom_text(expr) is not None
+    if isinstance(expr, Call):
+        return _expr_text(expr) is not None
+    return False
+
+
+def _subject_from_expr(expr: Any, used_names: set[str]) -> tuple[str, str] | None:
+    expr_text = _expr_text(expr)
+    if expr_text is None:
+        return None
+    if _is_simple_match_subject(expr):
+        return "", expr_text
+    tmp = _unique_binding_name("value", used_names)
+    return f"{tmp} = {expr_text};\n", tmp
+
+
+def _find_matching_brace(text: str, open_idx: int) -> int | None:
+    depth = 0
+    i = open_idx
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            i += 1
+            while i < n:
+                if text[i] == "\\":
+                    i += 1
+                    if i < n:
+                        i += 1
+                    continue
+                if text[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n:
+            nxt = text[i + 1]
+            if nxt == "/":
+                i += 2
+                while i < n and text[i] != "\n":
+                    i += 1
+                continue
+            if nxt == "*":
+                i += 2
+                while i < n:
+                    if text[i] == "*" and i + 1 < n and text[i + 1] == "/":
+                        i += 2
+                        break
+                    i += 1
+                continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return None
+
+
+def _match_stmt_offsets(text: str, st: MatchStmt) -> tuple[int, int, int] | None:
+    start = int(getattr(st, "pos", -1))
+    if start < 0 or start >= len(text):
+        return None
+    open_idx = text.find("{", start)
+    if open_idx < 0:
+        return None
+    close_idx = _find_matching_brace(text, open_idx)
+    if close_idx is None:
+        return None
+    return start, open_idx, close_idx
+
+
+def _member_by_canonical(members: list[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for member in members:
+        out[_canonical_type_name(member)] = member
+    return out
+
+
+def _covered_union_members_from_pattern(pat: Any, members: list[str]) -> set[str] | None:
+    member_map = _member_by_canonical(members)
+    if isinstance(pat, OrPattern):
+        covered: set[str] = set()
+        for sub in pat.patterns:
+            sub_cov = _covered_union_members_from_pattern(sub, members)
+            if sub_cov is None:
+                return None
+            covered.update(sub_cov)
+        return covered
+    if isinstance(pat, GuardedPattern):
+        if isinstance(pat.guard, Binary) and pat.guard.op == "is":
+            right = getattr(pat.guard, "right", None)
+            if isinstance(right, Name):
+                key = _canonical_type_name(right.value)
+                if key in member_map:
+                    return {member_map[key]}
+        return set()
+    if isinstance(pat, WildcardPattern):
+        return None
+    if isinstance(pat, Name):
+        if pat.value == "_":
+            return None
+        # Unconditional name patterns are catch-all in Astra match semantics.
+        return None
+    if isinstance(pat, NilLit):
+        if "none" in member_map:
+            return {"none"}
+    return set()
+
+
+def _range_start(params: dict[str, Any]) -> tuple[int, int]:
+    rng = params.get("range", {})
+    start = rng.get("start", {})
+    return int(start.get("line", 0)), int(start.get("character", 0))
+
+
+def _find_union_binding_on_line(prog: Any, line: int) -> LetStmt | None:
+    for node in _iter_ast(prog):
+        if not isinstance(node, LetStmt):
+            continue
+        if int(getattr(node, "line", 0)) != line + 1:
+            continue
+        inferred = getattr(node.expr, "inferred_type", None)
+        if not isinstance(inferred, str):
+            continue
+        members = _normalized_union_members(inferred)
+        if _is_supported_union_members(members):
+            return node
+    return None
+
+
+def _find_union_expr_at_position(prog: Any, text: str, line: int, character: int) -> Any | None:
+    offset = _position_to_offset(text, line, character)
+    word, word_start, _ = _word_bounds(text, line, character)
+    line_word_off = _position_to_offset(text, line, word_start) if word else offset
+    name_candidates: list[tuple[int, Any]] = []
+    candidates: list[tuple[int, Any]] = []
+    same_line_candidates: list[tuple[int, Any]] = []
+    for node in _iter_ast(prog):
+        if not _is_expression_node(node):
+            continue
+        inferred = getattr(node, "inferred_type", None)
+        if not isinstance(inferred, str):
+            continue
+        members = _normalized_union_members(inferred)
+        if not _is_supported_union_members(members):
+            continue
+        pos = int(getattr(node, "pos", -1))
+        if pos < 0:
+            continue
+        candidates.append((pos, node))
+        if int(getattr(node, "line", 0)) == line + 1:
+            same_line_candidates.append((pos, node))
+        if (
+            word
+            and isinstance(node, Name)
+            and node.value == word
+            and int(getattr(node, "line", 0)) == line + 1
+        ):
+            name_candidates.append((abs(pos - line_word_off), node))
+    if name_candidates:
+        name_candidates.sort(key=lambda item: item[0])
+        return name_candidates[0][1]
+    target = same_line_candidates or candidates
+    if not target:
+        return None
+    before = [item for item in target if item[0] <= offset]
+    if before:
+        before.sort(key=lambda item: item[0], reverse=True)
+        return before[0][1]
+    target.sort(key=lambda item: abs(item[0] - offset))
+    return target[0][1]
+
+
+def _code_action_key(title: str, rng: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    return (
+        title,
+        str(rng.get("start", {}).get("line", "")),
+        str(rng.get("start", {}).get("character", "")),
+        str(rng.get("end", {}).get("line", "")),
+        str(rng.get("end", {}).get("character", "")),
+    )
+
+
+def _indent_unit_for_uri(uri: str) -> str:
+    path = Path(_uri_to_filename(uri)) if uri.startswith("file://") else None
+    cfg = resolve_format_config(path) if path is not None else resolve_format_config(None)
+    return " " * max(1, int(getattr(cfg, "indent_width", 4)))
+
+
+def _build_create_union_match_action(
+    *,
+    uri: str,
+    doc: TextDocument,
+    prog: Any,
+    line: int,
+    character: int,
+    title: str,
+    kind: str,
+    diagnostic: dict[str, Any] | None = None,
+    wrap: bool = False,
+) -> tuple[dict[str, Any], tuple[str, str, str, str, str]] | None:
+    line = max(0, line)
+    indent_unit = _indent_unit_for_uri(uri)
+    used_names = _collect_declared_names(doc.text)
+    word = _word_at(doc.text, line, character)
+    binding_on_line = _find_union_binding_on_line(prog, line)
+    parents = _parent_map(prog)
+    expr = _find_union_expr_at_position(prog, doc.text, line, character)
+
+    members: list[str] = []
+    base_indent = _line_indent(doc.text, line)
+    edit_start = _line_start_offset(doc.text, line)
+    edit_end = edit_start
+    subject = ""
+    prelude = ""
+
+    # Cursor on variable declaration line where inferred initializer is a union.
+    if binding_on_line is not None and (word == binding_on_line.name or expr is None):
+        inferred = getattr(binding_on_line.expr, "inferred_type", None)
+        if isinstance(inferred, str):
+            cand_members = _normalized_union_members(inferred)
+            if _is_supported_union_members(cand_members):
+                members = cand_members
+                base_line = max(0, int(getattr(binding_on_line, "line", 1)) - 1)
+                base_indent = _line_indent(doc.text, base_line)
+                if wrap and binding_on_line.type_name is not None:
+                    subject_parts = _subject_from_expr(binding_on_line.expr, used_names)
+                    if subject_parts is None:
+                        return None
+                    prelude, subject = subject_parts
+                    edit_start = _line_start_offset(doc.text, base_line)
+                    edit_end = _line_end_offset(doc.text, base_line)
+                else:
+                    subject = binding_on_line.name
+                    used_names.add(subject)
+                    edit_start = _line_end_offset(doc.text, base_line)
+                    edit_end = edit_start
+
+    if not members and expr is not None:
+        inferred = getattr(expr, "inferred_type", None)
+        if not isinstance(inferred, str):
+            return None
+        cand_members = _normalized_union_members(inferred)
+        if not _is_supported_union_members(cand_members):
+            return None
+        members = cand_members
+        stmt = _nearest_statement(expr, parents)
+        if isinstance(stmt, LetStmt):
+            base_line = max(0, int(getattr(stmt, "line", 1)) - 1)
+            base_indent = _line_indent(doc.text, base_line)
+            if wrap and stmt.type_name is not None:
+                subject_parts = _subject_from_expr(stmt.expr, used_names)
+                if subject_parts is None:
+                    return None
+                prelude, subject = subject_parts
+                edit_start = _line_start_offset(doc.text, base_line)
+                edit_end = _line_end_offset(doc.text, base_line)
+            else:
+                subject = stmt.name
+                used_names.add(subject)
+                edit_start = _line_end_offset(doc.text, base_line)
+                edit_end = edit_start
+        elif isinstance(stmt, ExprStmt) and stmt.expr is expr:
+            base_line = max(0, int(getattr(stmt, "line", 1)) - 1)
+            base_indent = _line_indent(doc.text, base_line)
+            subject_parts = _subject_from_expr(expr, used_names)
+            if subject_parts is None:
+                return None
+            prelude, subject = subject_parts
+            edit_start = _line_start_offset(doc.text, base_line)
+            edit_end = _line_end_offset(doc.text, base_line)
+        else:
+            subject_parts = _subject_from_expr(expr, used_names)
+            if subject_parts is None:
+                return None
+            prelude, subject = subject_parts
+            edit_start = _line_end_offset(doc.text, line)
+            edit_end = edit_start
+
+    if not members or not subject:
+        return None
+
+    snippet, _ = _union_match_snippet(
+        subject,
+        members,
+        base_indent,
+        indent_unit,
+        used_names,
+        tab_index=1,
+        include_final_cursor=True,
+    )
+    if prelude:
+        prelude_text = "".join(f"{base_indent}{row}\n" for row in prelude.rstrip("\n").splitlines())
+        new_text = prelude_text + snippet
+    else:
+        new_text = snippet
+
+    rng = _offset_range(doc.text, edit_start, edit_end)
+    action: dict[str, Any] = {
+        "title": title,
+        "kind": kind,
+        "edit": {"changes": {uri: [{"range": rng, "newText": new_text}]}},
+    }
+    if diagnostic is not None:
+        action["diagnostics"] = [diagnostic]
+        action["isPreferred"] = bool(wrap)
+    return action, _code_action_key(title, rng)
+
+
+def _find_match_stmt_at_offset(prog: Any, text: str, offset: int) -> tuple[MatchStmt, tuple[int, int, int]] | None:
+    hits: list[tuple[int, MatchStmt, tuple[int, int, int]]] = []
+    for node in _iter_ast(prog):
+        if not isinstance(node, MatchStmt):
+            continue
+        offs = _match_stmt_offsets(text, node)
+        if offs is None:
+            continue
+        start, _, end = offs
+        if start <= offset <= end:
+            hits.append((end - start, node, offs))
+    if not hits:
+        return None
+    hits.sort(key=lambda item: item[0])
+    _, stmt, offs = hits[0]
+    return stmt, offs
+
+
+def _build_add_missing_union_arms_action(
+    *,
+    uri: str,
+    doc: TextDocument,
+    prog: Any,
+    line: int,
+    character: int,
+    title: str,
+    kind: str,
+    diagnostic: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], tuple[str, str, str, str, str]] | None:
+    offset = _position_to_offset(doc.text, line, character)
+    match_hit = _find_match_stmt_at_offset(prog, doc.text, offset)
+    if match_hit is None:
+        return None
+    stmt, offs = match_hit
+    inferred = getattr(stmt.expr, "inferred_type", None)
+    if not isinstance(inferred, str):
+        return None
+    members = _normalized_union_members(inferred)
+    if not _is_supported_union_members(members):
+        return None
+
+    covered: set[str] = set()
+    for pat, _ in stmt.arms:
+        arm_cov = _covered_union_members_from_pattern(pat, members)
+        if arm_cov is None:
+            return None
+        covered.update(arm_cov)
+    missing = [m for m in members if m not in covered]
+    if not missing:
+        return None
+
+    indent_unit = _indent_unit_for_uri(uri)
+    base_line = max(0, int(getattr(stmt, "line", 1)) - 1)
+    base_indent = _line_indent(doc.text, base_line)
+    used_names = _collect_declared_names(doc.text)
+    arm_text, _ = _union_arms_snippet(missing, base_indent, indent_unit, used_names, tab_index=1)
+    if not arm_text:
+        return None
+
+    _, _, close_idx = offs
+    close_line, _ = _offset_to_position(doc.text, close_idx)
+    # Insert on the closing-brace line to preserve user-written arm order.
+    insert_offset = _line_start_offset(doc.text, close_line)
+    if close_line == base_line:
+        insert_offset = close_idx
+        new_text = "\n" + arm_text + base_indent
+    else:
+        new_text = arm_text
+
+    rng = _offset_range(doc.text, insert_offset, insert_offset)
+    action: dict[str, Any] = {
+        "title": title,
+        "kind": kind,
+        "edit": {"changes": {uri: [{"range": rng, "newText": new_text}]}},
+    }
+    if diagnostic is not None:
+        action["diagnostics"] = [diagnostic]
+    return action, _code_action_key(title, rng)
+
+
+def _is_stable_user_facing_type(typ: str) -> bool:
+    t = _canonical_type_name(typ)
+    if not t:
+        return False
+    if t in {"<none>", "none"}:
+        return False
+    if t in {"Any", "Never"}:
+        return False
+    lower = t.lower()
+    if "<error>" in lower or "<unknown>" in lower or "unresolved" in lower:
+        return False
+    if lower.startswith("<") and lower.endswith(">"):
+        return False
+    return True
+
+
+def _pretty_type_text(typ: str) -> str:
+    return _canonical_type_name(typ).strip()
+
+
+def _tokenize_source(text: str, filename: str) -> list[Any]:
+    try:
+        return [tok for tok in lex(text, filename=filename) if tok.kind != "EOF"]
+    except Exception:
+        return []
+
+
+def _binding_decl_token_info(tokens: list[Any], st: LetStmt) -> dict[str, Any] | None:
+    start = int(getattr(st, "pos", -1))
+    if start < 0:
+        return None
+    start_idx = -1
+    for i, tok in enumerate(tokens):
+        if tok.pos < start:
+            continue
+        if tok.line != st.line:
+            if tok.line > st.line:
+                break
+            continue
+        if tok.kind in {"mut", "IDENT"}:
+            start_idx = i
+            break
+    if start_idx < 0:
+        return None
+    i = start_idx
+    if tokens[i].kind == "mut":
+        i += 1
+    if i >= len(tokens) or tokens[i].kind != "IDENT":
+        return None
+    name_tok = tokens[i]
+    if name_tok.text != st.name:
+        # Fallback: find matching identifier token on declaration line.
+        found = None
+        for j in range(start_idx, len(tokens)):
+            tok = tokens[j]
+            if tok.line != st.line:
+                if tok.line > st.line:
+                    break
+                continue
+            if tok.kind == "IDENT" and tok.text == st.name:
+                found = j
+                break
+        if found is None:
+            return None
+        i = found
+        name_tok = tokens[i]
+    colon_tok = None
+    eq_tok = None
+    j = i + 1
+    while j < len(tokens):
+        tok = tokens[j]
+        if tok.line != st.line:
+            if tok.line > st.line:
+                break
+            j += 1
+            continue
+        if tok.kind == ":" and colon_tok is None:
+            colon_tok = tok
+        if tok.kind == "=":
+            eq_tok = tok
+            break
+        if tok.kind == ";" and eq_tok is None:
+            break
+        j += 1
+    return {"name": name_tok, "colon": colon_tok, "eq": eq_tok}
+
+
+def _find_untyped_binding_at_position(
+    prog: Any,
+    text: str,
+    filename: str,
+    line: int,
+    character: int,
+) -> tuple[LetStmt, dict[str, Any], str] | None:
+    tokens = _tokenize_source(text, filename)
+    if not tokens:
+        return None
+    word = _word_at(text, line, character)
+    for node in _iter_ast(prog):
+        if not isinstance(node, LetStmt):
+            continue
+        if node.type_name is not None:
+            continue
+        inferred = getattr(node.expr, "inferred_type", None)
+        if not isinstance(inferred, str):
+            continue
+        typ = _pretty_type_text(inferred)
+        if not _is_stable_user_facing_type(typ):
+            continue
+        stmt_line = max(0, int(getattr(node, "line", 1)) - 1)
+        if stmt_line != line:
+            continue
+        if word and word != node.name:
+            continue
+        info = _binding_decl_token_info(tokens, node)
+        if info is None or info.get("colon") is not None:
+            continue
+        return node, info, typ
+    return None
+
+
+def _build_add_explicit_type_action(
+    *,
+    uri: str,
+    doc: TextDocument,
+    prog: Any,
+    line: int,
+    character: int,
+    title: str,
+    kind: str,
+    diagnostic: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], tuple[str, str, str, str, str]] | None:
+    filename = _uri_to_filename(uri)
+    hit = _find_untyped_binding_at_position(prog, doc.text, filename, line, character)
+    if hit is None:
+        return None
+    _, info, typ = hit
+    name_tok = info["name"]
+    insert_off = int(name_tok.pos) + len(str(name_tok.text))
+    rng = _offset_range(doc.text, insert_off, insert_off)
+    action: dict[str, Any] = {
+        "title": title,
+        "kind": kind,
+        "edit": {"changes": {uri: [{"range": rng, "newText": f": {typ}"}]}},
+    }
+    if diagnostic is not None:
+        action["diagnostics"] = [diagnostic]
+    return action, _code_action_key(title, rng)
+
+
+def _binding_annotation_context(
+    prog: Any,
+    text: str,
+    filename: str,
+    line: int,
+    character: int,
+) -> dict[str, Any] | None:
+    tokens = _tokenize_source(text, filename)
+    if not tokens:
+        return None
+    offset = _position_to_offset(text, line, character)
+    for node in _iter_ast(prog):
+        if not isinstance(node, LetStmt):
+            continue
+        info = _binding_decl_token_info(tokens, node)
+        if info is None:
+            continue
+        colon = info.get("colon")
+        if colon is None:
+            continue
+        eq_tok = info.get("eq")
+        start_off = int(colon.pos) + 1
+        end_off = int(eq_tok.pos) if eq_tok is not None else _line_end_offset(text, max(0, node.line - 1))
+        if start_off <= offset <= end_off:
+            inferred = getattr(node.expr, "inferred_type", None)
+            inferred_text = _pretty_type_text(inferred) if isinstance(inferred, str) else ""
+            typed_prefix = text[start_off:offset].strip()
+            return {
+                "name": node.name,
+                "prefix": typed_prefix,
+                "inferred_type": inferred_text if _is_stable_user_facing_type(inferred_text) else "",
+            }
+    # Fallback for partially-typed declarations in syntactically incomplete code.
+    row = _line_text(text, line)
+    if not row:
+        return None
+    col = min(max(0, character), len(row))
+    prefix = row[:col]
+    m = re.search(r"\b(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z0-9_<>&\[\], |]*)$", prefix)
+    if m is None:
+        return None
+    return {"name": m.group(1), "prefix": m.group(2).strip(), "inferred_type": ""}
+
+
+def _is_trivial_decl_for_bulk(st: LetStmt, typ: str) -> bool:
+    canon = _canonical_type_name(typ)
+    expr = st.expr
+    if isinstance(expr, BoolLit) and canon == "Bool":
+        return True
+    if isinstance(expr, NilLit):
+        return True
+    if isinstance(expr, Literal):
+        val = expr.value
+        if isinstance(val, bool) and canon == "Bool":
+            return True
+        if isinstance(val, int) and (canon == "Int" or re.fullmatch(r"[iu]\d+", canon) is not None):
+            return True
+        if isinstance(val, float) and canon in {"Float", "f16", "f32", "f64", "f80", "f128"}:
+            return True
+        if isinstance(val, str) and canon in {"String", "str"}:
+            return True
+    return False
+
+
+def _build_bulk_add_explicit_types_action(
+    *,
+    uri: str,
+    doc: TextDocument,
+    prog: Any,
+    start_line: int,
+    end_line: int,
+    title: str,
+    kind: str,
+    non_trivial_only: bool,
+) -> tuple[dict[str, Any], tuple[str, str, str, str, str]] | None:
+    filename = _uri_to_filename(uri)
+    tokens = _tokenize_source(doc.text, filename)
+    if not tokens:
+        return None
+    changes: list[dict[str, Any]] = []
+    for node in _iter_ast(prog):
+        if not isinstance(node, LetStmt):
+            continue
+        if node.type_name is not None:
+            continue
+        ln0 = max(0, int(getattr(node, "line", 1)) - 1)
+        if ln0 < start_line or ln0 > end_line:
+            continue
+        inferred = getattr(node.expr, "inferred_type", None)
+        if not isinstance(inferred, str):
+            continue
+        typ = _pretty_type_text(inferred)
+        if not _is_stable_user_facing_type(typ):
+            continue
+        if non_trivial_only and _is_trivial_decl_for_bulk(node, typ):
+            continue
+        info = _binding_decl_token_info(tokens, node)
+        if info is None or info.get("colon") is not None:
+            continue
+        name_tok = info["name"]
+        insert_off = int(name_tok.pos) + len(str(name_tok.text))
+        rng = _offset_range(doc.text, insert_off, insert_off)
+        changes.append({"range": rng, "newText": f": {typ}"})
+    if not changes:
+        return None
+    if not non_trivial_only and len(changes) < 2:
+        return None
+    action: dict[str, Any] = {
+        "title": title,
+        "kind": kind,
+        "edit": {"changes": {uri: changes}},
+    }
+    key_rng = changes[0]["range"]
+    return action, _code_action_key(title, key_rng)
+
+
 def _balanced_text_fallback(text: str) -> str:
     """Best-effort tolerant source rewrite for completion/hover parsing."""
     out = text
@@ -431,6 +1415,9 @@ class LSPServer:
         self.dependencies: dict[str, set[str]] = {}
         self.reverse_deps: dict[str, set[str]] = {}
         self.workspace_folders: list[Path] = []
+        self._stdlib_modules: list[str] = []
+        self._stdlib_module_to_uri: dict[str, str] = {}
+        self._stdlib_indexed = False
         self.canceled: set[Any] = set()
         self.shutting_down = False
         self.exit_code = 0
@@ -521,7 +1508,7 @@ class LSPServer:
             else:
                 del self._symbol_cache[cache_key]
         
-        prog = self._parse_prog(doc)
+        prog = self._parse_and_analyze(doc)
         if prog is None:
             self.symbol_index[uri] = []
             return
@@ -559,6 +1546,161 @@ class LSPServer:
         ]
         for key in expired_keys:
             del self._completion_cache[key]
+
+    def _scan_stdlib(self) -> None:
+        root = stdlib_root_path()
+        self._stdlib_modules = []
+        self._stdlib_module_to_uri = {}
+        if root is None:
+            self._stdlib_indexed = True
+            return
+        modules: list[str] = []
+        for path in root.rglob("*.arixa"):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(root).with_suffix("")
+            module = ".".join(rel.parts)
+            if not module:
+                continue
+            modules.append(module)
+            uri = path.resolve().as_uri()
+            self._stdlib_module_to_uri[module] = uri
+            if uri in self.docs:
+                continue
+            try:
+                text = path.read_text()
+            except Exception:
+                continue
+            fake_doc = TextDocument(uri=uri, text=text, version=0, language_id="astra")
+            prog = self._parse_prog(fake_doc)
+            self.symbol_index[uri] = _decl_symbols(prog, uri) if prog is not None else []
+        self._stdlib_modules = sorted(set(modules))
+        self._stdlib_indexed = True
+
+    def _ensure_stdlib_index(self) -> None:
+        if self._stdlib_indexed:
+            return
+        self._scan_stdlib()
+
+    def _stdlib_member_lookup(self, doc: TextDocument, line0: int, col0: int, symbol: str) -> SymbolInfo | None:
+        self._ensure_stdlib_index()
+        lines = doc.text.splitlines()
+        if line0 < 0 or line0 >= len(lines):
+            return None
+        row = lines[line0]
+        if not row:
+            return None
+        pos = min(max(0, col0), max(0, len(row) - 1))
+        if pos >= len(row):
+            return None
+        if not (row[pos].isalnum() or row[pos] in {"_", "."}):
+            if pos == 0 or not (row[pos - 1].isalnum() or row[pos - 1] in {"_", "."}):
+                return None
+            pos -= 1
+        s = pos
+        e = pos
+        while s > 0 and (row[s - 1].isalnum() or row[s - 1] in {"_", "."}):
+            s -= 1
+        while e + 1 < len(row) and (row[e + 1].isalnum() or row[e + 1] in {"_", "."}):
+            e += 1
+        dotted = row[s : e + 1].strip(".")
+        parts = [p for p in dotted.split(".") if p]
+        module: str | None = None
+        if len(parts) >= 3 and parts[0] == "std" and parts[-1] == symbol:
+            module = ".".join(parts[1:-1])
+        elif len(parts) == 2 and parts[-1] == symbol:
+            prog = self._parse_and_analyze(doc)
+            alias_map = self._stdlib_module_aliases(prog) if prog is not None else self._stdlib_module_aliases_from_text(doc.text)
+            module = alias_map.get(parts[0])
+        if not module:
+            return None
+        for si in self._stdlib_symbols_for_module(module):
+            if si.name == symbol:
+                return si
+        return None
+
+    def _stdlib_module_aliases(self, prog: Any) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for item in getattr(prog, "items", []):
+            if not isinstance(item, ImportDecl) or not item.path:
+                continue
+            if item.path[0] not in {"std", "stdlib"} or len(item.path) < 2:
+                continue
+            mod = ".".join(item.path[1:])
+            local = item.alias if item.alias else item.path[-1]
+            if local:
+                out[local] = mod
+        return out
+
+    def _stdlib_module_aliases_from_text(self, text: str) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for row in text.splitlines():
+            m = re.match(r"\s*import\s+std\.([A-Za-z0-9_\.]+)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;", row)
+            if not m:
+                continue
+            mod = m.group(1)
+            alias = m.group(2) if m.group(2) else mod.split(".")[-1]
+            out[alias] = mod
+        return out
+
+    def _stdlib_symbols_for_module(self, module: str) -> list[SymbolInfo]:
+        self._ensure_stdlib_index()
+        std_uri = self._stdlib_module_to_uri.get(module)
+        if not std_uri:
+            return []
+        return self.symbol_index.get(std_uri, [])
+
+    def _stdlib_module_for_uri(self, uri: str) -> str | None:
+        self._ensure_stdlib_index()
+        for mod, mod_uri in self._stdlib_module_to_uri.items():
+            if mod_uri == uri:
+                return mod
+        return None
+
+    def _stdlib_module_location(self, doc: TextDocument, line0: int, col0: int, symbol: str) -> dict[str, Any] | None:
+        self._ensure_stdlib_index()
+        lines = doc.text.splitlines()
+        if line0 < 0 or line0 >= len(lines):
+            return None
+        row = lines[line0]
+        if not row:
+            return None
+        pos = min(max(0, col0), max(0, len(row) - 1))
+        if pos >= len(row):
+            return None
+        if not (row[pos].isalnum() or row[pos] in {"_", "."}):
+            if pos == 0 or not (row[pos - 1].isalnum() or row[pos - 1] in {"_", "."}):
+                return None
+            pos -= 1
+        s = pos
+        e = pos
+        while s > 0 and (row[s - 1].isalnum() or row[s - 1] in {"_", "."}):
+            s -= 1
+        while e + 1 < len(row) and (row[e + 1].isalnum() or row[e + 1] in {"_", "."}):
+            e += 1
+        dotted = row[s : e + 1].strip(".")
+        parts = [p for p in dotted.split(".") if p]
+        if len(parts) < 2 or parts[0] != "std":
+            return None
+        # Cursor is on module segment (e.g., `core` in `std.core.add_checked`).
+        for idx in range(1, len(parts)):
+            if parts[idx] != symbol:
+                continue
+            module = ".".join(parts[1 : idx + 1])
+            std_uri = self._stdlib_module_to_uri.get(module)
+            if not std_uri:
+                continue
+            return {
+                "uri": std_uri,
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": max(1, len(symbol))},
+                },
+                "origin": "stdlib",
+                "kind": 2,
+                "detail": f"std module {module}",
+            }
+        return None
     def _update_module_graph(self, uri: str) -> None:
         doc = self.docs.get(uri)
         if doc is None:
@@ -566,7 +1708,7 @@ class LSPServer:
             for dep in old:
                 self.reverse_deps.get(dep, set()).discard(uri)
             return
-        prog = self._parse_prog(doc)
+        prog = self._parse_and_analyze(doc)
         new: set[str] = set()
         if prog is not None:
             for item in getattr(prog, "items", []):
@@ -734,6 +1876,7 @@ class LSPServer:
         line = line0 + 1
         col = col0 + 1
         results = []
+        self._ensure_stdlib_index()
         
         # First check local scope (highest priority)
         prog = self._parse_and_analyze(doc)
@@ -767,6 +1910,30 @@ class LSPServer:
                     "kind": d.get("kind", 6),
                     "detail": d.get("detail", "")
                 })
+
+        std_member = self._stdlib_member_lookup(doc, line0, col0, symbol)
+        if std_member is not None:
+            results.append(
+                {
+                    "uri": std_member.uri,
+                    "range": {
+                        "start": {"line": max(0, std_member.line - 1), "character": max(0, std_member.col - 1)},
+                        "end": {
+                            "line": max(0, std_member.line - 1),
+                            "character": max(0, std_member.col - 1 + len(std_member.name)),
+                        },
+                    },
+                    "origin": "stdlib",
+                    "kind": std_member.kind,
+                    "detail": std_member.detail,
+                }
+            )
+            return results
+
+        std_module = self._stdlib_module_location(doc, line0, col0, symbol)
+        if std_module is not None:
+            results.append(std_module)
+            return results
         
         # Check workspace symbols (for functions, types, etc.)
         workspace_matches = []
@@ -794,6 +1961,753 @@ class LSPServer:
         
         return results
 
+    def _get_symbol_priority(self, kind: int, _symbol: str) -> int:
+        """Lower scores sort earlier for definition/implementation lookups."""
+        # LSP SymbolKind numbers currently emitted by _decl_symbols:
+        # 12=function, 23=struct, 10=enum, 5=type alias, 8=field, 22=enum member.
+        priority = {
+            12: 0,   # function
+            23: 1,   # struct
+            10: 2,   # enum
+            5: 3,    # type alias
+            6: 4,    # variable
+            13: 4,   # parameter
+            8: 5,    # field/property
+            22: 6,   # enum member
+        }
+        return priority.get(int(kind), 9)
+
+    def _implementation_target(self, uri: str, line0: int, col0: int) -> list[dict[str, Any]]:
+        """Best-effort implementation lookup using AST declarations and workspace symbols."""
+        doc = self.docs.get(uri)
+        if doc is None:
+            return []
+        symbol = _word_at(doc.text, line0, col0)
+        if not symbol:
+            return []
+
+        results: list[dict[str, Any]] = []
+        seen: set[tuple[str, int, int]] = set()
+
+        def add_loc(target_uri: str, line1: int, col1: int, *, kind: int, detail: str, origin: str) -> None:
+            key = (target_uri, max(0, line1 - 1), max(0, col1 - 1))
+            if key in seen:
+                return
+            seen.add(key)
+            results.append(
+                {
+                    "uri": target_uri,
+                    "range": {
+                        "start": {"line": key[1], "character": key[2]},
+                        "end": {"line": key[1], "character": key[2] + max(1, len(symbol))},
+                    },
+                    "kind": kind,
+                    "detail": detail,
+                    "origin": origin,
+                }
+            )
+
+        # Current document declarations first.
+        prog = self._parse_and_analyze(doc)
+        if prog is not None:
+            dmap = _decl_map(prog)
+            decl = dmap.get(symbol)
+            if decl is not None:
+                add_loc(
+                    uri,
+                    int(decl.get("line", 1)),
+                    int(decl.get("col", 1)),
+                    kind=int(decl.get("kind", 6)),
+                    detail=str(decl.get("detail", "")),
+                    origin="document",
+                )
+            for item in getattr(prog, "items", []):
+                if isinstance(item, StructDecl):
+                    if item.name == symbol:
+                        add_loc(uri, item.line, item.col, kind=23, detail=f"struct {item.name}", origin="document")
+                    for m in getattr(item, "methods", []):
+                        if isinstance(m, FnDecl) and m.name == symbol:
+                            add_loc(uri, m.line, m.col, kind=12, detail=f"fn {m.name}", origin="document")
+                elif isinstance(item, TraitDecl):
+                    if item.name == symbol:
+                        add_loc(uri, item.line, item.col, kind=11, detail=f"trait {item.name}", origin="document")
+                    for mname, params, ret in item.methods:
+                        if mname != symbol:
+                            continue
+                        sig = ", ".join(f"{n}: {t}" for n, t in params)
+                        add_loc(
+                            uri,
+                            item.line,
+                            item.col,
+                            kind=12,
+                            detail=f"trait fn {mname}({sig}) {ret}",
+                            origin="document",
+                        )
+
+        # Workspace declarations.
+        ranked: list[tuple[int, dict[str, Any]]] = []
+        for sym_uri, syms in self.symbol_index.items():
+            for s in syms:
+                if s.name != symbol:
+                    continue
+                loc = {
+                    "uri": sym_uri,
+                    "range": {
+                        "start": {"line": max(0, s.line - 1), "character": max(0, s.col - 1)},
+                        "end": {"line": max(0, s.line - 1), "character": max(0, s.col - 1 + len(symbol))},
+                    },
+                    "kind": s.kind,
+                    "detail": s.detail,
+                    "origin": "workspace",
+                }
+                ranked.append((self._get_symbol_priority(s.kind, symbol), loc))
+        ranked.sort(key=lambda item: item[0])
+        for _, loc in ranked:
+            key = (
+                loc["uri"],
+                int(loc["range"]["start"]["line"]),
+                int(loc["range"]["start"]["character"]),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(loc)
+
+        return results
+
+    def _semantic_tokens_legend(self) -> dict[str, list[str]]:
+        return {
+            "tokenTypes": [
+                "namespace",
+                "type",
+                "class",
+                "enum",
+                "interface",
+                "struct",
+                "typeParameter",
+                "parameter",
+                "variable",
+                "property",
+                "enumMember",
+                "event",
+                "function",
+                "method",
+                "macro",
+                "keyword",
+                "modifier",
+                "comment",
+                "string",
+                "number",
+                "regexp",
+                "operator",
+            ],
+            "tokenModifiers": ["declaration", "readonly", "defaultLibrary"],
+        }
+
+    def _semantic_tokens(self, uri: str) -> dict[str, Any]:
+        doc = self.docs.get(uri)
+        if doc is None:
+            return {"data": []}
+        tokens = _tokenize_source(doc.text, _uri_to_filename(uri))
+        if not tokens:
+            return {"data": []}
+
+        legend = self._semantic_tokens_legend()["tokenTypes"]
+        type_idx = {name: i for i, name in enumerate(legend)}
+
+        out: list[tuple[int, int, int, int, int]] = []
+        prev_kind = ""
+        for i, tok in enumerate(tokens):
+            if tok.kind == "EOF":
+                continue
+            token_type = None
+            mods = 0
+            if tok.kind == "IDENT":
+                nxt = tokens[i + 1].kind if i + 1 < len(tokens) else ""
+                prv = tokens[i - 1].kind if i > 0 else ""
+                if tok.text in GPU_MODIFIERS:
+                    token_type = "modifier"
+                elif prev_kind in {"fn", "extern"}:
+                    token_type = "function"
+                    mods |= 1  # declaration
+                elif prev_kind in {"struct"}:
+                    token_type = "struct"
+                    mods |= 1
+                elif prev_kind in {"enum"}:
+                    token_type = "enum"
+                    mods |= 1
+                elif prev_kind in {"trait"}:
+                    token_type = "interface"
+                    mods |= 1
+                elif prev_kind in {"type"}:
+                    token_type = "type"
+                    mods |= 1
+                elif prev_kind in {"mut", ","} and nxt == ":":
+                    token_type = "parameter"
+                    mods |= 1
+                elif nxt == "(":
+                    token_type = "function"
+                elif prv == "." and nxt == "(":
+                    token_type = "method"
+                elif prv == ".":
+                    token_type = "property"
+                else:
+                    token_type = "variable"
+            elif tok.kind in KEYWORDS:
+                token_type = "keyword"
+            elif tok.kind in {"STR", "STR_MULTI", "STR_INTERP", "CHAR"}:
+                token_type = "string"
+            elif tok.kind in {"INT", "FLOAT"}:
+                token_type = "number"
+            elif tok.kind == "INT_TYPE":
+                token_type = "type"
+            elif tok.kind in {
+                "=>",
+                "->",
+                "==",
+                "!=",
+                "<=",
+                ">=",
+                "&&",
+                "||",
+                "??",
+                "+=",
+                "-=",
+                "*=",
+                "/=",
+                "%=",
+                "<<=",
+                ">>=",
+                "&=",
+                "|=",
+                "^=",
+                "<<",
+                ">>",
+                "..=",
+                "..",
+                "{",
+                "}",
+                "(",
+                ")",
+                "<",
+                ">",
+                ";",
+                ",",
+                "=",
+                "+",
+                "-",
+                "*",
+                "/",
+                "%",
+                "!",
+                "?",
+                "[",
+                "]",
+                ":",
+                ".",
+                "&",
+                "|",
+                "^",
+                "~",
+            }:
+                token_type = "operator"
+            if token_type is None:
+                prev_kind = tok.kind
+                continue
+            out.append((max(0, tok.line - 1), max(0, tok.col - 1), max(1, len(tok.text)), type_idx[token_type], mods))
+            prev_kind = tok.kind
+
+        out.sort(key=lambda t: (t[0], t[1]))
+        data: list[int] = []
+        prev_line = 0
+        prev_col = 0
+        for line0, col0, length, t_idx, mods in out:
+            dl = line0 - prev_line
+            ds = col0 - prev_col if dl == 0 else col0
+            data.extend([dl, ds, length, t_idx, mods])
+            prev_line = line0
+            prev_col = col0
+        return {"data": data}
+
+    def _inlay_hints(self, uri: str, req_range: dict[str, Any]) -> list[dict[str, Any]]:
+        doc = self.docs.get(uri)
+        if doc is None:
+            return []
+        prog = self._parse_and_analyze(doc)
+        if prog is None:
+            return []
+        start_line = int(req_range.get("start", {}).get("line", 0))
+        end_line = int(req_range.get("end", {}).get("line", start_line))
+
+        out: list[dict[str, Any]] = []
+        filename = _uri_to_filename(uri)
+        toks = _tokenize_source(doc.text, filename)
+
+        fn_params: dict[str, list[str]] = {}
+        for item in getattr(prog, "items", []):
+            if isinstance(item, FnDecl):
+                fn_params[item.name] = [p for p, _ in item.params]
+            elif isinstance(item, TraitDecl):
+                for mname, params, _ in item.methods:
+                    fn_params[mname] = [p for p, _ in params]
+
+        for node in _iter_ast(prog):
+            if isinstance(node, LetStmt):
+                line0 = max(0, int(getattr(node, "line", 1)) - 1)
+                if line0 < start_line or line0 > end_line:
+                    continue
+                if node.type_name is not None:
+                    continue
+                inferred = getattr(node.expr, "inferred_type", None)
+                if not isinstance(inferred, str) or not _is_stable_user_facing_type(inferred):
+                    continue
+                info = _binding_decl_token_info(toks, node)
+                name_tok = info.get("name") if info is not None else None
+                if name_tok is None:
+                    continue
+                out.append(
+                    {
+                        "position": {"line": max(0, name_tok.line - 1), "character": max(0, name_tok.col - 1 + len(name_tok.text))},
+                        "label": f": {_pretty_type_text(inferred)}",
+                        "kind": 1,  # Type
+                    }
+                )
+            elif isinstance(node, Call):
+                line0 = max(0, int(getattr(node, "line", 1)) - 1)
+                if line0 < start_line or line0 > end_line:
+                    continue
+                fn_name = node.fn.value if isinstance(node.fn, Name) else None
+                if not fn_name:
+                    continue
+                params = fn_params.get(fn_name, [])
+                for i, arg in enumerate(node.args):
+                    if i >= len(params):
+                        break
+                    out.append(
+                        {
+                            "position": {"line": max(0, int(getattr(arg, "line", 1)) - 1), "character": max(0, int(getattr(arg, "col", 1)) - 1)},
+                            "label": f"{params[i]}:",
+                            "kind": 2,  # Parameter
+                            "paddingRight": True,
+                        }
+                    )
+        return out[:200]
+
+    def _folding_ranges(self, uri: str) -> list[dict[str, Any]]:
+        doc = self.docs.get(uri)
+        if doc is None:
+            return []
+        lines = doc.text.splitlines()
+        out: list[dict[str, Any]] = []
+
+        # Fold import groups.
+        import_start = None
+        for i, row in enumerate(lines):
+            if row.strip().startswith("import "):
+                if import_start is None:
+                    import_start = i
+            else:
+                if import_start is not None and i - 1 > import_start:
+                    out.append({"startLine": import_start, "endLine": i - 1, "kind": "imports"})
+                import_start = None
+        if import_start is not None and len(lines) - 1 > import_start:
+            out.append({"startLine": import_start, "endLine": len(lines) - 1, "kind": "imports"})
+
+        # Fold brace-delimited blocks.
+        stack: list[int] = []
+        in_string = False
+        escaped = False
+        for ln, row in enumerate(lines):
+            for ch in row:
+                if in_string:
+                    if escaped:
+                        escaped = False
+                    elif ch == "\\":
+                        escaped = True
+                    elif ch == '"':
+                        in_string = False
+                    continue
+                if ch == '"':
+                    in_string = True
+                    continue
+                if ch == "{":
+                    stack.append(ln)
+                elif ch == "}" and stack:
+                    start_ln = stack.pop()
+                    if ln > start_ln:
+                        out.append({"startLine": start_ln, "endLine": ln - 1, "kind": "region"})
+        out.sort(key=lambda r: (r["startLine"], r["endLine"]))
+        return out[:500]
+
+    def _execute_command(self, params: dict[str, Any]) -> Any:
+        command = str(params.get("command", ""))
+        args = params.get("arguments", [])
+        if command == "astra.formatDocument":
+            uri = str(args[0]) if args else ""
+            return {"edits": self._format_document(uri)} if uri else {"edits": []}
+        if command == "astra.rebuildProject":
+            self._scan_workspace()
+            for uri, doc in self.docs.items():
+                self._update_symbol_index(uri)
+                self._schedule_semantic(uri, doc.version)
+            return {"ok": True, "message": "project rebuilt"}
+        if command == "astra.runTests":
+            if not self.workspace_folders:
+                return {"ok": False, "message": "no workspace folder configured"}
+            root = self.workspace_folders[0]
+            try:
+                venv_pytest = root / ".venv" / "bin" / "pytest"
+                if venv_pytest.exists():
+                    cmd = [str(venv_pytest), "-q"]
+                else:
+                    cmd = ["pytest", "-q"]
+                proc = subprocess.run(
+                    cmd,
+                    cwd=str(root),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                )
+                output = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+                return {"ok": proc.returncode == 0, "code": proc.returncode, "output": output[-8000:]}
+            except Exception as err:
+                return {"ok": False, "message": str(err)}
+        return {"ok": False, "message": f"unknown command: {command}"}
+
+    def _call_hierarchy(self, uri: str, line0: int, col0: int) -> list[dict[str, Any]]:
+        doc = self.docs.get(uri)
+        if doc is None:
+            return []
+        name = _word_at(doc.text, line0, col0)
+        if not name:
+            return []
+        defs = self._definition_target(uri, line0, col0)
+        if defs:
+            d = defs[0]
+            return [
+                {
+                    "name": name,
+                    "kind": int(d.get("kind", 12)),
+                    "uri": d.get("uri", uri),
+                    "range": d["range"],
+                    "selectionRange": d["range"],
+                    "detail": d.get("detail", ""),
+                    "data": {"name": name},
+                }
+            ]
+        return []
+
+    def _incoming_calls(self, item: dict[str, Any]) -> list[dict[str, Any]]:
+        target_name = str(item.get("data", {}).get("name") or item.get("name") or "")
+        if not target_name:
+            return []
+        out: list[dict[str, Any]] = []
+        uris = set(self.symbol_index.keys()) | set(self.docs.keys())
+        for uri in uris:
+            doc = self.docs.get(uri)
+            if doc is None and uri.startswith("file://"):
+                try:
+                    text = Path(_uri_to_filename(uri)).read_text()
+                except Exception:
+                    continue
+                doc = TextDocument(uri=uri, text=text, version=0, language_id="astra")
+            if doc is None:
+                continue
+            prog = self._parse_and_analyze(doc)
+            if prog is None:
+                continue
+            for fn in getattr(prog, "items", []):
+                if not isinstance(fn, FnDecl):
+                    continue
+                call_ranges: list[dict[str, Any]] = []
+                for node in _iter_ast(fn.body):
+                    if isinstance(node, Call) and isinstance(node.fn, Name) and node.fn.value == target_name:
+                        ln = max(0, int(getattr(node.fn, "line", 1)) - 1)
+                        col = max(0, int(getattr(node.fn, "col", 1)) - 1)
+                        call_ranges.append(
+                            {
+                                "start": {"line": ln, "character": col},
+                                "end": {"line": ln, "character": col + max(1, len(target_name))},
+                            }
+                        )
+                if not call_ranges:
+                    continue
+                from_item = {
+                    "name": fn.name,
+                    "kind": 12,
+                    "uri": uri,
+                    "detail": f"fn {fn.name}",
+                    "range": {
+                        "start": {"line": max(0, fn.line - 1), "character": max(0, fn.col - 1)},
+                        "end": {"line": max(0, fn.line - 1), "character": max(0, fn.col - 1 + len(fn.name))},
+                    },
+                    "selectionRange": {
+                        "start": {"line": max(0, fn.line - 1), "character": max(0, fn.col - 1)},
+                        "end": {"line": max(0, fn.line - 1), "character": max(0, fn.col - 1 + len(fn.name))},
+                    },
+                    "data": {"name": fn.name},
+                }
+                out.append({"from": from_item, "fromRanges": call_ranges})
+        return out[:200]
+
+    def _outgoing_calls(self, item: dict[str, Any]) -> list[dict[str, Any]]:
+        src_name = str(item.get("data", {}).get("name") or item.get("name") or "")
+        src_uri = str(item.get("uri") or "")
+        if not src_name:
+            return []
+        out: list[dict[str, Any]] = []
+        doc = self.docs.get(src_uri)
+        if doc is None and src_uri.startswith("file://"):
+            try:
+                text = Path(_uri_to_filename(src_uri)).read_text()
+            except Exception:
+                return []
+            doc = TextDocument(uri=src_uri, text=text, version=0, language_id="astra")
+        if doc is None:
+            return []
+        prog = self._parse_and_analyze(doc)
+        if prog is None:
+            return []
+        src_fn = None
+        for fn in getattr(prog, "items", []):
+            if isinstance(fn, FnDecl) and fn.name == src_name:
+                src_fn = fn
+                break
+        if src_fn is None:
+            return []
+
+        seen: set[tuple[str, int, int]] = set()
+        for node in _iter_ast(src_fn.body):
+            if not (isinstance(node, Call) and isinstance(node.fn, Name)):
+                continue
+            target = node.fn.value
+            target_defs = []
+            for uri, syms in self.symbol_index.items():
+                for s in syms:
+                    if s.name == target and s.kind == 12:
+                        target_defs.append((uri, s))
+            if not target_defs:
+                continue
+            call_ln = max(0, int(getattr(node.fn, "line", 1)) - 1)
+            call_col = max(0, int(getattr(node.fn, "col", 1)) - 1)
+            call_rng = {
+                "start": {"line": call_ln, "character": call_col},
+                "end": {"line": call_ln, "character": call_col + max(1, len(target))},
+            }
+            for tgt_uri, sym in target_defs[:1]:
+                key = (tgt_uri, max(0, sym.line - 1), max(0, sym.col - 1))
+                if key in seen:
+                    continue
+                seen.add(key)
+                to_item = {
+                    "name": sym.name,
+                    "kind": 12,
+                    "uri": tgt_uri,
+                    "detail": sym.detail,
+                    "range": {
+                        "start": {"line": max(0, sym.line - 1), "character": max(0, sym.col - 1)},
+                        "end": {"line": max(0, sym.line - 1), "character": max(0, sym.col - 1 + len(sym.name))},
+                    },
+                    "selectionRange": {
+                        "start": {"line": max(0, sym.line - 1), "character": max(0, sym.col - 1)},
+                        "end": {"line": max(0, sym.line - 1), "character": max(0, sym.col - 1 + len(sym.name))},
+                    },
+                    "data": {"name": sym.name},
+                }
+                out.append({"to": to_item, "fromRanges": [call_rng]})
+        return out[:200]
+
+    def _type_hierarchy(self, uri: str, line0: int, col0: int) -> list[dict[str, Any]]:
+        doc = self.docs.get(uri)
+        if doc is None:
+            return []
+        symbol = _word_at(doc.text, line0, col0)
+        if not symbol:
+            return []
+        defs = self._definition_target(uri, line0, col0)
+        if not defs:
+            return []
+        d = defs[0]
+        kind = int(d.get("kind", 5))
+        if kind not in {5, 10, 11, 23}:
+            return []
+        return [
+            {
+                "name": symbol,
+                "kind": kind,
+                "uri": d.get("uri", uri),
+                "range": d["range"],
+                "selectionRange": d["range"],
+                "detail": d.get("detail", ""),
+                "data": {"name": symbol},
+            }
+        ]
+
+    def _type_relationships(self) -> tuple[dict[str, set[str]], dict[str, tuple[str, int, int, int, str]]]:
+        parents: dict[str, set[str]] = {}
+        decls: dict[str, tuple[str, int, int, int, str]] = {}
+        uris = set(self.symbol_index.keys()) | set(self.docs.keys())
+        for uri in uris:
+            doc = self.docs.get(uri)
+            if doc is None and uri.startswith("file://"):
+                try:
+                    text = Path(_uri_to_filename(uri)).read_text()
+                except Exception:
+                    continue
+                doc = TextDocument(uri=uri, text=text, version=0, language_id="astra")
+            if doc is None:
+                continue
+            prog = self._parse_and_analyze(doc)
+            if prog is None:
+                continue
+            for item in getattr(prog, "items", []):
+                if isinstance(item, StructDecl):
+                    decls[item.name] = (uri, item.line, item.col, 23, f"struct {item.name}")
+                    ps = set(getattr(item, "derives", []) or [])
+                    if ps:
+                        parents.setdefault(item.name, set()).update(ps)
+                elif isinstance(item, EnumDecl):
+                    decls[item.name] = (uri, item.line, item.col, 10, f"enum {item.name}")
+                    ps = set(getattr(item, "derives", []) or [])
+                    if ps:
+                        parents.setdefault(item.name, set()).update(ps)
+                elif isinstance(item, TraitDecl):
+                    decls[item.name] = (uri, item.line, item.col, 11, f"trait {item.name}")
+                elif isinstance(item, TypeAliasDecl):
+                    decls[item.name] = (uri, item.line, item.col, 5, f"type {item.name}")
+                    base = str(item.target).split("<", 1)[0].strip()
+                    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", base):
+                        parents.setdefault(item.name, set()).add(base)
+        return parents, decls
+
+    def _supertypes(self, item: dict[str, Any]) -> list[dict[str, Any]]:
+        name = str(item.get("data", {}).get("name") or item.get("name") or "")
+        if not name:
+            return []
+        parents, decls = self._type_relationships()
+        out: list[dict[str, Any]] = []
+        for p in sorted(parents.get(name, set())):
+            if p not in decls:
+                continue
+            uri, line1, col1, kind, detail = decls[p]
+            rng = {
+                "start": {"line": max(0, line1 - 1), "character": max(0, col1 - 1)},
+                "end": {"line": max(0, line1 - 1), "character": max(0, col1 - 1 + len(p))},
+            }
+            out.append({"name": p, "kind": kind, "uri": uri, "range": rng, "selectionRange": rng, "detail": detail, "data": {"name": p}})
+        return out
+
+    def _subtypes(self, item: dict[str, Any]) -> list[dict[str, Any]]:
+        name = str(item.get("data", {}).get("name") or item.get("name") or "")
+        if not name:
+            return []
+        parents, decls = self._type_relationships()
+        out: list[dict[str, Any]] = []
+        for child, ps in parents.items():
+            if name not in ps or child not in decls:
+                continue
+            uri, line1, col1, kind, detail = decls[child]
+            rng = {
+                "start": {"line": max(0, line1 - 1), "character": max(0, col1 - 1)},
+                "end": {"line": max(0, line1 - 1), "character": max(0, col1 - 1 + len(child))},
+            }
+            out.append({"name": child, "kind": kind, "uri": uri, "range": rng, "selectionRange": rng, "detail": detail, "data": {"name": child}})
+        return out
+
+    def _linked_editing_ranges(self, uri: str, line0: int, col0: int) -> dict[str, Any] | None:
+        doc = self.docs.get(uri)
+        if doc is None:
+            return None
+        lines = doc.text.splitlines()
+        if line0 < 0 or line0 >= len(lines):
+            return None
+        row = lines[line0]
+        if not row:
+            return None
+        pos = min(max(0, col0), max(0, len(row) - 1))
+
+        pairs = {"(": ")", "[": "]", "{": "}", "<": ">"}
+        rev = {v: k for k, v in pairs.items()}
+        ch = row[pos]
+        if ch in pairs or ch in rev:
+            open_ch = ch if ch in pairs else rev[ch]
+            close_ch = pairs[open_ch]
+            text = doc.text
+            off = _position_to_offset(text, line0, pos)
+            if ch in pairs:
+                depth = 0
+                i = off
+                while i < len(text):
+                    c = text[i]
+                    if c == open_ch:
+                        depth += 1
+                    elif c == close_ch:
+                        depth -= 1
+                        if depth == 0:
+                            end_line, end_col = _offset_to_position(text, i)
+                            return {
+                                "ranges": [
+                                    {"start": {"line": line0, "character": pos}, "end": {"line": line0, "character": pos + 1}},
+                                    {"start": {"line": end_line, "character": end_col}, "end": {"line": end_line, "character": end_col + 1}},
+                                ]
+                            }
+                    i += 1
+            else:
+                depth = 0
+                i = off
+                while i >= 0:
+                    c = text[i]
+                    if c == close_ch:
+                        depth += 1
+                    elif c == open_ch:
+                        depth -= 1
+                        if depth == 0:
+                            start_line, start_col = _offset_to_position(text, i)
+                            return {
+                                "ranges": [
+                                    {"start": {"line": start_line, "character": start_col}, "end": {"line": start_line, "character": start_col + 1}},
+                                    {"start": {"line": line0, "character": pos}, "end": {"line": line0, "character": pos + 1}},
+                                ]
+                            }
+                    i -= 1
+
+        symbol, s, e = _word_bounds(doc.text, line0, col0)
+        if not symbol:
+            return None
+        decl_line = lines[line0].strip()
+        if re.match(rf"^(fn|struct|enum|trait|type)\s+{re.escape(symbol)}\b", decl_line):
+            ranges = []
+            for m in re.finditer(rf"(?<![A-Za-z0-9_]){re.escape(symbol)}(?![A-Za-z0-9_])", lines[line0]):
+                ranges.append(
+                    {
+                        "start": {"line": line0, "character": m.start()},
+                        "end": {"line": line0, "character": m.end()},
+                    }
+                )
+            if len(ranges) >= 2:
+                return {"ranges": ranges, "wordPattern": r"[A-Za-z_][A-Za-z0-9_]*"}
+        return None
+
+    def _rename_conflict_reason(self, uri: str, line0: int, col0: int, old_name: str, new_name: str) -> str | None:
+        if new_name in KEYWORDS:
+            return "rename target is a reserved keyword"
+        doc = self.docs.get(uri)
+        if doc is None:
+            return None
+        prog = self._parse_and_analyze(doc)
+        if prog is None:
+            return None
+        line = line0 + 1
+        col = col0 + 1
+        locals_map = self._local_decls(prog, line, col)
+        if old_name in locals_map and new_name in locals_map and old_name != new_name:
+            return f"`{new_name}` already exists in local scope"
+        dmap = _decl_map(prog)
+        if old_name in dmap and new_name in dmap and old_name != new_name:
+            return f"`{new_name}` already exists in this module"
+        return None
+
     def _hover(self, uri: str, line0: int, col0: int) -> dict[str, Any] | None:
         doc = self.docs.get(uri)
         if doc is None:
@@ -804,13 +2718,14 @@ class LSPServer:
         if symbol in KEYWORDS:
             return {"contents": {"kind": "markdown", "value": f"`{symbol}` keyword"}}
         prog = self._parse_and_analyze(doc)
+        inferred_text = ""
         if prog is not None:
             for node in _iter_ast(prog):
                 if isinstance(node, Name):
                     if node.line == line0 + 1 and max(0, node.col - 1) <= col0 < max(0, node.col - 1) + len(node.value):
                         inferred = getattr(node, "inferred_type", None)
                         if inferred:
-                            return {"contents": {"kind": "markdown", "value": f"`{symbol}`: `{inferred}`"}}
+                            inferred_text = str(inferred)
             dmap = _decl_map(prog)
             decl = dmap.get(symbol)
             if decl is not None:
@@ -819,6 +2734,15 @@ class LSPServer:
                 if docp:
                     content += f"\n\n{docp}"
                 return {"contents": {"kind": "markdown", "value": content}}
+        std_member = self._stdlib_member_lookup(doc, line0, col0, symbol)
+        if std_member is not None:
+            content = f"```astra\n{std_member.detail}\n```"
+            docp = _first_paragraph(std_member.doc)
+            if docp:
+                content += f"\n\n{docp}"
+            elif inferred_text:
+                content += f"\n\n`{symbol}`: `{inferred_text}`"
+            return {"contents": {"kind": "markdown", "value": content}}
         if symbol in BUILTIN_SIGS:
             sig = BUILTIN_SIGS[symbol]
             args = ", ".join(sig.args or ["..."])
@@ -835,6 +2759,8 @@ class LSPServer:
             for api, api_doc in GPU_API_DOCS.items():
                 if f"gpu.{api}" in line_text and symbol == api:
                     return {"contents": {"kind": "markdown", "value": f"`gpu.{api}`\n\n{api_doc}"}}
+        if inferred_text:
+            return {"contents": {"kind": "markdown", "value": f"`{symbol}`: `{inferred_text}`"}}
         return {"contents": {"kind": "markdown", "value": f"Astra symbol `{symbol}`"}}
 
     def _completion(self, uri: str, line0: int, col0: int) -> list[dict[str, Any]]:
@@ -882,16 +2808,16 @@ class LSPServer:
             out.append(item)
         
         # Context-aware suggestions
-        if context["in_function_call"]:
+        if context["in_import"]:
+            self._add_import_completions(doc, context, add)
+        elif context["after_dot"]:
+            self._add_member_completions(doc, context, add)
+        elif context["in_function_call"]:
             self._add_argument_completions(doc, context, add)
             # Keep full symbol visibility while typing call arguments.
             self._add_standard_completions(doc, context, add)
         elif context["in_type_annotation"]:
             self._add_type_completions(doc, context, add)
-        elif context["in_import"]:
-            self._add_import_completions(doc, context, add)
-        elif context["after_dot"]:
-            self._add_member_completions(doc, context, add)
         elif context["in_match"]:
             self._add_standard_completions(doc, context, add)
             add("_", 13, "wildcard match pattern", priority=95)
@@ -935,10 +2861,22 @@ class LSPServer:
             "current_token": "",
             "function_name": "",
             "type_base": "",
+            "type_prefix": "",
+            "inferred_type": "",
             "object_type": None,
             "line": line,
             "col": col
         }
+
+        prog = self._parse_and_analyze(doc)
+        if prog is not None:
+            ann = _binding_annotation_context(prog, doc.text, _uri_to_filename(doc.uri), line, col)
+            if ann is not None:
+                context["in_type_annotation"] = True
+                context["type_prefix"] = ann.get("prefix", "")
+                context["inferred_type"] = ann.get("inferred_type", "")
+                if context["type_prefix"]:
+                    context["current_token"] = context["type_prefix"]
         
         # Function call context
         if '(' in prefix and not prefix.rstrip().endswith(')'):
@@ -949,11 +2887,12 @@ class LSPServer:
                 context["function_name"] = func_match.group(1)
         
         # Type annotation context  
-        if ':' in prefix and ('fn' in prefix or 'mut' in prefix):
+        if not context["in_type_annotation"] and ':' in prefix and ('fn' in prefix or 'mut' in prefix):
             context["in_type_annotation"] = True
             type_match = re.search(r':\s*(\w*)$', prefix)
             if type_match:
                 context["type_base"] = type_match.group(1)
+                context["type_prefix"] = type_match.group(1)
         
         # Import context
         if 'import' in prefix:
@@ -987,6 +2926,8 @@ class LSPServer:
                 add(k, 15, "snippet", insert_text=snippet, insert_format=2, priority=100)
             else:
                 add(k, 14, "keyword", priority=90)
+        for k in GPU_MODIFIERS:
+            add(k, 14, "gpu modifier", priority=89)
         
         # GPU namespace and APIs
         add("gpu", 9, "GPU runtime namespace", priority=92)
@@ -1024,33 +2965,117 @@ class LSPServer:
     
     def _add_type_completions(self, doc: TextDocument, context: dict[str, Any], add) -> None:
         """Add type-specific completions."""
-        # Basic types
-        basic_types = ["Int", "Float", "Bool", "String", "Char", "Void"]
-        for t in basic_types:
-            add(t, 5, f"primitive type {t}", priority=90)
-        
-        # Generic types
-        generic_types = ["Vec", "Option", "Result", "HashMap", "HashSet"]
-        for t in generic_types:
-            add(t, 5, f"generic type {t}", insert_text=f"{t}<$1>", insert_format=2, priority=85)
-        
-        # Pointer and reference types
-        pointer_types = ["Ptr", "Ref"]
-        for t in pointer_types:
-            add(t, 5, f"pointer/reference type {t}", insert_text=f"{t}<$1>", insert_format=2, priority=80)
-        
-        # User-defined types from workspace
+        prefix = str(context.get("type_prefix", "") or "").strip()
+        prefix_l = prefix.lower()
+
+        def allow(label: str) -> bool:
+            if not prefix_l:
+                return True
+            return label.lower().startswith(prefix_l)
+
+        inferred = _pretty_type_text(str(context.get("inferred_type", "") or ""))
+        if inferred and _is_stable_user_facing_type(inferred) and allow(inferred):
+            add(inferred, 5, "inferred type", priority=1)
+            if "|" in inferred:
+                for member in _normalized_union_members(inferred):
+                    if allow(member):
+                        add(member, 5, "union member type", priority=2)
+
+        builtin_types = [
+            "Int",
+            "isize",
+            "usize",
+            "i8",
+            "i16",
+            "i32",
+            "i64",
+            "i128",
+            "u8",
+            "u16",
+            "u32",
+            "u64",
+            "u128",
+            "Float",
+            "f16",
+            "f32",
+            "f64",
+            "f80",
+            "f128",
+            "Bool",
+            "String",
+            "str",
+            "Bytes",
+            "Void",
+            "none",
+        ]
+        for t in builtin_types:
+            if allow(t):
+                add(t, 5, f"builtin type {t}", priority=40)
+
+        # Container and pointer/reference spellings supported by parser/semantic.
+        shaped = [
+            ("Vec<$1>", "generic vec type"),
+            ("Map<$1, $2>", "generic map type"),
+            ("Set<$1>", "generic set type"),
+            ("[$1]", "slice/array type"),
+            ("&$1", "reference type"),
+            ("&mut $1", "mutable reference type"),
+            ("*$1", "pointer type"),
+        ]
+        for label, detail in shaped:
+            if allow(label):
+                add(label, 5, detail, insert_text=label, insert_format=2, priority=50)
+
+        # User-defined types from current program and workspace index.
+        prog = self._parse_and_analyze(doc)
+        if prog is not None:
+            for sym in _decl_symbols(prog, doc.uri):
+                if sym.kind in {23, 10, 5} and allow(sym.name):  # struct/enum/type alias
+                    add(sym.name, 5, sym.detail, priority=30)
+
         for syms in self.symbol_index.values():
             for s in syms:
-                if s.kind in [23, 10]:  # Struct, Enum
-                    add(s.name, 5, s.detail, priority=75)
+                if s.kind in {23, 10, 5} and allow(s.name):
+                    add(s.name, 5, s.detail, priority=60)
     
     def _add_import_completions(self, doc: TextDocument, context: dict[str, Any], add) -> None:
         """Add import-specific completions."""
-        # Standard library modules
-        stdlib_modules = ["algorithm", "atomic", "c", "collections", "gpu", "math", "os", "time"]
-        for module in stdlib_modules:
-            add(module, 9, f"std library module {module}", priority=90)
+        self._ensure_stdlib_index()
+        lines = doc.text.splitlines()
+        line = int(context.get("line", 0))
+        col = int(context.get("col", 0))
+        prefix = lines[line][:col] if 0 <= line < len(lines) else ""
+        std_match = re.search(r"\bimport\s+std(?:\.([A-Za-z0-9_\.]*))?$", prefix)
+
+        if std_match is not None:
+            typed = std_match.group(1) or ""
+            fixed_parts: list[str] = []
+            partial = ""
+            if typed:
+                parts = typed.split(".")
+                if typed.endswith("."):
+                    fixed_parts = [p for p in parts if p]
+                    partial = ""
+                else:
+                    fixed_parts = [p for p in parts[:-1] if p]
+                    partial = parts[-1]
+            candidates: set[str] = set()
+            for module in self._stdlib_modules:
+                mod_parts = module.split(".")
+                if len(mod_parts) <= len(fixed_parts):
+                    continue
+                if mod_parts[: len(fixed_parts)] != fixed_parts:
+                    continue
+                seg = mod_parts[len(fixed_parts)]
+                if not seg.startswith(partial):
+                    continue
+                candidates.add(seg)
+            for seg in sorted(candidates):
+                add(seg, 9, f"std library module {seg}", priority=90)
+        else:
+            # Fallback: expose discovered modules as flat candidates for generic import contexts.
+            for module in self._stdlib_modules:
+                add(module, 9, f"std library module {module}", priority=90)
         
         # Local files that could be imported
         try:
@@ -1092,6 +3117,35 @@ class LSPServer:
             for api, doc_text in sorted(GPU_API_DOCS.items()):
                 add(api, 3, doc_text, insert_text=f"{api}($1)", insert_format=2, priority=98)
             return
+        lines = doc.text.splitlines()
+        line = int(context.get("line", 0))
+        col = int(context.get("col", 0))
+        prefix = lines[line][:col] if 0 <= line < len(lines) else ""
+        std_mod = re.search(r"\bstd\.([A-Za-z0-9_\.]+)\.$", prefix)
+        if std_mod is not None:
+            self._ensure_stdlib_index()
+            module = std_mod.group(1)
+            for sym in self._stdlib_symbols_for_module(module):
+                if sym.kind == 12:
+                    add(sym.name, 3, sym.detail, insert_text=f"{sym.name}($1)", insert_format=2, priority=98)
+                elif sym.kind in {23, 10, 5, 8, 22}:
+                    add(sym.name, 6, sym.detail, priority=97)
+            return
+
+        # Module alias form: `import std.core as core; core.`
+        alias_mod = re.search(r"\b([A-Za-z_][A-Za-z0-9_]*)\.$", prefix)
+        if alias_mod is not None:
+            module_alias = alias_mod.group(1)
+            prog_alias = self._parse_and_analyze(doc)
+            alias_map = self._stdlib_module_aliases(prog_alias) if prog_alias is not None else self._stdlib_module_aliases_from_text(doc.text)
+            module = alias_map.get(module_alias)
+            for sym in self._stdlib_symbols_for_module(module or ""):
+                if sym.kind == 12:
+                    add(sym.name, 3, sym.detail, insert_text=f"{sym.name}($1)", insert_format=2, priority=98)
+                elif sym.kind in {23, 10, 5, 8, 22}:
+                    add(sym.name, 6, sym.detail, priority=97)
+            if module:
+                return
 
         prog = self._parse_and_analyze(doc)
         if prog is not None and obj_name:
@@ -1312,6 +3366,7 @@ class LSPServer:
         # --- Deeper quick-fix: import suggestions for unresolved names ---
         doc = self.docs.get(uri)
         if doc is not None:
+            self._ensure_stdlib_index()
             for diag in diagnostics:
                 msg = diag.get("message", "")
                 # Suggest adding missing import for unresolved name errors
@@ -1329,7 +3384,11 @@ class LSPServer:
                                 if si.name == sym:
                                     # Build an import quick-fix
                                     other_path = _uri_to_filename(other_uri)
-                                    import_line = f'import "{other_path}";\n'
+                                    std_mod = self._stdlib_module_for_uri(other_uri)
+                                    if std_mod:
+                                        import_line = f"import std.{std_mod};\n"
+                                    else:
+                                        import_line = f'import "{other_path}";\n'
                                     fix_key = ("import", sym, other_uri, "", "")
                                     if fix_key not in seen:
                                         seen.add(fix_key)
@@ -1376,8 +3435,127 @@ class LSPServer:
                                 }
                             },
                         })
+            prog = self._parse_and_analyze(doc)
+            if prog is not None:
+                req_line, req_char = _range_start(params)
+                for title in ["Add explicit variable type", "Insert inferred type annotation"]:
+                    explicit = _build_add_explicit_type_action(
+                        uri=uri,
+                        doc=doc,
+                        prog=prog,
+                        line=req_line,
+                        character=req_char,
+                        title=title,
+                        kind="refactor.rewrite",
+                    )
+                    if explicit is not None:
+                        action, key = explicit
+                        if key not in seen:
+                            seen.add(key)
+                            actions.append(action)
+
+                req_rng = params.get("range", {})
+                req_start = req_rng.get("start", {})
+                req_end = req_rng.get("end", {})
+                start_line = int(req_start.get("line", req_line))
+                end_line = int(req_end.get("line", req_line))
+                if end_line < start_line:
+                    start_line, end_line = end_line, start_line
+                for title, non_trivial in [
+                    ("Add explicit types to variable declarations", False),
+                    ("Add explicit types where inference is non-trivial", True),
+                ]:
+                    bulk = _build_bulk_add_explicit_types_action(
+                        uri=uri,
+                        doc=doc,
+                        prog=prog,
+                        start_line=start_line,
+                        end_line=end_line,
+                        title=title,
+                        kind="refactor.rewrite",
+                        non_trivial_only=non_trivial,
+                    )
+                    if bulk is not None:
+                        action, key = bulk
+                        if key not in seen:
+                            seen.add(key)
+                            actions.append(action)
+
+                create_refactor = _build_create_union_match_action(
+                    uri=uri,
+                    doc=doc,
+                    prog=prog,
+                    line=req_line,
+                    character=req_char,
+                    title="Create match for union",
+                    kind="refactor.rewrite",
+                    wrap=False,
+                )
+                if create_refactor is not None:
+                    action, key = create_refactor
+                    if key not in seen:
+                        seen.add(key)
+                        actions.append(action)
+                add_missing = _build_add_missing_union_arms_action(
+                    uri=uri,
+                    doc=doc,
+                    prog=prog,
+                    line=req_line,
+                    character=req_char,
+                    title="Add missing union arms",
+                    kind="refactor.rewrite",
+                )
+                if add_missing is not None:
+                    action, key = add_missing
+                    if key not in seen:
+                        seen.add(key)
+                        actions.append(action)
+
+                for diag in diagnostics:
+                    drng = diag.get("range", {})
+                    dstart = drng.get("start", {})
+                    dline = int(dstart.get("line", req_line))
+                    dchar = int(dstart.get("character", req_char))
+                    explicit_quickfix = _build_add_explicit_type_action(
+                        uri=uri,
+                        doc=doc,
+                        prog=prog,
+                        line=dline,
+                        character=dchar,
+                        title="Add explicit variable type",
+                        kind="quickfix",
+                        diagnostic=diag,
+                    )
+                    if explicit_quickfix is not None:
+                        action, key = explicit_quickfix
+                        if key not in seen:
+                            seen.add(key)
+                            actions.append(action)
+                    for title, wrap in [
+                        ("Create match for union", False),
+                        ("Wrap in exhaustive match", True),
+                    ]:
+                        quickfix = _build_create_union_match_action(
+                            uri=uri,
+                            doc=doc,
+                            prog=prog,
+                            line=dline,
+                            character=dchar,
+                            title=title,
+                            kind="quickfix",
+                            diagnostic=diag,
+                            wrap=wrap,
+                        )
+                        if quickfix is None:
+                            continue
+                        action, key = quickfix
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        actions.append(action)
         return actions[:50]
     def _scan_workspace(self) -> None:
+        self._scan_stdlib()
         for root in self.workspace_folders:
             if not root.exists():
                 continue
@@ -1503,13 +3681,29 @@ class LSPServer:
                             },
                             "definitionProvider": True,
                             "implementationProvider": True,
+                            "semanticTokensProvider": {
+                                "legend": self._semantic_tokens_legend(),
+                                "full": True,
+                            },
+                            "inlayHintProvider": True,
+                            "foldingRangeProvider": True,
                             "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
                             "referencesProvider": True,
-                            "renameProvider": True,
+                            "renameProvider": {"prepareProvider": True},
+                            "linkedEditingRangeProvider": True,
+                            "callHierarchyProvider": True,
+                            "typeHierarchyProvider": True,
                             "documentSymbolProvider": True,
                             "workspaceSymbolProvider": True,
                             "documentFormattingProvider": True,
                             "codeActionProvider": True,
+                            "executeCommandProvider": {
+                                "commands": [
+                                    "astra.formatDocument",
+                                    "astra.rebuildProject",
+                                    "astra.runTests",
+                                ]
+                            },
                         }
                     },
                 )
@@ -1568,6 +3762,21 @@ class LSPServer:
                 impls = self._implementation_target(uri, int(pos.get("line", 0)), int(pos.get("character", 0)))
                 self._respond(msg_id, impls[0] if len(impls) == 1 else impls or None)
                 return True
+            if method == "textDocument/semanticTokens/full":
+                p = msg.get("params", {})
+                uri = p.get("textDocument", {}).get("uri", "")
+                self._respond(msg_id, self._semantic_tokens(uri))
+                return True
+            if method == "textDocument/inlayHint":
+                p = msg.get("params", {})
+                uri = p.get("textDocument", {}).get("uri", "")
+                self._respond(msg_id, self._inlay_hints(uri, p.get("range", {})))
+                return True
+            if method == "textDocument/foldingRange":
+                p = msg.get("params", {})
+                uri = p.get("textDocument", {}).get("uri", "")
+                self._respond(msg_id, self._folding_ranges(uri))
+                return True
             if method == "textDocument/signatureHelp":
                 p = msg.get("params", {})
                 uri = p.get("textDocument", {}).get("uri", "")
@@ -1596,11 +3805,82 @@ class LSPServer:
                 if not old_name or old_name in KEYWORDS:
                     self._error(msg_id, -32602, "invalid rename target")
                     return True
+                conflict = self._rename_conflict_reason(
+                    uri,
+                    int(pos.get("line", 0)),
+                    int(pos.get("character", 0)),
+                    old_name,
+                    new_name,
+                )
+                if conflict:
+                    self._error(msg_id, -32602, conflict)
+                    return True
                 refs = self._find_word_refs(uri, old_name, include_decl=True)
                 changes: dict[str, list[dict[str, Any]]] = {}
                 for r in refs:
                     changes.setdefault(r["uri"], []).append({"range": r["range"], "newText": new_name})
                 self._respond(msg_id, {"changes": changes})
+                return True
+            if method == "textDocument/prepareRename":
+                p = msg.get("params", {})
+                uri = p.get("textDocument", {}).get("uri", "")
+                pos = p.get("position", {})
+                doc = self.docs.get(uri)
+                if doc is None:
+                    self._respond(msg_id, None)
+                    return True
+                name, start, end = _word_bounds(doc.text, int(pos.get("line", 0)), int(pos.get("character", 0)))
+                if not name or name in KEYWORDS:
+                    self._respond(msg_id, None)
+                    return True
+                line0 = int(pos.get("line", 0))
+                self._respond(
+                    msg_id,
+                    {
+                        "range": {
+                            "start": {"line": line0, "character": start},
+                            "end": {"line": line0, "character": end},
+                        },
+                        "placeholder": name,
+                    },
+                )
+                return True
+            if method == "workspace/executeCommand":
+                self._respond(msg_id, self._execute_command(msg.get("params", {})))
+                return True
+            if method == "textDocument/prepareCallHierarchy":
+                p = msg.get("params", {})
+                uri = p.get("textDocument", {}).get("uri", "")
+                pos = p.get("position", {})
+                self._respond(msg_id, self._call_hierarchy(uri, int(pos.get("line", 0)), int(pos.get("character", 0))))
+                return True
+            if method == "callHierarchy/incomingCalls":
+                p = msg.get("params", {})
+                self._respond(msg_id, self._incoming_calls(p.get("item", {})))
+                return True
+            if method == "callHierarchy/outgoingCalls":
+                p = msg.get("params", {})
+                self._respond(msg_id, self._outgoing_calls(p.get("item", {})))
+                return True
+            if method == "textDocument/prepareTypeHierarchy":
+                p = msg.get("params", {})
+                uri = p.get("textDocument", {}).get("uri", "")
+                pos = p.get("position", {})
+                self._respond(msg_id, self._type_hierarchy(uri, int(pos.get("line", 0)), int(pos.get("character", 0))))
+                return True
+            if method == "typeHierarchy/supertypes":
+                p = msg.get("params", {})
+                self._respond(msg_id, self._supertypes(p.get("item", {})))
+                return True
+            if method == "typeHierarchy/subtypes":
+                p = msg.get("params", {})
+                self._respond(msg_id, self._subtypes(p.get("item", {})))
+                return True
+            if method == "textDocument/linkedEditingRange":
+                p = msg.get("params", {})
+                uri = p.get("textDocument", {}).get("uri", "")
+                pos = p.get("position", {})
+                self._respond(msg_id, self._linked_editing_ranges(uri, int(pos.get("line", 0)), int(pos.get("character", 0))))
                 return True
             if method == "textDocument/documentSymbol":
                 p = msg.get("params", {})

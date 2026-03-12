@@ -17,6 +17,22 @@
     ],
     "description": "Declare an Astra function with explicit return type"
   },
+  "Async Function": {
+    "prefix": "asyncfn",
+    "body": [
+      "async fn ${1:name}(${2:arg} ${3:Int}) ${4:Int} {",
+      "    ${0}",
+      "}"
+    ],
+    "description": "Declare an async Astra function"
+  },
+  "Await Expression": {
+    "prefix": "await",
+    "body": [
+      "await ${1:future}"
+    ],
+    "description": "Await an async expression"
+  },
   "GPU Kernel Function": {
     "prefix": "kernel",
     "body": [

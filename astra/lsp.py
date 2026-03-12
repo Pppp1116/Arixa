@@ -45,43 +45,17 @@ from astra.ast import (
 )
 from astra.check import _parse_diag_lines, run_check_source
 from astra.formatter import fmt, resolve_format_config
-from astra.module_resolver import ModuleResolutionError, resolve_import_path
-from astra.lexer import lex
+from astra.module_resolver import ModuleResolutionError, resolve_import_path, stdlib_root_path
+from astra.lexer import KEYWORDS as LEXER_KEYWORDS, lex
 from astra.parser import ParseError, parse
 from astra.semantic import BUILTIN_DOCS, BUILTIN_SIGS, GPU_API_DOCS, SemanticError, analyze
 
 _LOG = logging.getLogger("astlsp")
-KEYWORDS = [
-    "fn",
-    "mut",
-    "if",
-    "else",
-    "while",
-    "for",
-    "match",
-    "return",
-    "break",
-    "continue",
-    "unreachable",
-    "unsafe",
-    "struct",
-    "enum",
-    "type",
-    "import",
-    "mut",
-    "pub",
-    "extern",
-    "async",
-    "await",
-    "unsafe",
-    "match",
-    "none",
-    "f16",
-    "f80",
-    "f128",
-]
+KEYWORDS = sorted(LEXER_KEYWORDS)
+GPU_MODIFIERS = ["gpu", "kernel", "global", "shared", "device"]
 SNIPPETS = {
     "fn": "fn ${1:name}(${2}) ${3:Int} {\n    ${0}\n}",
+    "async": "async fn ${1:name}(${2}) ${3:Int} {\n    ${0}\n}",
     "struct": "struct ${1:Name} {\n    ${2:field} ${3:Int},\n}",
     "enum": "enum ${1:Name} {\n    ${2:Variant},\n}",
     "match": "match ${1:value} {\n    ${2:pattern} => {\n        ${0}\n    },\n}",
@@ -1441,6 +1415,9 @@ class LSPServer:
         self.dependencies: dict[str, set[str]] = {}
         self.reverse_deps: dict[str, set[str]] = {}
         self.workspace_folders: list[Path] = []
+        self._stdlib_modules: list[str] = []
+        self._stdlib_module_to_uri: dict[str, str] = {}
+        self._stdlib_indexed = False
         self.canceled: set[Any] = set()
         self.shutting_down = False
         self.exit_code = 0
@@ -1569,6 +1546,161 @@ class LSPServer:
         ]
         for key in expired_keys:
             del self._completion_cache[key]
+
+    def _scan_stdlib(self) -> None:
+        root = stdlib_root_path()
+        self._stdlib_modules = []
+        self._stdlib_module_to_uri = {}
+        if root is None:
+            self._stdlib_indexed = True
+            return
+        modules: list[str] = []
+        for path in root.rglob("*.arixa"):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(root).with_suffix("")
+            module = ".".join(rel.parts)
+            if not module:
+                continue
+            modules.append(module)
+            uri = path.resolve().as_uri()
+            self._stdlib_module_to_uri[module] = uri
+            if uri in self.docs:
+                continue
+            try:
+                text = path.read_text()
+            except Exception:
+                continue
+            fake_doc = TextDocument(uri=uri, text=text, version=0, language_id="astra")
+            prog = self._parse_prog(fake_doc)
+            self.symbol_index[uri] = _decl_symbols(prog, uri) if prog is not None else []
+        self._stdlib_modules = sorted(set(modules))
+        self._stdlib_indexed = True
+
+    def _ensure_stdlib_index(self) -> None:
+        if self._stdlib_indexed:
+            return
+        self._scan_stdlib()
+
+    def _stdlib_member_lookup(self, doc: TextDocument, line0: int, col0: int, symbol: str) -> SymbolInfo | None:
+        self._ensure_stdlib_index()
+        lines = doc.text.splitlines()
+        if line0 < 0 or line0 >= len(lines):
+            return None
+        row = lines[line0]
+        if not row:
+            return None
+        pos = min(max(0, col0), max(0, len(row) - 1))
+        if pos >= len(row):
+            return None
+        if not (row[pos].isalnum() or row[pos] in {"_", "."}):
+            if pos == 0 or not (row[pos - 1].isalnum() or row[pos - 1] in {"_", "."}):
+                return None
+            pos -= 1
+        s = pos
+        e = pos
+        while s > 0 and (row[s - 1].isalnum() or row[s - 1] in {"_", "."}):
+            s -= 1
+        while e + 1 < len(row) and (row[e + 1].isalnum() or row[e + 1] in {"_", "."}):
+            e += 1
+        dotted = row[s : e + 1].strip(".")
+        parts = [p for p in dotted.split(".") if p]
+        module: str | None = None
+        if len(parts) >= 3 and parts[0] == "std" and parts[-1] == symbol:
+            module = ".".join(parts[1:-1])
+        elif len(parts) == 2 and parts[-1] == symbol:
+            prog = self._parse_and_analyze(doc)
+            alias_map = self._stdlib_module_aliases(prog) if prog is not None else self._stdlib_module_aliases_from_text(doc.text)
+            module = alias_map.get(parts[0])
+        if not module:
+            return None
+        for si in self._stdlib_symbols_for_module(module):
+            if si.name == symbol:
+                return si
+        return None
+
+    def _stdlib_module_aliases(self, prog: Any) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for item in getattr(prog, "items", []):
+            if not isinstance(item, ImportDecl) or not item.path:
+                continue
+            if item.path[0] not in {"std", "stdlib"} or len(item.path) < 2:
+                continue
+            mod = ".".join(item.path[1:])
+            local = item.alias if item.alias else item.path[-1]
+            if local:
+                out[local] = mod
+        return out
+
+    def _stdlib_module_aliases_from_text(self, text: str) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for row in text.splitlines():
+            m = re.match(r"\s*import\s+std\.([A-Za-z0-9_\.]+)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;", row)
+            if not m:
+                continue
+            mod = m.group(1)
+            alias = m.group(2) if m.group(2) else mod.split(".")[-1]
+            out[alias] = mod
+        return out
+
+    def _stdlib_symbols_for_module(self, module: str) -> list[SymbolInfo]:
+        self._ensure_stdlib_index()
+        std_uri = self._stdlib_module_to_uri.get(module)
+        if not std_uri:
+            return []
+        return self.symbol_index.get(std_uri, [])
+
+    def _stdlib_module_for_uri(self, uri: str) -> str | None:
+        self._ensure_stdlib_index()
+        for mod, mod_uri in self._stdlib_module_to_uri.items():
+            if mod_uri == uri:
+                return mod
+        return None
+
+    def _stdlib_module_location(self, doc: TextDocument, line0: int, col0: int, symbol: str) -> dict[str, Any] | None:
+        self._ensure_stdlib_index()
+        lines = doc.text.splitlines()
+        if line0 < 0 or line0 >= len(lines):
+            return None
+        row = lines[line0]
+        if not row:
+            return None
+        pos = min(max(0, col0), max(0, len(row) - 1))
+        if pos >= len(row):
+            return None
+        if not (row[pos].isalnum() or row[pos] in {"_", "."}):
+            if pos == 0 or not (row[pos - 1].isalnum() or row[pos - 1] in {"_", "."}):
+                return None
+            pos -= 1
+        s = pos
+        e = pos
+        while s > 0 and (row[s - 1].isalnum() or row[s - 1] in {"_", "."}):
+            s -= 1
+        while e + 1 < len(row) and (row[e + 1].isalnum() or row[e + 1] in {"_", "."}):
+            e += 1
+        dotted = row[s : e + 1].strip(".")
+        parts = [p for p in dotted.split(".") if p]
+        if len(parts) < 2 or parts[0] != "std":
+            return None
+        # Cursor is on module segment (e.g., `core` in `std.core.add_checked`).
+        for idx in range(1, len(parts)):
+            if parts[idx] != symbol:
+                continue
+            module = ".".join(parts[1 : idx + 1])
+            std_uri = self._stdlib_module_to_uri.get(module)
+            if not std_uri:
+                continue
+            return {
+                "uri": std_uri,
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": max(1, len(symbol))},
+                },
+                "origin": "stdlib",
+                "kind": 2,
+                "detail": f"std module {module}",
+            }
+        return None
     def _update_module_graph(self, uri: str) -> None:
         doc = self.docs.get(uri)
         if doc is None:
@@ -1744,6 +1876,7 @@ class LSPServer:
         line = line0 + 1
         col = col0 + 1
         results = []
+        self._ensure_stdlib_index()
         
         # First check local scope (highest priority)
         prog = self._parse_and_analyze(doc)
@@ -1777,6 +1910,30 @@ class LSPServer:
                     "kind": d.get("kind", 6),
                     "detail": d.get("detail", "")
                 })
+
+        std_member = self._stdlib_member_lookup(doc, line0, col0, symbol)
+        if std_member is not None:
+            results.append(
+                {
+                    "uri": std_member.uri,
+                    "range": {
+                        "start": {"line": max(0, std_member.line - 1), "character": max(0, std_member.col - 1)},
+                        "end": {
+                            "line": max(0, std_member.line - 1),
+                            "character": max(0, std_member.col - 1 + len(std_member.name)),
+                        },
+                    },
+                    "origin": "stdlib",
+                    "kind": std_member.kind,
+                    "detail": std_member.detail,
+                }
+            )
+            return results
+
+        std_module = self._stdlib_module_location(doc, line0, col0, symbol)
+        if std_module is not None:
+            results.append(std_module)
+            return results
         
         # Check workspace symbols (for functions, types, etc.)
         workspace_matches = []
@@ -1968,7 +2125,9 @@ class LSPServer:
             if tok.kind == "IDENT":
                 nxt = tokens[i + 1].kind if i + 1 < len(tokens) else ""
                 prv = tokens[i - 1].kind if i > 0 else ""
-                if prev_kind in {"fn", "extern"}:
+                if tok.text in GPU_MODIFIERS:
+                    token_type = "modifier"
+                elif prev_kind in {"fn", "extern"}:
                     token_type = "function"
                     mods |= 1  # declaration
                 elif prev_kind in {"struct"}:
@@ -2197,8 +2356,13 @@ class LSPServer:
                 return {"ok": False, "message": "no workspace folder configured"}
             root = self.workspace_folders[0]
             try:
+                venv_pytest = root / ".venv" / "bin" / "pytest"
+                if venv_pytest.exists():
+                    cmd = [str(venv_pytest), "-q"]
+                else:
+                    cmd = ["pytest", "-q"]
                 proc = subprocess.run(
-                    ["pytest", "-q"],
+                    cmd,
                     cwd=str(root),
                     capture_output=True,
                     text=True,
@@ -2554,13 +2718,14 @@ class LSPServer:
         if symbol in KEYWORDS:
             return {"contents": {"kind": "markdown", "value": f"`{symbol}` keyword"}}
         prog = self._parse_and_analyze(doc)
+        inferred_text = ""
         if prog is not None:
             for node in _iter_ast(prog):
                 if isinstance(node, Name):
                     if node.line == line0 + 1 and max(0, node.col - 1) <= col0 < max(0, node.col - 1) + len(node.value):
                         inferred = getattr(node, "inferred_type", None)
                         if inferred:
-                            return {"contents": {"kind": "markdown", "value": f"`{symbol}`: `{inferred}`"}}
+                            inferred_text = str(inferred)
             dmap = _decl_map(prog)
             decl = dmap.get(symbol)
             if decl is not None:
@@ -2569,6 +2734,15 @@ class LSPServer:
                 if docp:
                     content += f"\n\n{docp}"
                 return {"contents": {"kind": "markdown", "value": content}}
+        std_member = self._stdlib_member_lookup(doc, line0, col0, symbol)
+        if std_member is not None:
+            content = f"```astra\n{std_member.detail}\n```"
+            docp = _first_paragraph(std_member.doc)
+            if docp:
+                content += f"\n\n{docp}"
+            elif inferred_text:
+                content += f"\n\n`{symbol}`: `{inferred_text}`"
+            return {"contents": {"kind": "markdown", "value": content}}
         if symbol in BUILTIN_SIGS:
             sig = BUILTIN_SIGS[symbol]
             args = ", ".join(sig.args or ["..."])
@@ -2585,6 +2759,8 @@ class LSPServer:
             for api, api_doc in GPU_API_DOCS.items():
                 if f"gpu.{api}" in line_text and symbol == api:
                     return {"contents": {"kind": "markdown", "value": f"`gpu.{api}`\n\n{api_doc}"}}
+        if inferred_text:
+            return {"contents": {"kind": "markdown", "value": f"`{symbol}`: `{inferred_text}`"}}
         return {"contents": {"kind": "markdown", "value": f"Astra symbol `{symbol}`"}}
 
     def _completion(self, uri: str, line0: int, col0: int) -> list[dict[str, Any]]:
@@ -2632,16 +2808,16 @@ class LSPServer:
             out.append(item)
         
         # Context-aware suggestions
-        if context["in_function_call"]:
+        if context["in_import"]:
+            self._add_import_completions(doc, context, add)
+        elif context["after_dot"]:
+            self._add_member_completions(doc, context, add)
+        elif context["in_function_call"]:
             self._add_argument_completions(doc, context, add)
             # Keep full symbol visibility while typing call arguments.
             self._add_standard_completions(doc, context, add)
         elif context["in_type_annotation"]:
             self._add_type_completions(doc, context, add)
-        elif context["in_import"]:
-            self._add_import_completions(doc, context, add)
-        elif context["after_dot"]:
-            self._add_member_completions(doc, context, add)
         elif context["in_match"]:
             self._add_standard_completions(doc, context, add)
             add("_", 13, "wildcard match pattern", priority=95)
@@ -2750,6 +2926,8 @@ class LSPServer:
                 add(k, 15, "snippet", insert_text=snippet, insert_format=2, priority=100)
             else:
                 add(k, 14, "keyword", priority=90)
+        for k in GPU_MODIFIERS:
+            add(k, 14, "gpu modifier", priority=89)
         
         # GPU namespace and APIs
         add("gpu", 9, "GPU runtime namespace", priority=92)
@@ -2807,6 +2985,16 @@ class LSPServer:
             "Int",
             "isize",
             "usize",
+            "i8",
+            "i16",
+            "i32",
+            "i64",
+            "i128",
+            "u8",
+            "u16",
+            "u32",
+            "u64",
+            "u128",
             "Float",
             "f16",
             "f32",
@@ -2852,10 +3040,42 @@ class LSPServer:
     
     def _add_import_completions(self, doc: TextDocument, context: dict[str, Any], add) -> None:
         """Add import-specific completions."""
-        # Standard library modules
-        stdlib_modules = ["algorithm", "atomic", "c", "collections", "gpu", "math", "os", "time"]
-        for module in stdlib_modules:
-            add(module, 9, f"std library module {module}", priority=90)
+        self._ensure_stdlib_index()
+        lines = doc.text.splitlines()
+        line = int(context.get("line", 0))
+        col = int(context.get("col", 0))
+        prefix = lines[line][:col] if 0 <= line < len(lines) else ""
+        std_match = re.search(r"\bimport\s+std(?:\.([A-Za-z0-9_\.]*))?$", prefix)
+
+        if std_match is not None:
+            typed = std_match.group(1) or ""
+            fixed_parts: list[str] = []
+            partial = ""
+            if typed:
+                parts = typed.split(".")
+                if typed.endswith("."):
+                    fixed_parts = [p for p in parts if p]
+                    partial = ""
+                else:
+                    fixed_parts = [p for p in parts[:-1] if p]
+                    partial = parts[-1]
+            candidates: set[str] = set()
+            for module in self._stdlib_modules:
+                mod_parts = module.split(".")
+                if len(mod_parts) <= len(fixed_parts):
+                    continue
+                if mod_parts[: len(fixed_parts)] != fixed_parts:
+                    continue
+                seg = mod_parts[len(fixed_parts)]
+                if not seg.startswith(partial):
+                    continue
+                candidates.add(seg)
+            for seg in sorted(candidates):
+                add(seg, 9, f"std library module {seg}", priority=90)
+        else:
+            # Fallback: expose discovered modules as flat candidates for generic import contexts.
+            for module in self._stdlib_modules:
+                add(module, 9, f"std library module {module}", priority=90)
         
         # Local files that could be imported
         try:
@@ -2897,6 +3117,35 @@ class LSPServer:
             for api, doc_text in sorted(GPU_API_DOCS.items()):
                 add(api, 3, doc_text, insert_text=f"{api}($1)", insert_format=2, priority=98)
             return
+        lines = doc.text.splitlines()
+        line = int(context.get("line", 0))
+        col = int(context.get("col", 0))
+        prefix = lines[line][:col] if 0 <= line < len(lines) else ""
+        std_mod = re.search(r"\bstd\.([A-Za-z0-9_\.]+)\.$", prefix)
+        if std_mod is not None:
+            self._ensure_stdlib_index()
+            module = std_mod.group(1)
+            for sym in self._stdlib_symbols_for_module(module):
+                if sym.kind == 12:
+                    add(sym.name, 3, sym.detail, insert_text=f"{sym.name}($1)", insert_format=2, priority=98)
+                elif sym.kind in {23, 10, 5, 8, 22}:
+                    add(sym.name, 6, sym.detail, priority=97)
+            return
+
+        # Module alias form: `import std.core as core; core.`
+        alias_mod = re.search(r"\b([A-Za-z_][A-Za-z0-9_]*)\.$", prefix)
+        if alias_mod is not None:
+            module_alias = alias_mod.group(1)
+            prog_alias = self._parse_and_analyze(doc)
+            alias_map = self._stdlib_module_aliases(prog_alias) if prog_alias is not None else self._stdlib_module_aliases_from_text(doc.text)
+            module = alias_map.get(module_alias)
+            for sym in self._stdlib_symbols_for_module(module or ""):
+                if sym.kind == 12:
+                    add(sym.name, 3, sym.detail, insert_text=f"{sym.name}($1)", insert_format=2, priority=98)
+                elif sym.kind in {23, 10, 5, 8, 22}:
+                    add(sym.name, 6, sym.detail, priority=97)
+            if module:
+                return
 
         prog = self._parse_and_analyze(doc)
         if prog is not None and obj_name:
@@ -3117,6 +3366,7 @@ class LSPServer:
         # --- Deeper quick-fix: import suggestions for unresolved names ---
         doc = self.docs.get(uri)
         if doc is not None:
+            self._ensure_stdlib_index()
             for diag in diagnostics:
                 msg = diag.get("message", "")
                 # Suggest adding missing import for unresolved name errors
@@ -3134,7 +3384,11 @@ class LSPServer:
                                 if si.name == sym:
                                     # Build an import quick-fix
                                     other_path = _uri_to_filename(other_uri)
-                                    import_line = f'import "{other_path}";\n'
+                                    std_mod = self._stdlib_module_for_uri(other_uri)
+                                    if std_mod:
+                                        import_line = f"import std.{std_mod};\n"
+                                    else:
+                                        import_line = f'import "{other_path}";\n'
                                     fix_key = ("import", sym, other_uri, "", "")
                                     if fix_key not in seen:
                                         seen.add(fix_key)
@@ -3301,6 +3555,7 @@ class LSPServer:
                         actions.append(action)
         return actions[:50]
     def _scan_workspace(self) -> None:
+        self._scan_stdlib()
         for root in self.workspace_folders:
             if not root.exists():
                 continue

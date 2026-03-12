@@ -50,6 +50,7 @@ from astra.ast import (
     Program,
     RangeExpr,
     ReturnStmt,
+    UnreachableStmt,
     OrPattern,
     SizeOfTypeExpr,
     SizeOfValueExpr,
@@ -672,7 +673,7 @@ _STRICT_EXPRS = {
     GuardedPattern, EnhancedPattern, RangeExpr, TryExpr, AwaitExpr
 }
 
-_STRICT_STMTS = {LetStmt, AssignStmt, ReturnStmt, ExprStmt, IfStmt, WhileStmt, IteratorForStmt, MatchStmt}
+_STRICT_STMTS = {LetStmt, AssignStmt, ReturnStmt, UnreachableStmt, ExprStmt, IfStmt, WhileStmt, IteratorForStmt, MatchStmt}
 
 _STRICT_TOP_LEVEL = {FnDecl, StructDecl, EnumDecl, TraitDecl, TypeAliasDecl, ImportDecl, ExternFnDecl, LetStmt}
 
@@ -759,6 +760,8 @@ def _strict_walk_stmt(st: object, errs: list[str]) -> None:
     if isinstance(st, ReturnStmt):
         if st.expr is not None:
             _strict_walk_expr(st.expr, errs)
+        return
+    if isinstance(st, UnreachableStmt):
         return
     if isinstance(st, ExprStmt):
         _strict_walk_expr(st.expr, errs)
@@ -1277,7 +1280,13 @@ def build(
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(llvm_ir)
     if target == "py":
-        out = to_python(prog, freestanding=freestanding, overflow_mode=overflow_mode, emit_entrypoint=(kind == "exe"))
+        out = to_python(
+            prog,
+            freestanding=freestanding,
+            overflow_mode=overflow_mode,
+            profile=profile,
+            emit_entrypoint=(kind == "exe"),
+        )
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         Path(out_path).write_text(out)
     elif target == "llvm":

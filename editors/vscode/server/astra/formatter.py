@@ -185,6 +185,8 @@ def _fmt_expr(e, cfg: FormatConfig, *, indent: int = 0) -> str:
     if isinstance(e, IfExpression):
         cond = _fmt_expr(e.cond, cfg, indent=indent + 1)
         then_expr = _fmt_expr(e.then_expr, cfg, indent=indent + 1)
+        if e.else_expr is None:
+            return f"if {cond} {{ {then_expr} }}"
         else_expr = _fmt_expr(e.else_expr, cfg, indent=indent + 1)
         return f"if {cond} {{ {then_expr} }} else {{ {else_expr} }}"
     if isinstance(e, StructLit):
@@ -246,6 +248,8 @@ def _fmt_stmt(st, ind: int, cfg: FormatConfig) -> list[str]:
         return [f"{p}break;"]
     if isinstance(st, ContinueStmt):
         return [f"{p}continue;"]
+    if isinstance(st, UnreachableStmt):
+        return [f"{p}unreachable;"]
     if isinstance(st, ExprStmt):
         return [f"{p}{_fmt_expr(st.expr, cfg, indent=ind)};"]
     if isinstance(st, UnsafeStmt):

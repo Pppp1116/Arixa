@@ -65,6 +65,49 @@ function getConfig() {
   return vscode.workspace.getConfiguration('arixa');
 }
 
+function discoverStdModules(workspaceRoot, extensionPath) {
+  const roots = [
+    process.env.ARIXA_STDLIB_PATH,
+    workspaceRoot ? path.join(workspaceRoot, 'stdlib') : undefined,
+    extensionPath ? path.join(extensionPath, 'astra', 'stdlib') : undefined,
+    extensionPath ? path.join(extensionPath, 'server', 'astra', 'stdlib') : undefined,
+  ].filter(Boolean);
+  const stdRoot = roots.find((candidate) => {
+    try {
+      return fs.existsSync(candidate) && fs.statSync(candidate).isDirectory();
+    } catch {
+      return false;
+    }
+  });
+  if (!stdRoot) {
+    return new Set();
+  }
+
+  const out = new Set();
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith('.arixa')) {
+        continue;
+      }
+      const rel = path.relative(stdRoot, full).replace(/\\/g, '/').replace(/\.arixa$/, '');
+      if (rel) {
+        out.add(rel);
+      }
+    }
+  };
+  try {
+    walk(stdRoot);
+  } catch {
+    return new Set();
+  }
+  return out;
+}
+
 function parseVersion(versionText) {
   if (!versionText || typeof versionText !== 'string') {
     return [0, 0, 0];
@@ -1064,12 +1107,22 @@ std = "1.0.0"
 
     fs.writeFileSync(path.join(packageDir, 'Astra.toml'), tomlContent);
 
+    const availableStdModules = discoverStdModules(workspaceFolder.uri.fsPath, context.extensionPath);
+    const preferredStdImports = ['core', 'math', 'io'];
+    let selectedStdImports = preferredStdImports.filter((name) => availableStdModules.has(name));
+    if (selectedStdImports.length === 0) {
+      selectedStdImports = Array.from(availableStdModules).sort().slice(0, 2);
+    }
+    if (selectedStdImports.length === 0) {
+      selectedStdImports = ['core', 'math'];
+    }
+    const importLines = selectedStdImports.map((name) => `import std.${name};`).join('\n');
+
     // Create basic lib.arixa
     const libContent = `/// ${packageName} library
 /// Description of what this library does
 
-import std.core;
-import std.math;
+${importLines}
 
 fn hello_world() Int {
     println("Hello from ${packageName}!");

@@ -421,6 +421,82 @@ def test_lsp_hover_builtin_and_gpu_api_docs(tmp_path: Path):
     assert "gpu.launch" in hover_gpu["contents"]["value"]
 
 
+def test_lsp_stdlib_import_completion_is_dynamic(tmp_path: Path):
+    server = lsp.LSPServer(log=lsp.logging.getLogger("test-lsp"), debounce_ms=0)
+    src = "import std.\nfn main() Int{ return 0; }\n"
+    uri = (tmp_path / "std_import_completion.arixa").as_uri()
+    server.docs[uri] = lsp.TextDocument(uri=uri, text=src, version=1, language_id="astra")
+    col = src.splitlines()[0].index("std.") + len("std.")
+    items = server._completion(uri, 0, col)
+    labels = {it["label"] for it in items}
+    assert "core" in labels
+    assert "io" in labels
+    assert "math" in labels
+
+
+def test_lsp_hover_stdlib_symbol_uses_stdlib_docs(tmp_path: Path):
+    server = lsp.LSPServer(log=lsp.logging.getLogger("test-lsp"), debounce_ms=0)
+    src = "fn main() Int{ value = std.core.add_checked(1, 2); return 0; }\n"
+    uri = (tmp_path / "std_hover.arixa").as_uri()
+    server.docs[uri] = lsp.TextDocument(uri=uri, text=src, version=1, language_id="astra")
+    hover = server._hover(uri, 0, src.index("add_checked"))
+    assert hover is not None
+    content = hover["contents"]["value"]
+    assert "fn add_checked" in content
+    assert "overflow detection" in content
+
+
+def test_lsp_definition_resolves_stdlib_qualified_symbol(tmp_path: Path):
+    server = lsp.LSPServer(log=lsp.logging.getLogger("test-lsp"), debounce_ms=0)
+    src = "fn main() Int{ value = std.core.mul_checked(2, 3); return 0; }\n"
+    uri = (tmp_path / "std_def.arixa").as_uri()
+    server.docs[uri] = lsp.TextDocument(uri=uri, text=src, version=1, language_id="astra")
+    defs = server._definition_target(uri, 0, src.index("mul_checked"))
+    assert defs
+    assert defs[0]["uri"].endswith("/stdlib/core.arixa")
+
+
+def test_lsp_member_completion_resolves_stdlib_alias_import(tmp_path: Path):
+    server = lsp.LSPServer(log=lsp.logging.getLogger("test-lsp"), debounce_ms=0)
+    src = "import std.core as core;\nfn main() Int{ core.; return 0; }\n"
+    uri = (tmp_path / "std_alias_member.arixa").as_uri()
+    server.docs[uri] = lsp.TextDocument(uri=uri, text=src, version=1, language_id="astra")
+    line = 1
+    col = src.splitlines()[line].index("core.") + len("core.")
+    items = server._completion(uri, line, col)
+    labels = {it["label"] for it in items}
+    assert "add_checked" in labels
+    assert "mul_checked" in labels
+
+
+def test_lsp_code_action_prefers_std_import_for_stdlib_symbol(tmp_path: Path):
+    server = lsp.LSPServer(log=lsp.logging.getLogger("test-lsp"), debounce_ms=0)
+    src = "fn main() Int { value = add_checked(1, 2); return 0; }\n"
+    uri = (tmp_path / "std_import_fix.arixa").as_uri()
+    server.docs[uri] = lsp.TextDocument(uri=uri, text=src, version=1, language_id="astra")
+    diagnostics = [
+        {
+            "message": "undefined symbol `add_checked`",
+            "range": {
+                "start": {"line": 0, "character": src.index("add_checked")},
+                "end": {"line": 0, "character": src.index("add_checked") + len("add_checked")},
+            },
+            "code": "E0001",
+        }
+    ]
+    actions = server._code_actions(
+        {
+            "textDocument": {"uri": uri},
+            "range": diagnostics[0]["range"],
+            "context": {"diagnostics": diagnostics},
+        }
+    )
+    titles = {a.get("title"): a for a in actions}
+    match = next((a for t, a in titles.items() if t and "add_checked" in t), None)
+    assert match is not None
+    assert match["edit"]["changes"][uri][0]["newText"] == "import std.core;\n"
+
+
 def test_lsp_member_completion_includes_struct_fields(tmp_path: Path):
     server = lsp.LSPServer(log=lsp.logging.getLogger("test-lsp"), debounce_ms=0)
     src = """

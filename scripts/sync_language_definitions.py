@@ -264,47 +264,29 @@ def update_syntax_file():
 def update_ast_imports():
     """Update AST imports in LSP to match current AST."""
     lsp_file = project_root / "editors/vscode/server/astra/lsp.py"
+    source_lsp = project_root / "astra/lsp.py"
     
-    if not lsp_file.exists():
+    if not lsp_file.exists() or not source_lsp.exists():
         return False
     
-    content = lsp_file.read_text()
-    
-    # Generate current AST imports
-    ast_nodes = extract_ast_nodes()
-    all_nodes = []
-    for category, nodes in ast_nodes.items():
-        all_nodes.extend(nodes)
-    
-    # Create import statement
-    imports = [
-        "from astra.ast import (",
-    ]
-    for i, node in enumerate(sorted(all_nodes)):
-        if i == len(all_nodes) - 1:
-            imports.append(f"    {node},")
-        else:
-            imports.append(f"    {node},")
-    imports.append(")")
-    
-    import_text = '\n'.join(imports)
-    
-    # Replace import section
-    lines = content.split('\n')
-    new_lines = []
-    in_ast_import = False
-    
-    for line in lines:
-        if line.strip() == 'from astra.ast import (':
-            in_ast_import = True
-            new_lines.extend(imports)
-        elif in_ast_import and line.strip().startswith(')'):
-            in_ast_import = False
-            new_lines.append(line)
-        elif not in_ast_import:
-            new_lines.append(line)
-    
-    lsp_file.write_text('\n'.join(new_lines))
+    source_content = source_lsp.read_text()
+    target_content = lsp_file.read_text()
+
+    block_re = re.compile(r"from astra\.ast import \(\n(?:[^\n]*\n)*?\)")
+    source_match = block_re.search(source_content)
+    if source_match is None:
+        print("Error: could not find AST import block in astra/lsp.py")
+        return False
+    import_block = source_match.group(0)
+
+    # Replace target AST import block and clean one or more stray standalone ')' lines.
+    target_re = re.compile(r"from astra\.ast import \(\n(?:[^\n]*\n)*?\)\n(?:\)\n)*")
+    if target_re.search(target_content) is None:
+        print("Error: could not find AST import block in VS Code LSP file")
+        return False
+    updated = target_re.sub(import_block + "\n", target_content, count=1)
+
+    lsp_file.write_text(updated)
     print("✓ Updated AST imports in LSP")
     return True
 

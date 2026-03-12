@@ -19,6 +19,7 @@ from astra.ast import (
     Literal,
     MatchStmt,
     ReturnStmt,
+    UnreachableStmt,
     UnsafeStmt,
     WhileStmt,
 )
@@ -1211,7 +1212,7 @@ def _nested_blocks(st) -> list[list]:
 
 
 def _stmt_terminates(st) -> bool:
-    if isinstance(st, (ReturnStmt, BreakStmt, ContinueStmt)):
+    if isinstance(st, (ReturnStmt, BreakStmt, ContinueStmt, UnreachableStmt)):
         return True
     if isinstance(st, IfStmt):
         return bool(st.then_body) and bool(st.else_body) and _block_terminates(st.then_body) and _block_terminates(st.else_body)

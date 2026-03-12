@@ -106,7 +106,7 @@ class EnhancedBuildPipeline:
         
         # Generate output
         if target == "py":
-            self._generate_python_output(prog, out_path, freestanding, overflow_mode, kind)
+            self._generate_python_output(prog, out_path, freestanding, overflow_mode, profile, kind)
         elif target in {"llvm", "native"}:
             llvm_ir = self._generate_llvm_output(prog, freestanding, overflow_mode, triple, profile, src_file)
             if emit_ir:
@@ -361,9 +361,23 @@ class EnhancedBuildPipeline:
         # In a full implementation, this would reorder struct fields for better cache locality
         pass
     
-    def _generate_python_output(self, prog: Any, out_path: str, freestanding: bool, overflow_mode: str, kind: str):
+    def _generate_python_output(
+        self,
+        prog: Any,
+        out_path: str,
+        freestanding: bool,
+        overflow_mode: str,
+        profile: str,
+        kind: str,
+    ):
         """Generate optimized Python output."""
-        out = to_python(prog, freestanding=freestanding, overflow_mode=overflow_mode, emit_entrypoint=(kind == "exe"))
+        out = to_python(
+            prog,
+            freestanding=freestanding,
+            overflow_mode=overflow_mode,
+            profile=profile,
+            emit_entrypoint=(kind == "exe"),
+        )
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         Path(out_path).write_text(out)
     

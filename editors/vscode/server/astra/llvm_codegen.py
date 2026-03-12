@@ -70,6 +70,7 @@ class _FnState:
 class _ModuleCtx:
     module: ir.Module
     triple: str
+    profile: str
     freestanding: bool
     structs: dict[str, _StructInfo]
     struct_decls: dict[str, StructDecl]
@@ -121,26 +122,8 @@ def _canonical_type(typ: Any) -> str:
     return t
 
 
-def _is_option_type(typ: str) -> bool:
-    t = typ.strip()
-    if t.endswith("?") or (t.startswith("Option<") and t.endswith(">")):
-        return True
-    parts = [p.strip() for p in _split_top_level(t, "|")]
-    if len(parts) == 2 and "none" in parts:
-        return True
-    return False
 
 
-def _option_inner_type(typ: str) -> str:
-    t = typ.strip()
-    if t.endswith("?"):
-        return t[:-1].strip()
-    if t.startswith("Option<") and t.endswith(">"):
-        return t[7:-1].strip()
-    parts = [p.strip() for p in _split_top_level(t, "|")]
-    if len(parts) == 2 and "none" in parts:
-        return parts[0] if parts[1] == "none" else parts[1]
-    return typ
 
 
 def _parse_parametric_type(typ: str) -> tuple[str, list[str]] | None:
@@ -156,21 +139,6 @@ def _parse_parametric_type(typ: str) -> tuple[str, list[str]] | None:
     if not args:
         return None
     return base, args
-
-
-def _is_result_type(typ: str) -> bool:
-    parsed = _parse_parametric_type(typ)
-    return parsed is not None and parsed[0] == "Result" and len(parsed[1]) == 2
-
-
-def _result_inner_types(typ: str) -> tuple[str, str] | None:
-    parsed = _parse_parametric_type(typ)
-    if parsed is None:
-        return None
-    base, args = parsed
-    if base != "Result" or len(args) != 2:
-        return None
-    return _canonical_type(args[0]), _canonical_type(args[1])
 
 
 def _int_info(typ: str) -> tuple[int, bool] | None:
@@ -724,6 +692,8 @@ def _collect_fn_sigs(prog: Program) -> dict[str, _FnSig]:
 
 def _llvm_type(ctx: _ModuleCtx, typ: str) -> ir.Type:
     c = _canonical_type(typ)
+    if c == "none" or "|" in c:
+        return ir.IntType(8).as_pointer()
     if c.startswith("*"):
         base = c.lstrip("*")
         depth = len(c) - len(base)
@@ -734,10 +704,6 @@ def _llvm_type(ctx: _ModuleCtx, typ: str) -> ir.Type:
         for _ in range(max(0, depth - 1)):
             out_ty = out_ty.as_pointer()
         return out_ty
-    if _is_option_type(c):
-        return ir.IntType(8).as_pointer()
-    if _is_result_type(c):
-        return ir.IntType(8).as_pointer()
     if c == "Bool":
         return ir.IntType(1)
     info = _int_info(c)
@@ -805,32 +771,26 @@ def _emit_result_value(
     ctx: _ModuleCtx,
     state: _FnState,
     result_ty: str,
-    *,
-    is_ok: bool,
-    payload_v: ir.Value,
     payload_ty: str,
+    is_ok: bool,
+    payload_v: ir.Value | None,
     node: Any,
 ) -> ir.Value:
-    parsed = _result_inner_types(result_ty)
-    if parsed is None:
-        raise CodegenError(_diag(node, f"internal: expected Result<T, E> type, got {result_ty}"))
-    _ok_ty, _err_ty = parsed
-    payload_any = _coerce_value(ctx, state, payload_v, payload_ty, "Any", node)
-    if not (isinstance(payload_any.type, ir.IntType) and payload_any.type.width == 64):
-        payload_any = state.builder.bitcast(payload_any, ir.IntType(64))
-
-    i64 = ir.IntType(64)
-    mem = _alloc_bytes(ctx, state, ir.Constant(i64, 16), ir.Constant(i64, 8), node, stack_ok=True)
-    s_ptr = state.builder.bitcast(mem, _result_storage_ty().as_pointer())
-    tag_ptr = state.builder.gep(s_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
-    payload_ptr = state.builder.gep(s_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
-    state.builder.store(ir.Constant(ir.IntType(8), 1 if is_ok else 0), tag_ptr)
-    state.builder.store(payload_any, payload_ptr)
-
-    out_ty = _llvm_type(ctx, result_ty)
-    if mem.type != out_ty:
-        return state.builder.bitcast(mem, out_ty)
-    return mem
+    # This backend currently carries union-like payloads as erased pointers (i8*).
+    _ = (ctx, result_ty, payload_ty, is_ok, node)
+    b = state.builder
+    i8p = ir.IntType(8).as_pointer()
+    if payload_v is None or not hasattr(payload_v, "type"):
+        return ir.Constant(i8p, None)
+    if isinstance(payload_v.type, ir.PointerType):
+        if payload_v.type == i8p:
+            return payload_v
+        return b.bitcast(payload_v, i8p)
+    tmp = b.alloca(payload_v.type, name="result_payload_tmp")
+    b.store(payload_v, tmp)
+    if tmp.type == i8p:
+        return tmp
+    return b.bitcast(tmp, i8p)
 
 
 def _is_terminated(state: _FnState) -> bool:
@@ -914,21 +874,32 @@ def _explicit_cast_value(ctx: _ModuleCtx, state: _FnState, v: ir.Value, from_ty:
     lf = _llvm_type(ctx, from_c)
     lt = _llvm_type(ctx, to_c)
 
-    if _is_option_type(to_c):
-        lt_opt = _llvm_type(ctx, to_c)
-        if _is_option_type(from_c):
-            if isinstance(v.type, ir.PointerType) and v.type != lt_opt:
-                return b.bitcast(v, lt_opt)
-            return v
-        inner = _option_inner_type(to_c)
-        inner_v = _explicit_cast_value(ctx, state, v, from_c, inner, node)
-        sz, al = _storage_size_align(ctx, inner, node)
-        mem = _alloc_bytes(ctx, state, ir.Constant(i64, sz), ir.Constant(i64, al), node, stack_ok=True)
-        inner_ptr = b.bitcast(mem, _llvm_type(ctx, inner).as_pointer())
-        b.store(inner_v, inner_ptr)
-        if mem.type != lt_opt:
-            return b.bitcast(mem, lt_opt)
-        return mem
+    if "|" in to_c:
+        # Backend union values are pointer-backed. `none` remains encoded as null.
+        union_ptr_ty = ir.IntType(8).as_pointer()
+        if from_c == "none":
+            return ir.Constant(union_ptr_ty, None)
+        if "|" in from_c:
+            if not isinstance(v.type, ir.PointerType):
+                raise CodegenError(_diag(node, f"internal: expected pointer-backed union value, got {v.type}"))
+            if v.type == union_ptr_ty:
+                return v
+            return b.bitcast(v, union_ptr_ty)
+
+        members = _union_members(to_c)
+        payload_ty = from_c
+        from_canon = _canonical_type(from_c)
+        for member in members:
+            if _canonical_type(member) == from_canon:
+                payload_ty = member
+                break
+
+        payload_v = v
+        if _canonical_type(from_c) != _canonical_type(payload_ty):
+            payload_v = _explicit_cast_value(ctx, state, payload_v, from_c, payload_ty, node)
+
+        return _box_union_payload(ctx, state, payload_v, payload_ty, to_c, node, variant_ty=payload_ty)
+
 
     if from_c == "Any":
         any_v = v
@@ -1057,24 +1028,35 @@ def _coerce_value(ctx: _ModuleCtx, state: _FnState, v: ir.Value, from_ty: str, t
         if isinstance(v.type, ir.PointerType) and isinstance(lt_same, ir.PointerType):
             return state.builder.bitcast(v, lt_same)
         return v
+    # Handle custom union types
+    if "|" in to_c:
+        b = state.builder
+        union_ptr_ty = ir.IntType(8).as_pointer()
+        if from_c == "none":
+            return ir.Constant(union_ptr_ty, None)
+        if "|" in from_c:
+            if not isinstance(v.type, ir.PointerType):
+                raise CodegenError(_diag(node, f"internal: expected pointer-backed union value, got {v.type}"))
+            if v.type == union_ptr_ty:
+                return v
+            return b.bitcast(v, union_ptr_ty)
+
+        members = _union_members(to_c)
+        payload_ty = members[0] if members else from_c
+        from_canon = _canonical_type(from_c)
+        for member in members:
+            if _canonical_type(member) == from_canon:
+                payload_ty = member
+                break
+        payload_v = v
+        if _canonical_type(from_c) != _canonical_type(payload_ty):
+            payload_v = _coerce_value(ctx, state, payload_v, from_c, payload_ty, node)
+        return _box_union_payload(ctx, state, payload_v, payload_ty, to_c, node, variant_ty=payload_ty)
+    
     b = state.builder
     i64 = ir.IntType(64)
-
-    if _is_option_type(to_c):
-        lt_opt = _llvm_type(ctx, to_c)
-        if _is_option_type(from_c):
-            if isinstance(v.type, ir.PointerType) and v.type != lt_opt:
-                return b.bitcast(v, lt_opt)
-            return v
-        inner = _option_inner_type(to_c)
-        inner_v = _coerce_value(ctx, state, v, from_c, inner, node)
-        sz, al = _storage_size_align(ctx, inner, node)
-        mem = _alloc_bytes(ctx, state, ir.Constant(i64, sz), ir.Constant(i64, al), node, stack_ok=True)
-        inner_ptr = b.bitcast(mem, _llvm_type(ctx, inner).as_pointer())
-        b.store(inner_v, inner_ptr)
-        if mem.type != lt_opt:
-            return b.bitcast(mem, lt_opt)
-        return mem
+    lf = _llvm_type(ctx, from_c)
+    lt = _llvm_type(ctx, to_c)
 
     if from_c == "Any":
         any_v = v
@@ -1214,7 +1196,7 @@ def _expr_type(state: _FnState, e: Any) -> str:
             return "String"
         return "Int"
     if isinstance(e, NilLit):
-        return "Option<Any>"
+        return "none"
     if isinstance(e, Name):
         # First check if the name has an inferred type (from semantic analyzer)
         inferred = getattr(e, "inferred_type", None)
@@ -1242,14 +1224,27 @@ def _expr_type(state: _FnState, e: Any) -> str:
         if e.op in {"==", "!=", "<", "<=", ">", ">=", "&&", "||"}:
             return "Bool"
         if e.op == "??":
-            lt = _expr_type(state, e.left)
-            return _option_inner_type(lt) if _is_option_type(lt) else _expr_type(state, e.right)
+            # For custom unions, return right operand type
+            return _expr_type(state, e.right)
         return _expr_type(state, e.left)
     if isinstance(e, Call):
         if isinstance(e.fn, Name):
             name = e.resolved_name or e.fn.value
-            if name in {"print", "__print", "panic", "__panic"}:
+            if name in {
+                "print",
+                "__print",
+                "assert",
+                "__assert",
+                "debug_assert",
+                "__debug_assert",
+                "assume",
+                "__assume",
+            }:
                 return "Void"
+            if name in {"likely", "__likely", "unlikely", "__unlikely"}:
+                return "Bool"
+            if name in {"panic", "__panic", "proc_exit", "__proc_exit"}:
+                return "Never"
             if name in {
                 "countOnes",
                 "leadingZeros",
@@ -1272,7 +1267,11 @@ def _expr_type(state: _FnState, e: Any) -> str:
             if name in {"vec_len", "__vec_len", "vec_set", "__vec_set", "vec_push", "__vec_push"}:
                 return "Int"
             if name in {"vec_get", "__vec_get"}:
-                return "Option<Any>"
+                if e.args:
+                    vec_ty = _canonical_type(_expr_type(state, e.args[0]))
+                    if _is_vec_type(vec_ty):
+                        return f"{_vec_inner_type(vec_ty)} | none"
+                return "Any | none"
         return "Int"
     if isinstance(e, FieldExpr):
         obj_ty = _expr_type(state, e.obj)
@@ -1288,11 +1287,10 @@ def _expr_type(state: _FnState, e: Any) -> str:
         return _expr_type(state, e.expr)
     if isinstance(e, TryExpr):
         src_ty = _expr_type(state, e.expr)
-        if _is_option_type(src_ty):
-            return _option_inner_type(src_ty)
-        parsed = _result_inner_types(src_ty)
-        if parsed is not None:
-            return parsed[0]
+        # For custom unions, return the first member type
+        if "|" in src_ty:
+            members = _union_members(src_ty)
+            return members[0] if members else "Any"
         return "Any"
     return "Int"
 
@@ -1504,35 +1502,243 @@ def _type_is_float_like(ty: str) -> bool:
     return _canonical_type(ty) in {"Float", "f16", "f32", "f64", "f80", "f128"}
 
 
+def _union_members(typ: str) -> list[str]:
+    """Extract union members from a type string."""
+    if "|" not in typ:
+        return [typ.strip()]
+    parts = []
+    current = ""
+    depth = 0
+    for char in typ:
+        if char in "<({[" :
+            depth += 1
+        elif char in ">)}]" :
+            depth -= 1
+        elif char == "|" and depth == 0:
+            parts.append(current.strip())
+            current = ""
+        else:
+            current += char
+    if current.strip():
+        parts.append(current.strip())
+    return parts
+
+
+def _union_variant_index(union_ty: str, variant_ty: str) -> int:
+    members = _union_members(_canonical_type(union_ty))
+    want = _canonical_type(variant_ty)
+    for idx, member in enumerate(members):
+        if _canonical_type(member) == want:
+            return idx
+    return 0
+
+
+def _union_variant_index_optional(union_ty: str, variant_ty: str) -> int | None:
+    members = _union_members(_canonical_type(union_ty))
+    want = _canonical_type(variant_ty)
+    for idx, member in enumerate(members):
+        if _canonical_type(member) == want:
+            return idx
+    return None
+
+
+def _union_payload_layout(ctx: _ModuleCtx, payload_ty: str, node: Any) -> tuple[int, int, int]:
+    payload_size, payload_align = _storage_size_align(ctx, payload_ty, node)
+    payload_align = max(1, payload_align)
+    tag_size = 8
+    payload_off = ((tag_size + payload_align - 1) // payload_align) * payload_align
+    total_size = max(tag_size, payload_off + payload_size)
+    total_align = max(8, payload_align)
+    return total_size, total_align, payload_off
+
+
+def _box_union_payload(
+    ctx: _ModuleCtx,
+    state: _FnState,
+    payload_value: ir.Value,
+    payload_ty: str,
+    union_ty: str,
+    node: Any,
+    *,
+    variant_ty: str | None = None,
+) -> ir.Value:
+    b = state.builder
+    i64 = ir.IntType(64)
+    i8p = ir.IntType(8).as_pointer()
+    payload_ll = _llvm_type(ctx, payload_ty)
+    stored = payload_value
+    if stored.type != payload_ll:
+        if isinstance(stored.type, ir.PointerType) and isinstance(payload_ll, ir.PointerType):
+            stored = b.bitcast(stored, payload_ll)
+        else:
+            raise CodegenError(
+                _diag(node, f"internal: union payload type mismatch, expected {payload_ll}, got {stored.type}")
+            )
+
+    size, align, payload_off = _union_payload_layout(ctx, payload_ty, node)
+    boxed = _alloc_bytes(
+        ctx,
+        state,
+        ir.Constant(i64, size),
+        ir.Constant(i64, align),
+        node,
+        stack_ok=True,
+    )
+    tag = _union_variant_index(union_ty, variant_ty or payload_ty)
+    tag_ptr = b.bitcast(boxed, i64.as_pointer())
+    b.store(ir.Constant(i64, tag), tag_ptr)
+    payload_i8 = b.gep(boxed, [ir.Constant(i64, payload_off)])
+    payload_ptr = b.bitcast(payload_i8, payload_ll.as_pointer())
+    b.store(stored, payload_ptr)
+    if boxed.type != i8p:
+        return b.bitcast(boxed, i8p)
+    return boxed
+
+
+def _load_union_tag(state: _FnState, union_ptr: ir.Value, node: Any) -> ir.Value:
+    if not isinstance(union_ptr.type, ir.PointerType):
+        raise CodegenError(_diag(node, f"internal: expected pointer-backed union value, got {union_ptr.type}"))
+    b = state.builder
+    i64 = ir.IntType(64)
+    i8p = ir.IntType(8).as_pointer()
+    base = union_ptr if union_ptr.type == i8p else b.bitcast(union_ptr, i8p)
+    tag_ptr = b.bitcast(base, i64.as_pointer())
+    return b.load(tag_ptr)
+
+
+def _load_union_payload(
+    ctx: _ModuleCtx,
+    state: _FnState,
+    union_ptr: ir.Value,
+    payload_ty: str,
+    node: Any,
+    *,
+    union_ty: str | None = None,
+    expected_variant_ty: str | None = None,
+    assume_tag_checked: bool = False,
+) -> ir.Value:
+    if not isinstance(union_ptr.type, ir.PointerType):
+        raise CodegenError(_diag(node, f"internal: expected pointer-backed union value, got {union_ptr.type}"))
+    b = state.builder
+    i64 = ir.IntType(64)
+    i8p = ir.IntType(8).as_pointer()
+    base = union_ptr if union_ptr.type == i8p else b.bitcast(union_ptr, i8p)
+
+    if (
+        not assume_tag_checked
+        and union_ty is not None
+        and expected_variant_ty is not None
+        and _canonical_type(expected_variant_ty) != "none"
+    ):
+        expected_idx = _union_variant_index_optional(union_ty, expected_variant_ty)
+        if expected_idx is None:
+            raise CodegenError(_diag(node, f"internal: union variant {expected_variant_ty} is not in {union_ty}"))
+        tag = _load_union_tag(state, base, node)
+        ok = b.icmp_unsigned("==", tag, ir.Constant(i64, expected_idx))
+        fn_ir = state.fn_ir
+        ok_block = fn_ir.append_basic_block("union_payload_tag_ok")
+        bad_block = fn_ir.append_basic_block("union_payload_tag_bad")
+        b.cbranch(ok, ok_block, bad_block)
+
+        b.position_at_end(bad_block)
+        trap_fn = _declare_trap(ctx)
+        b.call(trap_fn, [])
+        b.unreachable()
+
+        b.position_at_end(ok_block)
+        base = base if base.type == i8p else b.bitcast(base, i8p)
+
+    payload_ll = _llvm_type(ctx, payload_ty)
+    _, _, payload_off = _union_payload_layout(ctx, payload_ty, node)
+    payload_i8 = b.gep(base, [ir.Constant(i64, payload_off)])
+    payload_ptr = b.bitcast(payload_i8, payload_ll.as_pointer())
+    return b.load(payload_ptr)
+
+
 def _value_to_string_ptr(ctx: _ModuleCtx, state: _FnState, value: _Value, node: Any) -> ir.Value:
     aty = _canonical_type(value.ty)
     b = state.builder
-    if _is_option_type(aty):
-        opt_val = _coerce_value(ctx, state, value.value, value.ty, aty, node)
-        some_block = state.fn_ir.append_basic_block("fmt_opt_some")
-        none_block = state.fn_ir.append_basic_block("fmt_opt_none")
-        end_block = state.fn_ir.append_basic_block("fmt_opt_end")
-        is_some = b.icmp_unsigned("!=", opt_val, ir.Constant(opt_val.type, None))
-        b.cbranch(is_some, some_block, none_block)
+    # Handle custom union types
+    if "|" in aty:
+        members = _union_members(aty)
+        non_none = [m for m in members if _canonical_type(m) != "none"]
+        union_ptr = value.value
+        if not isinstance(union_ptr.type, ir.PointerType):
+            raise CodegenError(_diag(node, f"internal: expected pointer-backed union value, got {union_ptr.type}"))
+        i8p = ir.IntType(8).as_pointer()
+        union_ptr = union_ptr if union_ptr.type == i8p else b.bitcast(union_ptr, i8p)
 
-        b.position_at_end(some_block)
-        inner_ty = _option_inner_type(aty)
-        inner_ptr = b.bitcast(opt_val, _llvm_type(ctx, inner_ty).as_pointer())
-        inner_raw = b.load(inner_ptr)
-        inner_text = _value_to_string_ptr(ctx, state, _Value(inner_raw, inner_ty), node)
-        b.branch(end_block)
-        some_block = b.block
+        fn_ir = state.fn_ir
+        end_block = fn_ir.append_basic_block("union_to_str_end")
+        incomings: list[tuple[ir.Value, ir.Block]] = []
 
-        b.position_at_end(none_block)
-        none_str = _get_string_global(ctx, "none")
-        none_text = b.gep(none_str, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
-        b.branch(end_block)
-        none_block = b.block
+        dispatch_entry = b.block
+        if any(_canonical_type(m) == "none" for m in members):
+            none_block = fn_ir.append_basic_block("union_to_str_none")
+            dispatch_block = fn_ir.append_basic_block("union_to_str_dispatch")
+            is_none = b.icmp_unsigned("==", union_ptr, ir.Constant(i8p, None))
+            b.cbranch(is_none, none_block, dispatch_block)
+
+            b.position_at_end(none_block)
+            none_g = _get_string_global(ctx, "none")
+            none_ptr = b.gep(none_g, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+            b.branch(end_block)
+            incomings.append((none_ptr, b.block))
+
+            b.position_at_end(dispatch_block)
+            dispatch_entry = b.block
+
+        if not non_none:
+            unknown_g = _get_string_global(ctx, "<union>")
+            unknown_ptr = b.gep(unknown_g, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+            b.branch(end_block)
+            incomings.append((unknown_ptr, dispatch_entry))
+        elif len(non_none) == 1:
+            member = non_none[0]
+            payload = _load_union_payload(
+                ctx,
+                state,
+                union_ptr,
+                member,
+                node,
+                union_ty=aty,
+                expected_variant_ty=member,
+            )
+            rendered = _value_to_string_ptr(ctx, state, _Value(payload, member), node)
+            b.branch(end_block)
+            incomings.append((rendered, b.block))
+        else:
+            tag = _load_union_tag(state, union_ptr, node)
+            default_block = fn_ir.append_basic_block("union_to_str_default")
+            switch = b.switch(tag, default_block)
+            for member in non_none:
+                case_block = fn_ir.append_basic_block("union_to_str_case")
+                switch.add_case(ir.Constant(ir.IntType(64), _union_variant_index(aty, member)), case_block)
+                b.position_at_end(case_block)
+                payload = _load_union_payload(
+                    ctx,
+                    state,
+                    union_ptr,
+                    member,
+                    node,
+                    union_ty=aty,
+                    expected_variant_ty=member,
+                    assume_tag_checked=True,
+                )
+                rendered = _value_to_string_ptr(ctx, state, _Value(payload, member), node)
+                b.branch(end_block)
+                incomings.append((rendered, b.block))
+
+            b.position_at_end(default_block)
+            unknown_g = _get_string_global(ctx, "<union>")
+            unknown_ptr = b.gep(unknown_g, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+            b.branch(end_block)
+            incomings.append((unknown_ptr, b.block))
 
         b.position_at_end(end_block)
-        out = b.phi(ir.IntType(8).as_pointer())
-        out.add_incoming(inner_text, some_block)
-        out.add_incoming(none_text, none_block)
+        out = b.phi(i8p)
+        for incoming_val, incoming_block in incomings:
+            out.add_incoming(incoming_val, incoming_block)
         return out
     if aty in {"String", "str"}:
         return _coerce_value(ctx, state, value.value, value.ty, "String", node)
@@ -1635,6 +1841,42 @@ def _declare_trap(ctx: _ModuleCtx) -> ir.Function:
     fn = ir.Function(ctx.module, ir.FunctionType(ir.VoidType(), []), name=name)
     ctx.fn_map[name] = fn
     return fn
+
+
+def _declare_assume(ctx: _ModuleCtx) -> ir.Function:
+    name = "llvm.assume"
+    fn = ctx.fn_map.get(name)
+    if isinstance(fn, ir.Function):
+        return fn
+    fn = ir.Function(ctx.module, ir.FunctionType(ir.VoidType(), [ir.IntType(1)]), name=name)
+    ctx.fn_map[name] = fn
+    return fn
+
+
+def _branch_hint_kind(expr: Any) -> str | None:
+    cur = expr
+    while isinstance(cur, (CastExpr, TypeAnnotated)):
+        cur = cur.expr
+    if isinstance(cur, Call) and isinstance(cur.fn, Name):
+        name = cur.resolved_name or cur.fn.value
+        base = name[2:] if name.startswith("__") else name
+        if base in {"likely", "unlikely"}:
+            return base
+    return None
+
+
+def _apply_branch_hint_metadata(ctx: _ModuleCtx, branch_inst: Any, hint: str | None) -> None:
+    if hint not in {"likely", "unlikely"}:
+        return
+    likely_true, likely_false = ((2000, 1) if hint == "likely" else (1, 2000))
+    md = ctx.module.add_metadata(
+        [
+            ir.MetaDataString(ctx.module, "branch_weights"),
+            ir.Constant(ir.IntType(32), likely_true),
+            ir.Constant(ir.IntType(32), likely_false),
+        ]
+    )
+    branch_inst.set_metadata("prof", md)
 
 
 def _declare_memcpy(ctx: _ModuleCtx) -> ir.Function:
@@ -2028,6 +2270,56 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
     def _as_any_i64(v: _Value, node: Any) -> ir.Value:
         return _coerce_value(ctx, state, v.value, v.ty, "Any", node)
 
+    def _emit_debug_check(cond_expr: Any, *, use_assume_in_release: bool) -> None:
+        cond_val = _compile_expr(ctx, state, cond_expr, overflow_mode=overflow_mode)
+        cond_i1 = _coerce_value(ctx, state, cond_val.value, cond_val.ty, "Bool", cond_expr)
+        if use_assume_in_release and ctx.profile == "release":
+            assume_fn = _declare_assume(ctx)
+            b.call(assume_fn, [cond_i1])
+            return
+        fn_ir = state.fn_ir
+        ok_block = fn_ir.append_basic_block("assert_ok")
+        fail_block = fn_ir.append_basic_block("assert_fail")
+        b.cbranch(cond_i1, ok_block, fail_block)
+        b.position_at_end(fail_block)
+        trap_fn = _declare_trap(ctx)
+        b.call(trap_fn, [])
+        b.unreachable()
+        b.position_at_end(ok_block)
+
+    if base == "assert":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "assert expects 1 argument"))
+        _emit_debug_check(call.args[0], use_assume_in_release=False)
+        return _Value(ir.Constant(i64, 0), "Void")
+
+    if base == "debug_assert":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "debug_assert expects 1 argument"))
+        if ctx.profile != "release":
+            _emit_debug_check(call.args[0], use_assume_in_release=False)
+        return _Value(ir.Constant(i64, 0), "Void")
+
+    if base == "assume":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "assume expects 1 argument"))
+        _emit_debug_check(call.args[0], use_assume_in_release=True)
+        return _Value(ir.Constant(i64, 0), "Void")
+
+    if base == "likely":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "likely expects 1 argument"))
+        cond_val = _compile_expr(ctx, state, call.args[0], overflow_mode=overflow_mode)
+        cond_i1 = _coerce_value(ctx, state, cond_val.value, cond_val.ty, "Bool", call.args[0])
+        return _Value(cond_i1, "Bool")
+
+    if base == "unlikely":
+        if len(call.args) != 1:
+            raise CodegenError(_diag(call, "unlikely expects 1 argument"))
+        cond_val = _compile_expr(ctx, state, call.args[0], overflow_mode=overflow_mode)
+        cond_i1 = _coerce_value(ctx, state, cond_val.value, cond_val.ty, "Bool", call.args[0])
+        return _Value(cond_i1, "Bool")
+
     def _spawn_entry_wrapper(arity: int) -> ir.Function:
         key = f"__astra_spawn_entry_i64_{arity}"
         existing = ctx.fn_map.get(key)
@@ -2118,7 +2410,8 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
 
             b.position_at_end(some_block)
             elem_ptr = b.gep(typed_data, [idx64])
-            some_val = _as_i8_ptr(state, elem_ptr, call)
+            elem_val = b.load(elem_ptr)
+            some_val = _box_union_payload(ctx, state, elem_val, elem_ty, f"{elem_ty} | none", call, variant_ty=elem_ty)
             b.branch(end_block)
             some_block = b.block
 
@@ -2130,7 +2423,7 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
             out = b.phi(ir.IntType(8).as_pointer())
             out.add_incoming(some_val, some_block)
             out.add_incoming(ir.Constant(ir.IntType(8).as_pointer(), None), none_block)
-            return _Value(out, f"Option<{elem_ty}>")
+            return _Value(out, f"{elem_ty} | none")
 
         if base == "vec_set":
             if len(call.args) != 3:
@@ -2528,10 +2821,7 @@ def _compile_builtin_call(ctx: _ModuleCtx, state: _FnState, call: Call, name: st
         none_block = b.block
 
         b.position_at_end(some_block)
-        mem = _alloc_bytes(ctx, state, ir.Constant(i64, 8), ir.Constant(i64, 8), call)
-        any_ptr = b.bitcast(mem, i64.as_pointer())
-        b.store(out_any, any_ptr)
-        some_val = mem if mem.type == ir.IntType(8).as_pointer() else b.bitcast(mem, ir.IntType(8).as_pointer())
+        some_val = _box_union_payload(ctx, state, out_any, "Any", "Any | none", call, variant_ty="Any")
         b.branch(end_block)
         some_block = b.block
 
@@ -2811,43 +3101,6 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
             setattr(synthetic, "monomorph_symbol", mono_symbol)
         return _compile_call(ctx, state, synthetic, overflow_mode)
 
-    if (
-        isinstance(call.fn, FieldExpr)
-        and isinstance(call.fn.obj, Name)
-        and call.fn.obj.value == "Result"
-        and call.fn.field in {"Ok", "Err"}
-    ):
-        if len(call.args) != 1:
-            raise CodegenError(_diag(call, f"Result.{call.fn.field} expects 1 argument"))
-        out_ty = _expr_type(state, call)
-        parsed = _result_inner_types(out_ty)
-        if parsed is None:
-            raise CodegenError(_diag(call, f"Result constructor requires Result<T, E> context, got {out_ty}"))
-        ok_ty, err_ty = parsed
-        arg = _compile_expr(ctx, state, call.args[0], overflow_mode=overflow_mode)
-        if call.fn.field == "Ok":
-            payload = _coerce_value(ctx, state, arg.value, arg.ty, ok_ty, call.args[0])
-            out_ptr = _emit_result_value(
-                ctx,
-                state,
-                out_ty,
-                is_ok=True,
-                payload_v=payload,
-                payload_ty=ok_ty,
-                node=call,
-            )
-        else:
-            payload = _coerce_value(ctx, state, arg.value, arg.ty, err_ty, call.args[0])
-            out_ptr = _emit_result_value(
-                ctx,
-                state,
-                out_ty,
-                is_ok=False,
-                payload_v=payload,
-                payload_ty=err_ty,
-                node=call,
-            )
-        return _Value(out_ptr, out_ty)
 
     if isinstance(call.fn, FieldExpr) and call.fn.field == "get":
         if len(call.args) != 1:
@@ -2873,7 +3126,8 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
 
         b.position_at_end(some_block)
         elem_ptr = b.gep(data_ptr, [idx64])
-        some_val = _as_i8_ptr(state, elem_ptr, call)
+        elem_val = b.load(elem_ptr)
+        some_val = _box_union_payload(ctx, state, elem_val, elem_ty, f"{elem_ty} | none", call, variant_ty=elem_ty)
         b.branch(end_block)
         some_block = b.block
 
@@ -2885,7 +3139,7 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
         out = b.phi(ir.IntType(8).as_pointer())
         out.add_incoming(some_val, some_block)
         out.add_incoming(ir.Constant(ir.IntType(8).as_pointer(), None), none_block)
-        return _Value(out, f"Option<{elem_ty}>")
+        return _Value(out, f"{elem_ty} | none")
 
     if isinstance(call.fn, Name):
         name = call.fn.value
@@ -2956,6 +3210,11 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
             "vec_get",
             "vec_set",
             "vec_push",
+            "assert",
+            "debug_assert",
+            "assume",
+            "likely",
+            "unlikely",
             "format",
             "__format",
             "__print",
@@ -3021,6 +3280,11 @@ def _compile_call(ctx: _ModuleCtx, state: _FnState, call: Call, overflow_mode: s
             "__vec_get",
             "__vec_set",
             "__vec_push",
+            "__assert",
+            "__debug_assert",
+            "__assume",
+            "__likely",
+            "__unlikely",
             "panic",
             "__panic",
         }:
@@ -3140,7 +3404,7 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
     if isinstance(e, BoolLit):
         return _Value(ir.Constant(ir.IntType(1), 1 if e.value else 0), "Bool")
     if isinstance(e, NilLit):
-        return _Value(ir.Constant(ir.IntType(8).as_pointer(), None), "Option<Any>")
+        return _Value(ir.Constant(ir.IntType(8).as_pointer(), None), "none")
     if isinstance(e, Literal):
         if isinstance(e.value, bool):
             return _Value(ir.Constant(ir.IntType(1), 1 if e.value else 0), "Bool")
@@ -3240,79 +3504,59 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
         src = _compile_expr(ctx, state, e.expr, overflow_mode=overflow_mode)
         src_ty = _canonical_type(src.ty)
         fn_ret = _canonical_type(state.ret_type)
-        if _is_option_type(src_ty):
-            if not _is_option_type(fn_ret):
-                raise CodegenError(_diag(e, f"`?` requires Option<T> function return type, got {fn_ret}"))
-            if not isinstance(src.value.type, ir.PointerType):
-                raise CodegenError(_diag(e, "internal: Option<T> lowering expects pointer storage"))
-            is_none = b.icmp_unsigned("==", src.value, ir.Constant(src.value.type, None))
-            fn_ir = state.fn_ir
-            none_block = fn_ir.append_basic_block("try_none")
-            some_block = fn_ir.append_basic_block("try_some")
-            b.cbranch(is_none, none_block, some_block)
+        # For custom unions, propagate error variants and unwrap success payload.
+        if "|" in src_ty and "|" in fn_ret:
+            src_members = _union_members(src_ty)
+            if len(src_members) < 2:
+                raise CodegenError(_diag(e, f"`!` expects a fallible union operand, got {src_ty}"))
+            ok_ty = _canonical_type(src_members[0])
+            err_members = [_canonical_type(m) for m in src_members[1:]]
+            fn_members = {_canonical_type(m) for m in _union_members(fn_ret)}
+            missing = [m for m in err_members if m not in fn_members]
+            if missing:
+                missing_text = ", ".join(missing)
+                raise CodegenError(
+                    _diag(e, f"`!` requires function return to include propagated branch(es) {missing_text}, got {fn_ret}")
+                )
 
-            b.position_at_end(none_block)
+            if not isinstance(src.value.type, ir.PointerType):
+                raise CodegenError(_diag(e, f"internal: expected pointer-backed union for `!`, got {src.value.type}"))
+
+            # Current erased-union runtime encoding uses null pointer as `none`.
+            if len(err_members) != 1 or err_members[0] != "none":
+                err_text = " | ".join(err_members)
+                raise CodegenError(
+                    _diag(
+                        e,
+                        f"`!` currently supports unions with `none` as the only error variant in LLVM backend, got {err_text}",
+                    )
+                )
+
+            fn_ir = state.fn_ir
+            err_block = fn_ir.append_basic_block("try_union_err")
+            ok_block = fn_ir.append_basic_block("try_union_ok")
+            is_err = b.icmp_unsigned("==", src.value, ir.Constant(src.value.type, None))
+            b.cbranch(is_err, err_block, ok_block)
+
+            b.position_at_end(err_block)
             if state.ret_alloca is None:
-                raise CodegenError(_diag(e, "internal: missing return storage for `?` propagation"))
-            none_rv = _default_value(ctx, fn_ret)
-            b.store(none_rv, state.ret_alloca)
+                raise CodegenError(_diag(e, "internal: missing return storage for `!` propagation"))
+            err_value = _coerce_value(ctx, state, src.value, src_ty, fn_ret, e)
+            b.store(err_value, state.ret_alloca)
             b.branch(state.epilogue_block)
 
-            b.position_at_end(some_block)
-            inner_ty = _option_inner_type(src_ty)
-            inner_ll = _llvm_type(ctx, inner_ty)
-            some_ptr = b.bitcast(src.value, inner_ll.as_pointer())
-            some_v = b.load(some_ptr)
-            return _Value(some_v, inner_ty)
-
-        parsed_src = _result_inner_types(src_ty)
-        if parsed_src is None:
-            raise CodegenError(_diag(e, f"`?` expects Option<T> or Result<T, E> operand, got {src_ty}"))
-        if not _is_result_type(fn_ret):
-            raise CodegenError(_diag(e, f"`?` on Result<T, E> requires Result<T, E> function return type, got {fn_ret}"))
-        parsed_fn = _result_inner_types(fn_ret)
-        if parsed_fn is None:
-            raise CodegenError(_diag(e, f"internal: malformed function return type {fn_ret}"))
-        ok_ty, err_ty = parsed_src
-        _, fn_err_ty = parsed_fn
-        if _canonical_type(err_ty) != _canonical_type(fn_err_ty):
-            raise CodegenError(
-                _diag(e, f"`?` on Result<T, E> requires matching error type, got {err_ty} and {fn_err_ty}")
+            b.position_at_end(ok_block)
+            ok_value = _load_union_payload(
+                ctx,
+                state,
+                src.value,
+                ok_ty,
+                e,
+                union_ty=src_ty,
+                expected_variant_ty=ok_ty,
             )
-        if not isinstance(src.value.type, ir.PointerType):
-            raise CodegenError(_diag(e, "internal: Result<T, E> lowering expects pointer storage"))
-
-        fn_ir = state.fn_ir
-        is_ok_block = fn_ir.append_basic_block("try_result_ok")
-        is_err_block = fn_ir.append_basic_block("try_result_err")
-        res_ptr = b.bitcast(src.value, _result_storage_ty().as_pointer())
-        tag_ptr = b.gep(res_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
-        payload_ptr = b.gep(res_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
-        tag = b.load(tag_ptr)
-        ok_cond = b.icmp_unsigned("==", tag, ir.Constant(ir.IntType(8), 1))
-        b.cbranch(ok_cond, is_ok_block, is_err_block)
-
-        b.position_at_end(is_err_block)
-        if state.ret_alloca is None:
-            raise CodegenError(_diag(e, "internal: missing return storage for `?` propagation"))
-        err_any = b.load(payload_ptr)
-        err_value = _coerce_value(ctx, state, err_any, "Any", fn_err_ty, e)
-        err_result = _emit_result_value(
-            ctx,
-            state,
-            fn_ret,
-            is_ok=False,
-            payload_v=err_value,
-            payload_ty=fn_err_ty,
-            node=e,
-        )
-        b.store(err_result, state.ret_alloca)
-        b.branch(state.epilogue_block)
-
-        b.position_at_end(is_ok_block)
-        ok_any = b.load(payload_ptr)
-        ok_value = _coerce_value(ctx, state, ok_any, "Any", ok_ty, e)
-        return _Value(ok_value, ok_ty)
+            return _Value(ok_value, ok_ty)
+        raise CodegenError(_diag(e, f"`!` expects a fallible union operand, got {src_ty}"))
     if isinstance(e, AwaitExpr):
         return _compile_expr(ctx, state, e.expr, overflow_mode=overflow_mode)
     if isinstance(e, CastExpr):
@@ -3463,56 +3707,64 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
             out.add_incoming(short_val, short_block)
             out.add_incoming(rbool, rhs_pred)
             return _Value(out, "Bool")
-        if e.op == "??":
-            left = _compile_expr(ctx, state, e.left, overflow_mode=overflow_mode)
-            if not isinstance(left.value.type, ir.PointerType):
-                right = _compile_expr(ctx, state, e.right, overflow_mode=overflow_mode)
-                return right
-            if not _is_option_type(left.ty):
-                right = _compile_expr(ctx, state, e.right, overflow_mode=overflow_mode)
-                return right
-            out_ty = _canonical_type(getattr(e, "inferred_type", _option_inner_type(left.ty)))
-            out_ll = _llvm_type(ctx, out_ty)
-            is_none = b.icmp_unsigned("==", left.value, ir.Constant(left.value.type, None))
-            fn_ir = state.fn_ir
-            none_block = fn_ir.append_basic_block("coalesce_none")
-            some_block = fn_ir.append_basic_block("coalesce_some")
-            end_block = fn_ir.append_basic_block("coalesce_end")
-            b.cbranch(is_none, none_block, some_block)
-
-            b.position_at_end(none_block)
-            right = _compile_expr(ctx, state, e.right, overflow_mode=overflow_mode)
-            right_v = _coerce_value(ctx, state, right.value, right.ty, out_ty, e.right)
-            none_pred: ir.Block | None = None
-            if not _is_terminated(state):
-                b.branch(end_block)
-                none_pred = b.block
-
-            b.position_at_end(some_block)
-            some_ptr = b.bitcast(left.value, out_ll.as_pointer())
-            some_v = b.load(some_ptr)
-            b.branch(end_block)
-            some_block = b.block
-
-            b.position_at_end(end_block)
-            if none_pred is None:
-                return _Value(some_v, out_ty)
-            out = b.phi(out_ll)
-            out.add_incoming(right_v, none_pred)
-            out.add_incoming(some_v, some_block)
-            return _Value(out, out_ty)
-
         left = _compile_expr(ctx, state, e.left, overflow_mode=overflow_mode)
         right = _compile_expr(ctx, state, e.right, overflow_mode=overflow_mode)
-        if e.op == "+" and _is_text_type(left.ty) and _is_text_type(right.ty):
-            lsp = _coerce_value(ctx, state, left.value, left.ty, "String", e.left)
-            rsp = _coerce_value(ctx, state, right.value, right.ty, "String", e.right)
-            fn = _declare_runtime(ctx, "astra_str_concat")
-            out = b.call(fn, [lsp, rsp])
-            return _Value(out, "String")
-        ty = _expr_type(state, e.left)
+        ty = _expr_type(state, e)
+        if e.op == "??":
+            left_ty = _canonical_type(left.ty)
+            if "|" not in left_ty:
+                if left_ty != "none":
+                    raise CodegenError(_diag(e, f"left operand of ?? must be nullable union, got {left_ty}"))
+                rv = _coerce_value(ctx, state, right.value, right.ty, ty, e.right)
+                return _Value(rv, ty)
 
-        if _is_float_type(ty):
+            union_ptr_ty = ir.IntType(8).as_pointer()
+            if not isinstance(left.value.type, ir.PointerType):
+                raise CodegenError(_diag(e, f"left operand of ?? must be nullable union, got {left.ty}"))
+            left_union = left.value if left.value.type == union_ptr_ty else b.bitcast(left.value, union_ptr_ty)
+
+            fn_ir = state.fn_ir
+            left_block = fn_ir.append_basic_block("coalesce_left")
+            right_block = fn_ir.append_basic_block("coalesce_right")
+            end_block = fn_ir.append_basic_block("coalesce_end")
+            is_none = b.icmp_unsigned("==", left_union, ir.Constant(union_ptr_ty, None))
+            b.cbranch(is_none, right_block, left_block)
+
+            b.position_at_end(left_block)
+            if "|" in _canonical_type(ty):
+                left_value = _coerce_value(ctx, state, left_union, left_ty, ty, e.left)
+            else:
+                members = [m for m in _union_members(left_ty) if _canonical_type(m) != "none"]
+                payload_ty = next((m for m in members if _canonical_type(m) == _canonical_type(ty)), ty)
+                payload_raw = _load_union_payload(
+                    ctx,
+                    state,
+                    left_union,
+                    payload_ty,
+                    e.left,
+                    union_ty=left_ty,
+                    expected_variant_ty=payload_ty,
+                )
+                left_value = (
+                    payload_raw
+                    if _canonical_type(payload_ty) == _canonical_type(ty)
+                    else _coerce_value(ctx, state, payload_raw, payload_ty, ty, e.left)
+                )
+            b.branch(end_block)
+            left_block = b.block
+
+            b.position_at_end(right_block)
+            right_value = _coerce_value(ctx, state, right.value, right.ty, ty, e.right)
+            b.branch(end_block)
+            right_block = b.block
+
+            b.position_at_end(end_block)
+            out = b.phi(_llvm_type(ctx, ty))
+            out.add_incoming(left_value, left_block)
+            out.add_incoming(right_value, right_block)
+            return _Value(out, ty)
+
+        if _type_is_float_like(ty):
             lv = _coerce_value(ctx, state, left.value, left.ty, ty, e.left)
             rv = _coerce_value(ctx, state, right.value, right.ty, ty, e.right)
             if e.op == "+":
@@ -3964,7 +4216,8 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
         end_block = state.fn_ir.append_basic_block("if_end")
         
         # Branch based on condition
-        b.cbranch(cond_coerced, then_block, else_block)
+        br = b.cbranch(cond_coerced, then_block, else_block)
+        _apply_branch_hint_metadata(ctx, br, _branch_hint_kind(e.cond))
         
         # Then block
         b.position_at_end(then_block)
@@ -3975,18 +4228,29 @@ def _compile_expr(ctx: _ModuleCtx, state: _FnState, e: Any, overflow_mode: str =
         
         # Else block
         b.position_at_end(else_block)
-        else_val = _compile_expr(ctx, state, e.else_expr, overflow_mode=overflow_mode)
-        else_block_terminated = _is_terminated(state)
-        if not else_block_terminated:
-            b.branch(end_block)
+        else_val: _Value | None = None
+        else_block_terminated = False
+        if e.else_expr is not None:
+            else_val = _compile_expr(ctx, state, e.else_expr, overflow_mode=overflow_mode)
+            else_block_terminated = _is_terminated(state)
+            if not else_block_terminated:
+                b.branch(end_block)
+        else:
+            if not _is_terminated(state):
+                b.branch(end_block)
+            else_block_terminated = _is_terminated(state)
         
         # End block
         b.position_at_end(end_block)
-        
+        if e.else_expr is None:
+            # Unit-typed if-expression: result value is discarded; side effects are preserved.
+            return _Value(ir.Constant(ir.IntType(64), 0), "Void")
+
         # Create phi node
         result_type = then_val.ty
         phi = b.phi(_llvm_type(ctx, result_type))
         phi.add_incoming(then_val.value, then_block)
+        assert else_val is not None
         phi.add_incoming(else_val.value, else_block)
         
         return _Value(phi, result_type)
@@ -4680,6 +4944,9 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
                 v = _compile_expr(ctx, state, st.expr, overflow_mode=overflow_mode)
                 cv = _coerce_value(ctx, state, v.value, v.ty, state.ret_type, st)
                 b.store(cv, state.ret_alloca)
+        elif st.expr is not None:
+            # Preserve side effects for explicit `return <expr>;` in Void/Never functions.
+            _compile_expr(ctx, state, st.expr, overflow_mode=overflow_mode)
         if not _is_terminated(state):
             b.branch(state.epilogue_block)
         return
@@ -4702,6 +4969,13 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
         b.branch(cont_block)
         return
 
+    if isinstance(st, UnreachableStmt):
+        if ctx.profile != "release":
+            trap = _declare_trap(ctx)
+            b.call(trap, [])
+        b.unreachable()
+        return
+
     if isinstance(st, IfStmt):
         cond = _compile_expr(ctx, state, st.cond, overflow_mode=overflow_mode)
         c = _coerce_value(ctx, state, cond.value, cond.ty, "Bool", st.cond)
@@ -4709,7 +4983,8 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
         then_block = fn.append_basic_block("if_then")
         else_block = fn.append_basic_block("if_else")
         end_block = fn.append_basic_block("if_end")
-        b.cbranch(c, then_block, else_block)
+        br = b.cbranch(c, then_block, else_block)
+        _apply_branch_hint_metadata(ctx, br, _branch_hint_kind(st.cond))
 
         b.position_at_end(then_block)
         for sub in st.then_body:
@@ -4740,7 +5015,8 @@ def _compile_stmt(ctx: _ModuleCtx, state: _FnState, st: Any, overflow_mode: str)
         b.position_at_end(cond_block)
         cond = _compile_expr(ctx, state, st.cond, overflow_mode=overflow_mode)
         c = _coerce_value(ctx, state, cond.value, cond.ty, "Bool", st.cond)
-        b.cbranch(c, body_block, end_block)
+        br = b.cbranch(c, body_block, end_block)
+        _apply_branch_hint_metadata(ctx, br, _branch_hint_kind(st.cond))
 
         b.position_at_end(body_block)
         state.loop_stack.append((cond_block, end_block))
@@ -5296,6 +5572,7 @@ def to_llvm_ir(
     ctx = _ModuleCtx(
         module=module,
         triple=module.triple,
+        profile=profile,
         freestanding=freestanding,
         structs={},
         struct_decls={},

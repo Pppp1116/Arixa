@@ -11,23 +11,19 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from sync_language_definitions import update_syntax_file, verify_imports
+from sync_language_definitions import update_lsp_server, update_syntax_file, update_ast_imports
 
 def main():
     """Main sync function."""
     print("🔄 Synchronizing editor tools with language definitions...")
     
     success = True
-    
-    # Update syntax highlighting file
-    success &= update_syntax_file()
-    
-    # Verify that imports work correctly (no need to update LSP since it imports directly)
-    success &= verify_imports()
+    success &= update_lsp_server()
+    success &= update_syntax_file() 
+    success &= update_ast_imports()
     
     if success:
         print("✅ Editor tools synchronized successfully!")
-        print("ℹ️  LSP and CLI now import directly from main project")
         return 0
     else:
         print("❌ Some synchronization steps failed!")

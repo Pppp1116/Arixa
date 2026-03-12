@@ -148,6 +148,17 @@ class ContinueStmt:
 
 
 @dataclass
+class UnreachableStmt:
+    """AST node representing unreachable stmt.
+
+    This type is part of Astra's public compiler/tooling surface.
+    """
+    pos: int = 0
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
 class ComptimeStmt:
     """AST node representing comptime stmt.
     
@@ -458,7 +469,7 @@ class IfExpression:
     """
     cond: Any
     then_expr: Any
-    else_expr: Any
+    else_expr: Any | None = None
     pos: int = 0
     line: int = 0
     col: int = 0
